@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::{ExplanationConfig, ModelConfig, ReaderConfig};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -10,15 +11,26 @@ pub struct OpenAiProvider {
     base_url: String,
     model: String,
     api_key: Option<String>,
+    normal: crate::config::GenerationConfig,
+    deep: crate::config::GenerationConfig,
+    reader: ReaderConfig,
+    explanation: ExplanationConfig,
 }
 impl OpenAiProvider {
-    pub fn from_env() -> Self {
+    pub fn from_config(
+        model: ModelConfig,
+        reader: ReaderConfig,
+        explanation: ExplanationConfig,
+    ) -> Self {
         Self {
             client: Client::new(),
-            base_url: std::env::var("GIT_EXPLAIN_BASE_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()),
-            model: std::env::var("GIT_EXPLAIN_MODEL").unwrap_or_else(|_| "local-model".into()),
-            api_key: std::env::var("GIT_EXPLAIN_API_KEY").ok(),
+            base_url: model.base_url,
+            model: model.model,
+            api_key: model.api_key,
+            normal: model.normal,
+            deep: model.deep,
+            reader,
+            explanation,
         }
     }
 }
@@ -56,12 +68,23 @@ struct MsgOut {
 #[async_trait]
 impl ExplanationProvider for OpenAiProvider {
     async fn explain(&self, r: ExplanationRequest) -> Result<FunctionExplanation> {
+        let generation = if r.deep { &self.deep } else { &self.normal };
         let task = if r.deep {
             "Return JSON with a concise field `overview`, an empty `annotations` array, and a `deep` field containing a step-by-step explanation."
         } else {
-            "Return JSON with `overview` and 1-4 `annotations`; annotation lines are relative to the supplied function."
+            "Return JSON with `overview` and annotations; annotation lines are relative to the supplied function."
         };
-        let prompt = format!("You explain changed source code to an experienced software engineer learning this language or technology. The programming language is {}. Explain, do not review, critique, suggest improvements, or infer intent. Do not generate HTML. Return exactly one JSON object with these fields: overview (string), annotations (array of objects with start_line, end_line, kind, text), and optionally deep (string). Annotation line numbers are relative to the supplied function. {task}\n\nFUNCTION:\n{}\n\nRELEVANT DIFF:\n{}", r.language, r.function, r.diff);
+        let reader_context = if self.reader.experience != "experienced"
+            || !self.reader.known_languages.is_empty()
+            || !self.reader.learning_languages.is_empty()
+            || !self.reader.known_frameworks.is_empty()
+            || !self.reader.learning_frameworks.is_empty()
+        {
+            format!("Reader context: experience {}. Known languages: {}. Learning languages: {}. Known frameworks: {}. Learning frameworks: {}.", self.reader.experience, self.reader.known_languages.join(", "), self.reader.learning_languages.join(", "), self.reader.known_frameworks.join(", "), self.reader.learning_frameworks.join(", "))
+        } else {
+            String::new()
+        };
+        let prompt = format!("You explain changed source code to an experienced software engineer learning this language or technology. The programming language is {}. {} Explain, do not review, critique, suggest improvements, or infer intent. Do not generate HTML. Do not infer developer intent. Return exactly one JSON object with these fields: overview (string), annotations (array of objects with start_line, end_line, kind, text), and optionally deep (string). Annotation lines are relative to the supplied function. Use at most {} annotations, each at most {} words. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. {task}\n\nFUNCTION:\n{}\n\nRELEVANT DIFF:\n{}", r.language, reader_context, self.explanation.max_annotations, self.explanation.max_annotation_words, self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent, r.function, r.diff);
         let mut req = self
             .client
             .post(format!(
@@ -80,8 +103,8 @@ impl ExplanationProvider for OpenAiProvider {
                         content: prompt,
                     },
                 ],
-                temperature: 0.2,
-                max_tokens: if r.deep { 1200 } else { 450 },
+                temperature: generation.temperature,
+                max_tokens: generation.max_tokens,
                 response_format: ResponseFormat {
                     kind: "json_object",
                 },

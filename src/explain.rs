@@ -79,6 +79,7 @@ pub async fn explain_items(
     root: &Path,
     changes: &[FileChange],
     provider: impl ExplanationProvider,
+    deep: bool,
 ) -> Result<Vec<ExplainedFunction>> {
     let mut all = vec![];
     for c in changes {
@@ -90,7 +91,7 @@ pub async fn explain_items(
                     language: LanguageRegistry::language_for_path(&c.path)
                         .unwrap_or("unknown")
                         .into(),
-                    deep: false,
+                    deep,
                 })
                 .await
                 .unwrap_or(FunctionExplanation {

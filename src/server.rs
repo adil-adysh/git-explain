@@ -1,4 +1,5 @@
 use crate::{
+    config::ServerConfig,
     explain::ExplainedFunction,
     model::{ExplanationProvider, ExplanationRequest},
     web,
@@ -19,7 +20,7 @@ struct State {
 pub async fn serve(
     items: Vec<ExplainedFunction>,
     provider: impl ExplanationProvider + 'static,
-    port: u16,
+    config: ServerConfig,
 ) -> Result<()> {
     let state = Arc::new(State {
         items,
@@ -29,10 +30,12 @@ pub async fn serve(
         .route("/", get(index))
         .route("/api/deep/{id}", post(deep))
         .with_state(state.clone());
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
     let url = format!("http://{}", listener.local_addr()?);
     println!("git explain: {}", url);
-    let _ = webbrowser::open(&url);
+    if config.open_browser {
+        let _ = webbrowser::open(&url);
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }

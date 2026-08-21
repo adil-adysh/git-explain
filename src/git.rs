@@ -1,3 +1,4 @@
+use crate::config::GitConfig;
 use crate::diff::{parse_unified_diff, FileChange};
 use anyhow::{Context, Result};
 use std::{
@@ -15,10 +16,15 @@ pub fn repository_root() -> Result<PathBuf> {
     }
     Ok(PathBuf::from(String::from_utf8(out.stdout)?.trim()))
 }
-pub fn working_tree_changes(root: &Path) -> Result<Vec<FileChange>> {
+pub fn working_tree_changes(root: &Path, config: &GitConfig) -> Result<Vec<FileChange>> {
+    let mut args = vec!["diff".to_string(), "--unified=0".to_string()];
+    if config.include_staged {
+        args.push(config.diff_target.clone());
+    }
+    args.push("--no-color".into());
     let out = Command::new("git")
         .current_dir(root)
-        .args(["diff", "--unified=0", "HEAD", "--no-color"])
+        .args(&args)
         .output()
         .context("run git diff")?;
     if !out.status.success() {
