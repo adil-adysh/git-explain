@@ -59,7 +59,17 @@ pub fn render(items: &[ExplainedUnit], context: &AnalysisContext) -> String {
                 escape(&changed_units)
             ));
         }
-        h.push_str(&format!(r#"<article><p>Changed unit: <strong>{:?}</strong> <code>{}</code>, lines {}-{}.</p><h3>{}</h3><p><strong>{:?}</strong></p><h4>Overview</h4><p class="explanation">{}</p><h4>Code and explanation</h4>"#,x.unit.kind,escape(&x.unit.name),x.unit.start_line,x.unit.end_line,escape(&x.unit.name),x.unit.kind,escape(&x.explanation.overview)));
+        let overview = if x.explanation.overview.is_empty() {
+            "Explanation has not been generated.".to_string()
+        } else {
+            escape(&x.explanation.overview)
+        };
+        let normal_button = if x.explanation.overview.is_empty() {
+            "Generate explanation"
+        } else {
+            "Regenerate explanation"
+        };
+        h.push_str(&format!(r#"<article data-unit="{}"><p>Changed unit: <strong>{:?}</strong> <code>{}</code>, lines {}-{}.</p><h3>{}</h3><p><strong>{:?}</strong></p><h4>Overview</h4><p class="explanation">{}</p><button type="button" data-index="{}" class="explain">{}</button><h4>Code and explanation</h4>"#,i,x.unit.kind,escape(&x.unit.name),x.unit.start_line,x.unit.end_line,escape(&x.unit.name),x.unit.kind,overview,i,normal_button));
         let lines: Vec<_> = x.unit.source.lines().collect();
         let mut annotations = x.explanation.annotations.clone();
         annotations.sort_by_key(|a| a.start_line);
@@ -93,8 +103,8 @@ pub fn render(items: &[ExplainedUnit], context: &AnalysisContext) -> String {
             ));
         }
         let ends_file = i + 1 == items.len() || items[i + 1].file != x.file;
-        h.push_str(&format!(r#"<button type="button" data-index="{}" class="deep">Explain this code in depth</button><section id="deep-{}" hidden><h4>Detailed explanation</h4><p></p></section></article>{}"#,i,i,if ends_file { "</section>" } else { "" }));
+        h.push_str(&format!(r#"<button type="button" data-index="{}" class="deep">Explain this code in depth</button><button type="button" data-index="{}" class="regenerate">Regenerate explanation</button><section id="deep-{}" hidden><h4>Detailed explanation</h4><p>{}</p></section></article>{}"#,i,i,i,escape(x.deep_explanation.as_deref().unwrap_or("Deep explanation has not been generated.")),if ends_file { "</section>" } else { "" }));
     }
-    h.push_str(r#"</main><script>const ex=document.querySelectorAll('.explanation');document.querySelector('#toggle').onclick=()=>{const hide=ex[0]&&!ex[0].hidden;ex.forEach(x=>x.hidden=hide);document.querySelector('#toggle').textContent=hide?'Show explanations':'Hide explanations'};document.querySelectorAll('.deep').forEach(b=>b.onclick=async()=>{const i=b.dataset.index,s=document.querySelector('#deep-'+i),p=s.querySelector('p');s.hidden=false;p.textContent='Generating detailed explanation.';document.querySelector('#status').textContent='Generating detailed explanation.';try{const r=await fetch('/api/units/'+i+'/deep',{method:'POST'});const j=await r.json();p.textContent=j.deep||j.overview||'Explanation unavailable.';document.querySelector('#status').textContent=j.ok===false?'Detailed explanation unavailable.':'Detailed explanation ready.'}catch(_){p.textContent='Detailed explanation unavailable.';document.querySelector('#status').textContent='Detailed explanation unavailable.'}});</script></body></html>"#);
+    h.push_str(r#"</main><script>const status=document.querySelector('#status'),ex=document.querySelectorAll('.explanation');document.querySelector('#toggle').onclick=()=>{const hide=ex[0]&&!ex[0].hidden;ex.forEach(x=>x.hidden=hide);document.querySelector('#toggle').textContent=hide?'Show explanations':'Hide explanations'};async function call(b,url){const i=b.dataset.index,article=b.closest('article');status.textContent='Generating explanation.';try{const r=await fetch(url,{method:'POST'}),j=await r.json();if(!j.ok)throw Error();if(url.endsWith('/deep')){const s=article.querySelector('section[id^=deep-']);s.hidden=false;s.querySelector('p').textContent=j.deep||j.overview;}else{article.querySelector('.explanation').textContent=j.overview||'Explanation unavailable.';}status.textContent='Explanation ready.';}catch(_){status.textContent='Unable to generate explanation.';}}document.querySelectorAll('.explain').forEach(b=>b.onclick=()=>call(b,'/api/units/'+b.dataset.index+'/explain'));document.querySelectorAll('.regenerate').forEach(b=>b.onclick=()=>call(b,'/api/units/'+b.dataset.index+'/regenerate'));document.querySelectorAll('.deep').forEach(b=>b.onclick=()=>call(b,'/api/units/'+b.dataset.index+'/deep'));</script></body></html>"#);
     h
 }

@@ -104,6 +104,7 @@ pub struct ExplainedUnit {
     pub regions: Vec<ExplanationRegion>,
     pub unit: SourceUnit,
     pub explanation: UnitExplanation,
+    pub deep_explanation: Option<String>,
 }
 pub type ExplainedFunction = ExplainedUnit;
 #[allow(dead_code)]
@@ -148,6 +149,32 @@ pub fn units_from_provider(
             Ok(vec![])
         }
     }
+}
+pub fn analysis_items(
+    source_provider: &dyn SourceProvider,
+    changes: &[FileChange],
+) -> Result<Vec<ExplainedUnit>> {
+    let mut all = vec![];
+    for c in changes {
+        for unit in units_from_provider(source_provider, c)? {
+            all.push(ExplainedUnit {
+                file: c.path.display().to_string(),
+                language: LanguageRegistry::language_for_path(&c.path)
+                    .unwrap_or("unknown")
+                    .into(),
+                diff: relevant_diff(c, &unit),
+                regions: regions_for_change(c, &unit),
+                unit,
+                explanation: UnitExplanation {
+                    overview: String::new(),
+                    annotations: vec![],
+                    deep: None,
+                },
+                deep_explanation: None,
+            });
+        }
+    }
+    Ok(all)
 }
 pub fn print_debug(
     provider: &dyn SourceProvider,
@@ -295,7 +322,7 @@ pub async fn explain_items(
             let e = match model_provider
                 .explain(ExplanationRequest {
                     source_unit: s.source.clone(),
-                    unit_name: s.name.clone(),
+                    unit_name: s.qualified_name.clone().unwrap_or_else(|| s.name.clone()),
                     unit_kind: format!("{:?}", s.kind),
                     diff: diff.clone(),
                     language: LanguageRegistry::language_for_path(&c.path)
@@ -331,6 +358,7 @@ pub async fn explain_items(
                 regions,
                 unit: s,
                 explanation: e,
+                deep_explanation: None,
             });
         }
     }

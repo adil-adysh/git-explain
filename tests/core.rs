@@ -36,6 +36,7 @@ fn annotated_render_preserves_source_lines() {
             }],
             deep: None,
         },
+        deep_explanation: None,
     };
     let html = git_explain::web::render(&[item], &AnalysisContext::working_tree());
     assert_eq!(html.matches("changed();").count(), 1);

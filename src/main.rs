@@ -1,3 +1,4 @@
+mod cache;
 mod cli;
 mod config;
 mod diff;
@@ -10,7 +11,7 @@ mod web;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Command, ConfigAction};
+use cli::{CacheAction, Cli, Command, ConfigAction};
 use config::{format_show, init_user_config, ConfigLoader};
 use explain::{
     AnalysisContext, AnalysisMode, GitCommitSourceProvider, SourceProvider,
@@ -55,6 +56,23 @@ async fn main() -> Result<()> {
     let repo = git::repository_root()?;
     let loader = ConfigLoader::for_repository(Some(&repo))?;
     let resolved = loader.resolve(cli.profile.as_deref())?;
+    if let Some(Command::Cache(command)) = &cli.command {
+        let cache = cache::ExplanationCache::open(&git::git_dir(&repo)?)?;
+        match command.action {
+            CacheAction::Status => println!(
+                "Cache enabled: {}\nBackend: SQLite\nEntries: {}\nLocation: {}",
+                if resolved.cache.enabled { "yes" } else { "no" },
+                cache.count()?,
+                cache.path().display()
+            ),
+            CacheAction::Clear => println!(
+                "Cleared {} cache entries from {}",
+                cache.clear()?,
+                cache.path().display()
+            ),
+        }
+        return Ok(());
+    }
     let (changes, source_provider, context): (Vec<_>, Box<dyn SourceProvider>, AnalysisContext) =
         if let Some(revision) = cli.revision.as_deref() {
             let analysis = git::commit_analysis(&repo, revision)?;
@@ -92,21 +110,29 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let provider = model::openai::OpenAiProvider::from_config(
-        resolved.model,
-        resolved.reader,
+        resolved.model.clone(),
+        resolved.reader.clone(),
         resolved.explanation.clone(),
     );
-    let items = explain::explain_items(
-        source_provider.as_ref(),
-        &changes,
-        provider.clone(),
-        &context,
-        false,
-    )
-    .await?;
+    let items = explain::analysis_items(source_provider.as_ref(), &changes)?;
     let mut server = resolved.server;
     if let Some(port) = cli.port {
         server.port = port;
     }
-    server::serve(items, provider, context, server).await
+    let cache = if resolved.cache.enabled {
+        Some(cache::ExplanationCache::open(&git::git_dir(&repo)?)?)
+    } else {
+        None
+    };
+    server::serve(
+        items,
+        provider,
+        context,
+        server,
+        cache,
+        resolved.model,
+        resolved.reader,
+        resolved.explanation,
+    )
+    .await
 }
