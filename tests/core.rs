@@ -18,8 +18,9 @@ fn annotated_render_preserves_source_lines() {
         language: "Rust".into(),
         diff: "+changed();".into(),
         regions: vec![],
-        symbol: SourceSymbol {
+        unit: SourceSymbol {
             name: "example".into(),
+            qualified_name: None,
             kind: SymbolKind::Function,
             start_line: 1,
             end_line: 3,

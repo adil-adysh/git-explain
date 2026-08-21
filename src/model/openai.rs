@@ -107,7 +107,7 @@ impl OpenAiProvider {
             .as_deref()
             .map(|text| format!("\n\nNORMAL OVERVIEW:\n{text}"))
             .unwrap_or_default();
-        let prompt = format!("{task}\n\n{}\nProgramming language: {}\n{}\n\nFUNCTION:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, reader_context, request.function, regions, request.diff, prior, self.explanation.max_annotations, self.explanation.max_annotation_words, self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
+        let prompt = format!("{task}\n\n{}\nProgramming language: {}\nUnit kind: {}\nUnit name: {}\n{}\n\nSOURCE UNIT:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, request.unit_kind, request.unit_name, reader_context, request.function, regions, request.diff, prior, self.explanation.max_annotations, self.explanation.max_annotation_words, self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
         Req {
             model: self.model.clone(),
             messages: vec![
@@ -449,6 +449,8 @@ mod tests {
     fn request(deep: bool) -> ExplanationRequest {
         ExplanationRequest {
             function: "fn work() { changed(); }".into(),
+            unit_name: "work".into(),
+            unit_kind: "Function".into(),
             diff: "+changed".into(),
             language: "Rust".into(),
             git_context: "Change source: working tree".into(),

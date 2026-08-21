@@ -1,6 +1,6 @@
 use crate::{
     diff::{ChangeKind, FileChange},
-    language::{LanguageRegistry, SourceSymbol},
+    language::{LanguageRegistry, SourceSymbol, SourceUnit},
     model::{ExplanationProvider, ExplanationRegion, ExplanationRequest, FunctionExplanation},
 };
 use anyhow::Context;
@@ -97,14 +97,15 @@ impl AnalysisContext {
     }
 }
 #[derive(Clone)]
-pub struct ExplainedFunction {
+pub struct ExplainedUnit {
     pub file: String,
     pub language: String,
     pub diff: String,
     pub regions: Vec<ExplanationRegion>,
-    pub symbol: SourceSymbol,
+    pub unit: SourceUnit,
     pub explanation: FunctionExplanation,
 }
+pub type ExplainedFunction = ExplainedUnit;
 #[allow(dead_code)]
 pub fn symbols(root: &Path, c: &FileChange) -> Result<Vec<SourceSymbol>> {
     let provider = WorkingTreeSourceProvider::new(root);
@@ -118,9 +119,9 @@ pub fn symbols_from_provider(
     if c.kind == ChangeKind::Deleted {
         return Ok(vec![]);
     }
-    let Some(analyzer) = LanguageRegistry::analyzer_for_path(&c.path) else {
+    if LanguageRegistry::analyzer_for_path(&c.path).is_none() {
         return Ok(vec![]);
-    };
+    }
     let source = match provider.read_file(&c.path) {
         Ok(source) => source,
         Err(error) => {
@@ -128,7 +129,7 @@ pub fn symbols_from_provider(
             return Ok(vec![]);
         }
     };
-    match analyzer.find_containing_symbols(&source, &c.ranges) {
+    match LanguageRegistry::find_changed_units(&c.path, &source, &c.ranges) {
         Ok(symbols) => Ok(symbols),
         Err(error) => {
             eprintln!("{}: language analysis failed: {error}", c.path.display());
@@ -177,8 +178,9 @@ pub fn print_debug(
         }
         for s in symbols_from_provider(provider, c)? {
             println!(
-                "{}\n\nChanged function:\n{}\nlines {}-{}\n\n{}",
+                "{}\n\nChanged unit:\nkind: {:?}\nname: {}\nlines {}-{}\n\n{}",
                 c.path.display(),
+                s.kind,
                 s.name,
                 s.start_line,
                 s.end_line,
@@ -280,6 +282,8 @@ pub async fn explain_items(
             let e = match model_provider
                 .explain(ExplanationRequest {
                     function: s.source.clone(),
+                    unit_name: s.name.clone(),
+                    unit_kind: format!("{:?}", s.kind),
                     diff: diff.clone(),
                     language: LanguageRegistry::language_for_path(&c.path)
                         .unwrap_or("unknown")
@@ -312,7 +316,7 @@ pub async fn explain_items(
                     .into(),
                 diff,
                 regions,
-                symbol: s,
+                unit: s,
                 explanation: e,
             });
         }
@@ -340,6 +344,7 @@ mod tests {
         };
         let symbol = SourceSymbol {
             name: "first".into(),
+            qualified_name: None,
             kind: SymbolKind::Function,
             start_line: 1,
             end_line: 3,
@@ -361,6 +366,7 @@ mod tests {
         };
         let symbol = SourceSymbol {
             name: "first".into(),
+            qualified_name: None,
             kind: SymbolKind::Function,
             start_line: 3,
             end_line: 7,

@@ -31,6 +31,7 @@ pub async fn serve(
     });
     let app = Router::new()
         .route("/", get(index))
+        .route("/api/units/{id}/deep", post(deep))
         .route("/api/deep/{id}", post(deep))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
@@ -50,10 +51,12 @@ async fn deep(
     axum::extract::State(state): axum::extract::State<Arc<State>>,
 ) -> Json<serde_json::Value> {
     let Some(item) = state.items.get(id) else {
-        return Json(serde_json::json!({"ok":false,"deep":"Unknown function."}));
+        return Json(serde_json::json!({"ok":false,"deep":"Unknown code unit."}));
     };
     let request = ExplanationRequest {
-        function: item.symbol.source.clone(),
+        function: item.unit.source.clone(),
+        unit_name: item.unit.name.clone(),
+        unit_kind: format!("{:?}", item.unit.kind),
         diff: item.diff.clone(),
         language: item.language.clone(),
         git_context: state.context.prompt_context(),
@@ -66,7 +69,7 @@ async fn deep(
         Err(error) => {
             eprintln!(
                 "deep explanation request failed for {}: {error:#}",
-                item.symbol.name
+                item.unit.name
             );
             Json(serde_json::json!({"ok":false,"deep":"Detailed explanation unavailable."}))
         }

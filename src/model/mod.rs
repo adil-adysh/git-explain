@@ -14,6 +14,8 @@ pub struct ExplanationRegion {
 #[derive(Clone, Debug)]
 pub struct ExplanationRequest {
     pub function: String,
+    pub unit_name: String,
+    pub unit_kind: String,
     pub diff: String,
     pub language: String,
     pub git_context: String,
@@ -29,12 +31,13 @@ pub struct Annotation {
     pub text: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FunctionExplanation {
+pub struct UnitExplanation {
     pub overview: String,
     pub annotations: Vec<Annotation>,
     #[serde(default)]
     pub deep: Option<String>,
 }
+pub type FunctionExplanation = UnitExplanation;
 #[async_trait]
 pub trait ExplanationProvider: Send + Sync {
     async fn explain(&self, request: ExplanationRequest) -> Result<FunctionExplanation>;
