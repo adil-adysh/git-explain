@@ -14,6 +14,7 @@ fn html_escaping_is_safe() {
 fn annotated_render_preserves_source_lines() {
     let item = ExplainedFunction {
         file: "src/example.rs".into(),
+        language: "Rust".into(),
         symbol: SourceSymbol {
             name: "example".into(),
             kind: SymbolKind::Function,

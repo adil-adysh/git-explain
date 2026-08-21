@@ -49,6 +49,7 @@ async fn deep(
     let request = ExplanationRequest {
         function: item.symbol.source.clone(),
         diff: String::new(),
+        language: item.language.clone(),
         deep: true,
     };
     match state.provider.explain(request).await {

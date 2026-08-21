@@ -1,4 +1,4 @@
-use super::{LanguageAnalyzer, SourceSymbol, SymbolKind};
+use super::{smallest_symbols, source_for_lines, LanguageAnalyzer, SourceSymbol, SymbolKind};
 use crate::diff::LineRange;
 use anyhow::Result;
 use std::path::Path;
@@ -42,18 +42,15 @@ impl LanguageAnalyzer for RustAnalyzer {
         Self::walk(tree.root_node(), source.as_bytes(), &mut found);
         let mut result = vec![];
         for (s, e, name) in found {
-            if ranges.iter().any(|r| r.start <= e && r.end >= s) {
-                let lines: Vec<_> = source.lines().collect();
-                result.push(SourceSymbol {
-                    name,
-                    kind: SymbolKind::Function,
-                    start_line: s,
-                    end_line: e,
-                    source: lines[s - 1..e.min(lines.len())].join("\n"),
-                });
-            }
+            result.push(SourceSymbol {
+                name,
+                kind: SymbolKind::Function,
+                start_line: s,
+                end_line: e,
+                source: source_for_lines(source, s, e),
+            });
         }
-        Ok(result)
+        Ok(smallest_symbols(result, ranges))
     }
 }
 

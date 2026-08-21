@@ -61,7 +61,7 @@ impl ExplanationProvider for OpenAiProvider {
         } else {
             "Return JSON with `overview` and 1-4 `annotations`; annotation lines are relative to the supplied function."
         };
-        let prompt = format!("You explain changed source code to an experienced software engineer learning this language or technology. Explain, do not review, critique, suggest improvements, or infer intent. Do not generate HTML. Return exactly one JSON object with these fields: overview (string), annotations (array of objects with start_line, end_line, kind, text), and optionally deep (string). Annotation line numbers are relative to the supplied function. {task}\n\nFUNCTION:\n{}\n\nRELEVANT DIFF:\n{}", r.function, r.diff);
+        let prompt = format!("You explain changed source code to an experienced software engineer learning this language or technology. The programming language is {}. Explain, do not review, critique, suggest improvements, or infer intent. Do not generate HTML. Return exactly one JSON object with these fields: overview (string), annotations (array of objects with start_line, end_line, kind, text), and optionally deep (string). Annotation line numbers are relative to the supplied function. {task}\n\nFUNCTION:\n{}\n\nRELEVANT DIFF:\n{}", r.language, r.function, r.diff);
         let mut req = self
             .client
             .post(format!(

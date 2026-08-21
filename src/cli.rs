@@ -6,7 +6,7 @@ use clap::Parser;
     about = "Read and understand code changed in the working tree"
 )]
 pub struct Cli {
-    #[arg(long, help = "Print changed Rust functions and exit")]
+    #[arg(long, help = "Print changed supported-language functions and exit")]
     pub debug: bool,
     #[arg(long, default_value_t = 8081, help = "Local web-server port")]
     pub port: u16,

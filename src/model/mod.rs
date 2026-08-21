@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct ExplanationRequest {
     pub function: String,
     pub diff: String,
+    pub language: String,
     pub deep: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

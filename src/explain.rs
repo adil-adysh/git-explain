@@ -1,6 +1,6 @@
 use crate::{
     diff::FileChange,
-    language::{rust::RustAnalyzer, LanguageAnalyzer, SourceSymbol},
+    language::{LanguageRegistry, SourceSymbol},
     model::{ExplanationProvider, ExplanationRequest, FunctionExplanation},
 };
 use anyhow::Result;
@@ -8,15 +8,28 @@ use std::path::Path;
 #[derive(Clone)]
 pub struct ExplainedFunction {
     pub file: String,
+    pub language: String,
     pub symbol: SourceSymbol,
     pub explanation: FunctionExplanation,
 }
 pub fn symbols(root: &Path, c: &FileChange) -> Result<Vec<SourceSymbol>> {
-    if !RustAnalyzer.supports_path(&c.path) {
+    let Some(analyzer) = LanguageRegistry::analyzer_for_path(&c.path) else {
         return Ok(vec![]);
+    };
+    let source = match std::fs::read_to_string(root.join(&c.path)) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("{}: unable to read changed file: {error}", c.path.display());
+            return Ok(vec![]);
+        }
+    };
+    match analyzer.find_containing_symbols(&source, &c.ranges) {
+        Ok(symbols) => Ok(symbols),
+        Err(error) => {
+            eprintln!("{}: language analysis failed: {error}", c.path.display());
+            Ok(vec![])
+        }
     }
-    let source = std::fs::read_to_string(root.join(&c.path))?;
-    RustAnalyzer.find_containing_symbols(&source, &c.ranges)
 }
 pub fn print_debug(root: &Path, changes: &[FileChange]) -> Result<()> {
     for c in changes {
@@ -74,6 +87,9 @@ pub async fn explain_items(
                 .explain(ExplanationRequest {
                     function: s.source.clone(),
                     diff: relevant_diff(c, &s),
+                    language: LanguageRegistry::language_for_path(&c.path)
+                        .unwrap_or("unknown")
+                        .into(),
                     deep: false,
                 })
                 .await
@@ -84,6 +100,9 @@ pub async fn explain_items(
                 });
             all.push(ExplainedFunction {
                 file: c.path.display().to_string(),
+                language: LanguageRegistry::language_for_path(&c.path)
+                    .unwrap_or("unknown")
+                    .into(),
                 symbol: s,
                 explanation: e,
             });
