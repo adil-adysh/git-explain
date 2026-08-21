@@ -11,6 +11,26 @@ cargo install --path .
 git explain
 ```
 
+## Task automation
+
+This project includes a [Task](https://taskfile.dev/) workflow for repeatable Windows builds and installation:
+
+```text
+task build              # development binary
+task build-release      # optimized release binary
+task check              # format check, tests, and diff check
+task install            # build and install the release binary
+task install-dev        # build and install the development binary
+```
+
+Installation targets `C:\Users\<user>\.local\bin\git-explain.exe`. If the local daemon is running, the installer stops it before replacing the locked binary and starts it again afterward. If graceful shutdown leaves the process busy, use:
+
+```text
+task install FORCE=true
+```
+
+The force path terminates only the `git-explain.exe` process running from the user-local install path before copying the verified binary.
+
 For deterministic inspection without starting the browser:
 
 ```text

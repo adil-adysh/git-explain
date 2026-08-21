@@ -1,0 +1,56 @@
+version: '3'
+
+vars:
+  FORCE: '{{.FORCE | default "false"}}'
+
+tasks:
+  default:
+    desc: Run formatting checks and the full test suite.
+    cmds:
+      - task: check
+
+  check:
+    desc: Run formatting, tests, and whitespace checks.
+    cmds:
+      - cargo fmt -- --check
+      - cargo test
+      - git diff --check
+
+  build:
+    aliases: [build-dev]
+    desc: Build the development binary.
+    cmds:
+      - cargo build
+
+  build-release:
+    desc: Build the optimized release binary.
+    cmds:
+      - cargo build --release
+
+  install:
+    aliases: [install-release]
+    desc: Build and install the release binary into the user-local Git bin directory.
+    cmds:
+      - task: build-release
+      - task: _install-binary
+        vars:
+          CONFIGURATION: release
+          FORCE: '{{.FORCE}}'
+
+  install-dev:
+    desc: Build and install the development binary into the user-local Git bin directory.
+    cmds:
+      - task: build
+      - task: _install-binary
+        vars:
+          CONFIGURATION: debug
+          FORCE: '{{.FORCE}}'
+
+  _install-binary:
+    internal: true
+    vars:
+      CONFIGURATION: '{{.CONFIGURATION | default "release"}}'
+      FORCE: '{{.FORCE | default "false"}}'
+    platforms: [windows]
+    cmds:
+      - pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1 -Configuration {{.CONFIGURATION}} -Force:{{.FORCE}}
