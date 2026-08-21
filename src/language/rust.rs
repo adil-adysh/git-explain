@@ -44,6 +44,7 @@ impl LanguageAnalyzer for RustAnalyzer {
         for (s, e, name) in found {
             result.push(SourceSymbol {
                 name,
+                qualified_name: None,
                 kind: SymbolKind::Function,
                 start_line: s,
                 end_line: e,

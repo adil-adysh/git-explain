@@ -83,6 +83,7 @@ fn walk(node: Node, source: &[u8], out: &mut Vec<SourceSymbol>) {
         let end = range_node.end_position().row + 1;
         out.push(SourceSymbol {
             name: qualified_name,
+            qualified_name: None,
             kind,
             start_line: start,
             end_line: end,

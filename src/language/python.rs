@@ -40,6 +40,7 @@ impl PythonAnalyzer {
             let end = range_node.end_position().row + 1;
             out.push(SourceSymbol {
                 name: qualified_name,
+                qualified_name: None,
                 kind: if classes.is_empty() {
                     SymbolKind::Function
                 } else {

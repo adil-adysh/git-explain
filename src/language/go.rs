@@ -52,6 +52,7 @@ impl GoAnalyzer {
         let end = node.end_position().row + 1;
         out.push(SourceSymbol {
             name,
+            qualified_name: None,
             kind,
             start_line: start,
             end_line: end,

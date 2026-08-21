@@ -93,6 +93,7 @@ fn collect(node: Node, source: &[u8], out: &mut Vec<SourceSymbol>) {
             let end = range_node.end_position().row + 1;
             out.push(SourceSymbol {
                 name,
+                qualified_name: None,
                 kind: if is_destructor {
                     SymbolKind::Destructor
                 } else {

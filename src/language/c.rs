@@ -54,6 +54,7 @@ fn collect(node: Node, source: &[u8], out: &mut Vec<SourceSymbol>) {
             let end = node.end_position().row + 1;
             out.push(SourceSymbol {
                 name,
+                qualified_name: None,
                 kind: SymbolKind::Function,
                 start_line: start,
                 end_line: end,
