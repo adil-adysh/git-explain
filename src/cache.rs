@@ -30,6 +30,7 @@ struct Identity<'a> {
     generation: &'a GenerationConfig,
     reader: &'a ReaderConfig,
     explanation: &'a ExplanationConfig,
+    git_context: &'a str,
     language: &'a str,
     kind: &'a str,
     name: &'a str,
@@ -82,6 +83,7 @@ impl ExplanationCache {
             generation,
             reader,
             explanation,
+            git_context: &request.git_context,
             language: &request.language,
             kind: &request.unit_kind,
             name: &request.unit_name,
@@ -144,5 +146,124 @@ impl<T> OptionalRow<T> for rusqlite::Result<T> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ExplanationConfig, GenerationConfig, ModelConfig, ReaderConfig};
+    use crate::model::ExplanationRegion;
+    use tempfile::tempdir;
+
+    fn setup() -> (
+        ExplanationCache,
+        ModelConfig,
+        ReaderConfig,
+        ExplanationConfig,
+        ExplanationRequest,
+    ) {
+        let dir = tempdir().unwrap();
+        let cache = ExplanationCache::open(dir.path()).unwrap();
+        std::mem::forget(dir);
+        let model = ModelConfig {
+            provider: "llama_cpp".into(),
+            base_url: "http://localhost".into(),
+            model: "m".into(),
+            api_key_env: None,
+            api_key: None,
+            normal: GenerationConfig {
+                reasoning: false,
+                max_tokens: 10,
+                temperature: 0.2,
+            },
+            deep: GenerationConfig {
+                reasoning: true,
+                max_tokens: 20,
+                temperature: 0.3,
+            },
+        };
+        let reader = ReaderConfig {
+            experience: "experienced".into(),
+            known_languages: vec![],
+            learning_languages: vec![],
+            known_frameworks: vec![],
+            learning_frameworks: vec![],
+        };
+        let explanation = ExplanationConfig {
+            default_depth: "normal".into(),
+            max_annotations: 3,
+            max_annotation_words: 60,
+            explain_language_concepts: true,
+            explain_framework_concepts: true,
+            infer_intent: false,
+        };
+        let request = ExplanationRequest {
+            source_unit: "fn load() {}".into(),
+            unit_name: "load".into(),
+            unit_kind: "Function".into(),
+            diff: "+load".into(),
+            language: "Rust".into(),
+            git_context: "working tree".into(),
+            regions: vec![ExplanationRegion {
+                id: 1,
+                start_line: 1,
+                end_line: 1,
+                source: "fn load() {}".into(),
+            }],
+            prior_explanation: None,
+            deep: false,
+        };
+        (cache, model, reader, explanation, request)
+    }
+
+    #[test]
+    fn key_changes_for_explanation_inputs_and_modes() {
+        let (_, model, reader, explanation, request) = setup();
+        let base = ExplanationCache::key(&request, &model, &reader, &explanation);
+        let mut changed = request.clone();
+        changed.source_unit.push(' ');
+        assert_ne!(
+            base,
+            ExplanationCache::key(&changed, &model, &reader, &explanation)
+        );
+        let mut changed = request.clone();
+        changed.diff.push('x');
+        assert_ne!(
+            base,
+            ExplanationCache::key(&changed, &model, &reader, &explanation)
+        );
+        let mut changed = request.clone();
+        changed.git_context.push('x');
+        assert_ne!(
+            base,
+            ExplanationCache::key(&changed, &model, &reader, &explanation)
+        );
+        let mut deep = request;
+        deep.deep = true;
+        assert_ne!(
+            base,
+            ExplanationCache::key(&deep, &model, &reader, &explanation)
+        );
+    }
+
+    #[test]
+    fn normal_and_deep_entries_are_independent() {
+        let (cache, model, reader, explanation, normal) = setup();
+        let normal_key = ExplanationCache::key(&normal, &model, &reader, &explanation);
+        cache
+            .put(
+                &normal_key,
+                &normal,
+                &model,
+                r#"{"overview":"normal","annotations":[],"deep":null}"#,
+            )
+            .unwrap();
+        let mut deep = normal;
+        deep.deep = true;
+        let deep_key = ExplanationCache::key(&deep, &model, &reader, &explanation);
+        assert_ne!(normal_key, deep_key);
+        assert!(cache.get(&deep_key).unwrap().is_none());
+        assert_eq!(cache.count().unwrap(), 1);
     }
 }
