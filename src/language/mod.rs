@@ -13,6 +13,8 @@ use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceUnitKind {
+    File,
+    Namespace,
     Function,
     Method,
     Constructor,
@@ -45,14 +47,14 @@ pub type SourceSymbol = SourceUnit;
 pub type SymbolKind = SourceUnitKind;
 pub trait LanguageAnalyzer {
     fn supports_path(&self, path: &Path) -> bool;
+    fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceUnit>>;
+
     fn find_containing_symbols(
         &self,
         source: &str,
         ranges: &[LineRange],
-    ) -> Result<Vec<SourceSymbol>>;
-
-    fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceUnit>> {
-        self.find_containing_symbols(source, ranges)
+    ) -> Result<Vec<SourceSymbol>> {
+        self.find_changed_units(source, ranges)
     }
 }
 
@@ -108,7 +110,16 @@ impl LanguageRegistry {
         let Some(analyzer) = Self::analyzer_for_path(path) else {
             return Ok(vec![]);
         };
-        let mut units = analyzer.find_changed_units(source, ranges)?;
+        let mut units = match analyzer.find_changed_units(source, ranges) {
+            Ok(units) => units,
+            Err(error) => {
+                eprintln!(
+                    "{}: parser failed; using semantic fallback: {error:#}",
+                    path.display()
+                );
+                Vec::new()
+            }
+        };
         let covered = units.clone();
         units.extend(fallback_units(path, source, ranges, &covered));
         Ok(smallest_units(units, ranges))
@@ -186,13 +197,31 @@ fn fallback_units(
             .copied()
             .unwrap_or("")
             .trim();
-        let current_kind = classify_declaration(path, current_line).0;
+        let (decl_anchor, decl_line) =
+            if current_line.starts_with('@') || current_line.starts_with('[') {
+                lines
+                    .iter()
+                    .enumerate()
+                    .skip(range.start)
+                    .find(|(_, line)| {
+                        let line = line.trim();
+                        !line.is_empty() && !line.starts_with('@') && !line.starts_with('[')
+                    })
+                    .map(|(index, line)| (index + 1, line.trim()))
+                    .unwrap_or((range.start, current_line))
+            } else {
+                (range.start, current_line)
+            };
+        let current_kind = classify_declaration(path, decl_line).0;
         let leaf_change = matches!(
             current_kind,
-            SourceUnitKind::Constant | SourceUnitKind::ImportBlock | SourceUnitKind::TypeAlias
+            SourceUnitKind::Constant
+                | SourceUnitKind::ImportBlock
+                | SourceUnitKind::TypeAlias
+                | SourceUnitKind::Property
         );
-        let (anchor, line) = if leaf_change {
-            (range.start, current_line)
+        let (anchor, line) = if leaf_change || decl_anchor != range.start {
+            (decl_anchor, decl_line)
         } else {
             enclosing_declaration(&lines, range.start)
                 .map(|(line_number, text)| (line_number, text.trim()))
@@ -211,7 +240,7 @@ fn fallback_units(
         if let Some(previous) = result.last_mut() {
             if previous.kind == SourceUnitKind::ImportBlock
                 && unit.kind == SourceUnitKind::ImportBlock
-                && unit.start_line <= previous.end_line + 1
+                && unit.start_line <= previous.end_line + 2
             {
                 previous.end_line = previous.end_line.max(unit.end_line);
                 previous.source = source_for_lines(source, previous.start_line, previous.end_line);
@@ -262,7 +291,7 @@ fn classify_declaration(path: &Path, line: &str) -> (SourceUnitKind, String) {
         || trimmed.starts_with("import ")
         || trimmed.starts_with("from ")
         || line.starts_with("#include")
-        || trimmed.starts_with("using ")
+        || (trimmed.starts_with("using ") && !trimmed.contains(" = "))
     {
         SourceUnitKind::ImportBlock
     } else if trimmed.starts_with("struct ")
@@ -273,15 +302,26 @@ fn classify_declaration(path: &Path, line: &str) -> (SourceUnitKind, String) {
         SourceUnitKind::Enum
     } else if trimmed.starts_with("trait ") {
         SourceUnitKind::Trait
+    } else if trimmed.starts_with("namespace ") || line.contains(" namespace ") {
+        SourceUnitKind::Namespace
     } else if trimmed.starts_with("interface ") || line.contains(" interface ") {
         SourceUnitKind::Interface
     } else if trimmed.starts_with("impl ") {
         SourceUnitKind::Impl
     } else if trimmed.starts_with("class ") || line.contains(" class ") {
         SourceUnitKind::Class
+    } else if trimmed.starts_with("async def ") || trimmed.starts_with("def ") {
+        SourceUnitKind::Function
+    } else if matches!(language, "java" | "cs")
+        && trimmed.ends_with(';')
+        && !trimmed.contains('(')
+        && !trimmed.contains(" = ")
+    {
+        SourceUnitKind::Property
     } else if trimmed.starts_with("type ")
         || (language == "ts" && trimmed.starts_with("export type"))
         || trimmed.starts_with("typedef ")
+        || (trimmed.starts_with("using ") && trimmed.contains(" = "))
     {
         SourceUnitKind::TypeAlias
     } else if trimmed.starts_with("const ")
@@ -296,6 +336,14 @@ fn classify_declaration(path: &Path, line: &str) -> (SourceUnitKind, String) {
     let tokens: Vec<_> = trimmed.split_whitespace().collect();
     let name = if kind == SourceUnitKind::ImportBlock {
         "Imports".into()
+    } else if kind == SourceUnitKind::Property {
+        trimmed
+            .trim_end_matches(';')
+            .split_whitespace()
+            .last()
+            .unwrap_or("property")
+            .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+            .to_string()
     } else {
         let keyword = [
             "struct",
@@ -306,9 +354,11 @@ fn classify_declaration(path: &Path, line: &str) -> (SourceUnitKind, String) {
             "interface",
             "type",
             "typedef",
+            "using",
             "const",
             "static",
             "var",
+            "namespace",
         ]
         .iter()
         .find_map(|keyword| tokens.iter().position(|token| token == keyword));

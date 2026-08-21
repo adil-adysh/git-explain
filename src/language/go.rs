@@ -51,8 +51,8 @@ impl GoAnalyzer {
         let start = node.start_position().row + 1;
         let end = node.end_position().row + 1;
         out.push(SourceSymbol {
-            name,
-            qualified_name: None,
+            name: name.clone(),
+            qualified_name: Some(name.clone()),
             kind,
             start_line: start,
             end_line: end,
@@ -73,11 +73,7 @@ impl LanguageAnalyzer for GoAnalyzer {
         path.extension().is_some_and(|extension| extension == "go")
     }
 
-    fn find_containing_symbols(
-        &self,
-        source: &str,
-        ranges: &[LineRange],
-    ) -> Result<Vec<SourceSymbol>> {
+    fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceSymbol>> {
         let mut parser = Parser::new();
         parser.set_language(&tree_sitter_go::LANGUAGE.into())?;
         let tree = parser

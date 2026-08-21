@@ -82,8 +82,8 @@ fn walk(node: Node, source: &[u8], out: &mut Vec<SourceSymbol>) {
         let start = range_node.start_position().row + 1;
         let end = range_node.end_position().row + 1;
         out.push(SourceSymbol {
-            name: qualified_name,
-            qualified_name: None,
+            name: qualified_name.clone(),
+            qualified_name: Some(qualified_name.clone()),
             kind,
             start_line: start,
             end_line: end,
@@ -101,11 +101,7 @@ impl LanguageAnalyzer for JavaScriptAnalyzer {
             .is_some_and(|extension| matches!(extension.to_str(), Some("js" | "jsx")))
     }
 
-    fn find_containing_symbols(
-        &self,
-        source: &str,
-        ranges: &[LineRange],
-    ) -> Result<Vec<SourceSymbol>> {
+    fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceSymbol>> {
         find_with_language(source, ranges, tree_sitter_javascript::LANGUAGE.into())
     }
 }

@@ -11,11 +11,7 @@ impl LanguageAnalyzer for TypeScriptAnalyzer {
             .is_some_and(|extension| matches!(extension.to_str(), Some("ts" | "tsx")))
     }
 
-    fn find_containing_symbols(
-        &self,
-        source: &str,
-        ranges: &[LineRange],
-    ) -> Result<Vec<SourceSymbol>> {
+    fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceSymbol>> {
         let language = if source.contains("<") && source.contains(">") {
             tree_sitter_typescript::LANGUAGE_TSX.into()
         } else {

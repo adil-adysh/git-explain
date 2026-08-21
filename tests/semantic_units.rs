@@ -37,9 +37,9 @@ fn rust_mixed_changes_include_import_struct_enum_method_and_constant() {
         .iter()
         .any(|unit| unit.kind == SourceUnitKind::Struct && unit.name == "Config"));
     assert!(found.iter().any(|unit| unit.kind == SourceUnitKind::Enum));
-    assert!(found
-        .iter()
-        .any(|unit| unit.kind == SourceUnitKind::Function && unit.name == "load"));
+    assert!(found.iter().any(|unit| unit.kind == SourceUnitKind::Method
+        && unit.name == "load"
+        && unit.qualified_name.as_deref() == Some("Config::load")));
     assert!(found
         .iter()
         .any(|unit| unit.kind == SourceUnitKind::Constant));
@@ -134,4 +134,69 @@ fn parser_smoke_covers_java_csharp_c_and_cpp_declarations() {
         .any(|unit| unit.kind == SourceUnitKind::ImportBlock));
     assert!(cpp.iter().any(|unit| unit.kind == SourceUnitKind::Class));
     assert!(cpp.iter().any(|unit| unit.kind == SourceUnitKind::Constant));
+}
+
+#[test]
+fn remaining_unit_categories_and_mixed_language_discovery_are_deterministic() {
+    let rust = units(
+        "lib.rs",
+        "use std::fmt;\ntrait Render { fn render(&self); }\nimpl Render for Config {\n    fn render(&self) {}\n}\ntype Id = u64;\nstatic LIMIT: usize = 4;\nstruct Config;\n",
+        &[(1, 1), (2, 2), (3, 3), (6, 6), (7, 7)],
+    );
+    assert!(rust.iter().any(|unit| unit.kind == SourceUnitKind::Trait));
+    assert!(rust.iter().any(|unit| unit.kind == SourceUnitKind::Impl));
+    assert!(rust
+        .iter()
+        .any(|unit| unit.kind == SourceUnitKind::TypeAlias));
+    assert!(rust
+        .iter()
+        .any(|unit| unit.kind == SourceUnitKind::Constant));
+
+    let python = units(
+        "service.py",
+        "@dataclass\nclass Service(BaseService):\n    TIMEOUT = 30\n",
+        &[(1, 1), (2, 2), (3, 3)],
+    );
+    assert!(python.iter().any(|unit| unit.kind == SourceUnitKind::Class));
+    assert!(python
+        .iter()
+        .any(|unit| unit.kind == SourceUnitKind::Constant));
+
+    let go = units(
+        "model.go",
+        "import \"time\"\ntype UserID = string\nvar timeout = time.Second\n",
+        &[(1, 1), (2, 2), (3, 3)],
+    );
+    assert!(go
+        .iter()
+        .any(|unit| unit.kind == SourceUnitKind::ImportBlock));
+    assert!(go.iter().any(|unit| unit.kind == SourceUnitKind::TypeAlias));
+    assert!(go.iter().any(|unit| unit.kind == SourceUnitKind::Constant));
+
+    let typescript = units(
+        "repo.ts",
+        "import { User } from './user';\ninterface Repository { load(): User; }\nclass Service {}\n",
+        &[(1, 1), (2, 2), (3, 3)],
+    );
+    assert!(typescript
+        .iter()
+        .any(|unit| unit.kind == SourceUnitKind::ImportBlock));
+    assert!(typescript
+        .iter()
+        .any(|unit| unit.kind == SourceUnitKind::Interface));
+    assert!(typescript
+        .iter()
+        .any(|unit| unit.kind == SourceUnitKind::Class));
+
+    let cpp = units(
+        "service.cpp",
+        "namespace auth { class Service {}; }\nusing UserId = unsigned long;\n",
+        &[(1, 1), (2, 2)],
+    );
+    assert!(cpp
+        .iter()
+        .any(|unit| unit.kind == SourceUnitKind::Namespace));
+    assert!(cpp
+        .iter()
+        .any(|unit| unit.kind == SourceUnitKind::TypeAlias));
 }

@@ -54,11 +54,7 @@ impl LanguageAnalyzer for CppAnalyzer {
         })
     }
 
-    fn find_containing_symbols(
-        &self,
-        source: &str,
-        ranges: &[LineRange],
-    ) -> Result<Vec<SourceSymbol>> {
+    fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceSymbol>> {
         let mut parser = Parser::new();
         parser.set_language(&tree_sitter_cpp::LANGUAGE.into())?;
         let tree = parser
@@ -85,6 +81,7 @@ fn collect(node: Node, source: &[u8], out: &mut Vec<SourceSymbol>) {
             if !scopes.is_empty() && !name.contains("::") {
                 name = format!("{}::{}", scopes.join("::"), name);
             }
+            let qualified_name = name.contains("::").then(|| name.clone());
             let range_node = node
                 .parent()
                 .filter(|parent| parent.kind() == "template_declaration")
@@ -93,9 +90,11 @@ fn collect(node: Node, source: &[u8], out: &mut Vec<SourceSymbol>) {
             let end = range_node.end_position().row + 1;
             out.push(SourceSymbol {
                 name,
-                qualified_name: None,
+                qualified_name,
                 kind: if is_destructor {
                     SymbolKind::Destructor
+                } else if !scopes.is_empty() {
+                    SymbolKind::Method
                 } else {
                     SymbolKind::Function
                 },

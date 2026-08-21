@@ -32,7 +32,7 @@ impl CSharpAnalyzer {
         let kind = match node.kind() {
             "method_declaration" => SymbolKind::Method,
             "constructor_declaration" => SymbolKind::Constructor,
-            "property_declaration" => SymbolKind::Other,
+            "property_declaration" => SymbolKind::Property,
             _ => {
                 for child in node.children(&mut node.walk()) {
                     Self::walk(child, source, out);
@@ -53,8 +53,8 @@ impl CSharpAnalyzer {
         let start = node.start_position().row + 1;
         let end = node.end_position().row + 1;
         out.push(SourceSymbol {
-            name: qualified_name,
-            qualified_name: None,
+            name: qualified_name.clone(),
+            qualified_name: Some(qualified_name.clone()),
             kind,
             start_line: start,
             end_line: end,
@@ -71,11 +71,7 @@ impl LanguageAnalyzer for CSharpAnalyzer {
         path.extension().is_some_and(|extension| extension == "cs")
     }
 
-    fn find_containing_symbols(
-        &self,
-        source: &str,
-        ranges: &[LineRange],
-    ) -> Result<Vec<SourceSymbol>> {
+    fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceSymbol>> {
         let mut parser = Parser::new();
         parser.set_language(&tree_sitter_c_sharp::LANGUAGE.into())?;
         let tree = parser

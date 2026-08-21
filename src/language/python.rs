@@ -39,8 +39,8 @@ impl PythonAnalyzer {
             let start = range_node.start_position().row + 1;
             let end = range_node.end_position().row + 1;
             out.push(SourceSymbol {
-                name: qualified_name,
-                qualified_name: None,
+                name: qualified_name.clone(),
+                qualified_name: Some(qualified_name.clone()),
                 kind: if classes.is_empty() {
                     SymbolKind::Function
                 } else {
@@ -66,11 +66,7 @@ impl LanguageAnalyzer for PythonAnalyzer {
         path.extension().is_some_and(|extension| extension == "py")
     }
 
-    fn find_containing_symbols(
-        &self,
-        source: &str,
-        ranges: &[LineRange],
-    ) -> Result<Vec<SourceSymbol>> {
+    fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceSymbol>> {
         let mut parser = Parser::new();
         parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
         let tree = parser
