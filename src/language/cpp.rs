@@ -82,6 +82,10 @@ fn collect(node: Node, source: &[u8], out: &mut Vec<SourceSymbol>) {
                 name = format!("{}::{}", scopes.join("::"), name);
             }
             let qualified_name = name.contains("::").then(|| name.clone());
+            let is_constructor = !is_destructor
+                && scopes
+                    .last()
+                    .is_some_and(|scope| name == *scope || name.ends_with(&format!("::{scope}")));
             let range_node = node
                 .parent()
                 .filter(|parent| parent.kind() == "template_declaration")
@@ -93,6 +97,8 @@ fn collect(node: Node, source: &[u8], out: &mut Vec<SourceSymbol>) {
                 qualified_name,
                 kind: if is_destructor {
                     SymbolKind::Destructor
+                } else if is_constructor {
+                    SymbolKind::Constructor
                 } else if !scopes.is_empty() {
                     SymbolKind::Method
                 } else {
@@ -138,5 +144,15 @@ mod tests {
             .unwrap();
         assert_eq!(symbols[0].name, "Service::~Service");
         assert_eq!(symbols[0].kind, SymbolKind::Destructor);
+    }
+
+    #[test]
+    fn finds_constructor() {
+        let source = "class Service {\npublic:\n    Service() {\n        open();\n    }\n};\n";
+        let symbols = CppAnalyzer
+            .find_containing_symbols(source, &[LineRange { start: 4, end: 4 }])
+            .unwrap();
+        assert_eq!(symbols[0].name, "Service::Service");
+        assert_eq!(symbols[0].kind, SymbolKind::Constructor);
     }
 }
