@@ -8,6 +8,7 @@ pub struct ExplanationRequest {
     pub function: String,
     pub diff: String,
     pub language: String,
+    pub git_context: String,
     pub deep: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

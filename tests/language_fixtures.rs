@@ -42,6 +42,8 @@ fn registry_handles_mixed_rust_python_and_go_changes() {
         let changed_line = if language == "Go" { 3 } else { 2 };
         let change = FileChange {
             path: path_buf,
+            old_path: None,
+            kind: git_explain::diff::ChangeKind::Modified,
             ranges: vec![LineRange {
                 start: changed_line,
                 end: changed_line,
@@ -139,6 +141,8 @@ fn unreadable_or_malformed_file_does_not_block_valid_file() {
         directory.path(),
         &FileChange {
             path: "broken.py".into(),
+            old_path: None,
+            kind: git_explain::diff::ChangeKind::Modified,
             ranges: vec![LineRange { start: 1, end: 1 }],
             diff: String::new(),
         },
@@ -148,6 +152,8 @@ fn unreadable_or_malformed_file_does_not_block_valid_file() {
         directory.path(),
         &FileChange {
             path: "valid.go".into(),
+            old_path: None,
+            kind: git_explain::diff::ChangeKind::Modified,
             ranges: vec![LineRange { start: 4, end: 4 }],
             diff: String::new(),
         },

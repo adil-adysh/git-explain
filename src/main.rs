@@ -12,6 +12,10 @@ use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command, ConfigAction};
 use config::{format_show, init_user_config, ConfigLoader};
+use explain::{
+    AnalysisContext, AnalysisMode, GitCommitSourceProvider, SourceProvider,
+    WorkingTreeSourceProvider,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,12 +55,40 @@ async fn main() -> Result<()> {
     let repo = git::repository_root()?;
     let loader = ConfigLoader::for_repository(Some(&repo))?;
     let resolved = loader.resolve(cli.profile.as_deref())?;
-    let changes = git::working_tree_changes(&repo, &resolved.git)?;
+    let (changes, source_provider, context): (Vec<_>, Box<dyn SourceProvider>, AnalysisContext) =
+        if let Some(revision) = cli.revision.as_deref() {
+            let analysis = git::commit_analysis(&repo, revision)?;
+            let context = AnalysisContext {
+                mode: AnalysisMode::Commit {
+                    oid: analysis.oid.clone(),
+                    parent_oid: analysis.parent_oid.clone(),
+                    subject: analysis.subject.clone(),
+                    merge_parent_count: analysis.parent_count,
+                },
+                deleted_files: analysis
+                    .changes
+                    .iter()
+                    .filter(|change| change.kind == crate::diff::ChangeKind::Deleted)
+                    .map(|change| change.path.display().to_string())
+                    .collect(),
+            };
+            (
+                analysis.changes,
+                Box::new(GitCommitSourceProvider::new(&repo, analysis.oid)),
+                context,
+            )
+        } else {
+            (
+                git::working_tree_changes(&repo, &resolved.git)?,
+                Box::new(WorkingTreeSourceProvider::new(&repo)),
+                AnalysisContext::working_tree(),
+            )
+        };
     if changes.is_empty() {
-        anyhow::bail!("No supported changes found relative to HEAD.");
+        anyhow::bail!("No supported changes found for analysis.");
     }
     if cli.debug {
-        explain::print_debug(&repo, &changes)?;
+        explain::print_debug(source_provider.as_ref(), &changes, &context)?;
         return Ok(());
     }
     let default_depth_deep = resolved
@@ -68,11 +100,17 @@ async fn main() -> Result<()> {
         resolved.reader,
         resolved.explanation.clone(),
     );
-    let items =
-        explain::explain_items(&repo, &changes, provider.clone(), default_depth_deep).await?;
+    let items = explain::explain_items(
+        source_provider.as_ref(),
+        &changes,
+        provider.clone(),
+        &context,
+        default_depth_deep,
+    )
+    .await?;
     let mut server = resolved.server;
     if let Some(port) = cli.port {
         server.port = port;
     }
-    server::serve(items, provider, server).await
+    server::serve(items, provider, context, server).await
 }

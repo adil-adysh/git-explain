@@ -6,6 +6,11 @@ use clap::{Args, Parser, Subcommand};
     about = "Read and understand code changed in the working tree"
 )]
 pub struct Cli {
+    #[arg(
+        value_name = "REVISION",
+        help = "Explain a Git commit instead of the working tree"
+    )]
+    pub revision: Option<String>,
     #[arg(long, help = "Print changed supported-language functions and exit")]
     pub debug: bool,
     #[arg(

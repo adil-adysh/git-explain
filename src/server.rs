@@ -15,15 +15,18 @@ use std::sync::Arc;
 
 struct State {
     items: Vec<ExplainedFunction>,
+    context: crate::explain::AnalysisContext,
     provider: Arc<dyn ExplanationProvider>,
 }
 pub async fn serve(
     items: Vec<ExplainedFunction>,
     provider: impl ExplanationProvider + 'static,
+    context: crate::explain::AnalysisContext,
     config: ServerConfig,
 ) -> Result<()> {
     let state = Arc::new(State {
         items,
+        context,
         provider: Arc::new(provider),
     });
     let app = Router::new()
@@ -40,7 +43,7 @@ pub async fn serve(
     Ok(())
 }
 async fn index(axum::extract::State(state): axum::extract::State<Arc<State>>) -> Html<String> {
-    Html(web::render(&state.items))
+    Html(web::render(&state.items, &state.context))
 }
 async fn deep(
     Path(id): Path<usize>,
@@ -53,6 +56,7 @@ async fn deep(
         function: item.symbol.source.clone(),
         diff: String::new(),
         language: item.language.clone(),
+        git_context: state.context.prompt_context(),
         deep: true,
     };
     match state.provider.explain(request).await {

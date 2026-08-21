@@ -1,14 +1,49 @@
-use crate::explain::ExplainedFunction;
+use crate::explain::{AnalysisContext, AnalysisMode, ExplainedFunction};
 pub fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
-pub fn render(items: &[ExplainedFunction]) -> String {
-    let mut h = String::from(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Working tree explanation</title><style>body{max-width:75rem;margin:auto;padding:1rem;font:1rem system-ui}pre{white-space:pre-wrap;background:#f5f5f5;padding:1rem}article{margin-block:2rem}.annotation{border-left:4px solid #555;padding:.5rem 1rem}button{padding:.5rem;margin:.5rem 0}</style></head><body><main><h1>Working tree</h1><p>Explanations are generated from changed functions only and are not written to source files.</p><button id="toggle" type="button">Hide explanations</button><div id="status" aria-live="polite"></div>"#,
+pub fn render(items: &[ExplainedFunction], context: &AnalysisContext) -> String {
+    let (title, heading, metadata) = match &context.mode {
+        AnalysisMode::WorkingTree => (
+            "Working tree explanation".to_string(),
+            "Working tree".to_string(),
+            String::new(),
+        ),
+        AnalysisMode::Commit {
+            oid,
+            parent_oid,
+            subject,
+            merge_parent_count,
+        } => {
+            let mut metadata = format!(
+                "<p>{}</p><p>Compared with parent: {}</p>",
+                escape(subject),
+                escape(parent_oid.as_deref().unwrap_or("<empty tree>"))
+            );
+            if *merge_parent_count > 1 {
+                metadata.push_str(
+                    "<p>Merge commit detected. Showing changes relative to first parent.</p>",
+                );
+            }
+            (
+                format!("Commit {} explanation", &oid[..oid.len().min(12)]),
+                format!("Commit {}", &oid[..oid.len().min(12)]),
+                metadata,
+            )
+        }
+    };
+    let mut h = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{}</title><style>body{{max-width:75rem;margin:auto;padding:1rem;font:1rem system-ui}}pre{{white-space:pre-wrap;background:#f5f5f5;padding:1rem}}article{{margin-block:2rem}}.annotation{{border-left:4px solid #555;padding:.5rem 1rem}}button{{padding:.5rem;margin:.5rem 0}}</style></head><body><main><h1>{}</h1>{}<p>Explanations are generated from changed functions only and are not written to source files.</p><button id="toggle" type="button">Hide explanations</button><div id="status" aria-live="polite"></div>"#,
+        escape(&title),
+        escape(&heading),
+        metadata
     );
+    for file in &context.deleted_files {
+        h.push_str(&format!("<section><h2>Deleted file: {}</h2><p>Detailed annotated source explanation is not currently supported for deleted files.</p></section>", escape(file)));
+    }
     for (i, x) in items.iter().enumerate() {
         h.push_str(&format!(r#"<section><h2>{}</h2><article><h3>{}</h3><h4>Overview</h4><p class="explanation">{}</p><h4>Code and explanation</h4>"#,escape(&x.file),escape(&x.symbol.name),escape(&x.explanation.overview)));
         let lines: Vec<_> = x.symbol.source.lines().collect();

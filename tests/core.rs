@@ -1,5 +1,6 @@
 use git_explain::web::escape;
 use git_explain::{
+    explain::AnalysisContext,
     explain::ExplainedFunction,
     language::{SourceSymbol, SymbolKind},
     model::{Annotation, FunctionExplanation},
@@ -33,7 +34,25 @@ fn annotated_render_preserves_source_lines() {
             deep: None,
         },
     };
-    let html = git_explain::web::render(&[item]);
+    let html = git_explain::web::render(&[item], &AnalysisContext::working_tree());
     assert_eq!(html.matches("changed();").count(), 1);
     assert!(html.find("changed();").unwrap() < html.find("<p>Explanation</p>").unwrap());
+}
+
+#[test]
+fn commit_render_identifies_revision_parent_and_deleted_files() {
+    let context = AnalysisContext {
+        mode: git_explain::explain::AnalysisMode::Commit {
+            oid: "abcdef1234567890".into(),
+            parent_oid: Some("1234567890abcdef".into()),
+            subject: "change <subject>".into(),
+            merge_parent_count: 1,
+        },
+        deleted_files: vec!["src/old.rs".into()],
+    };
+    let html = git_explain::web::render(&[], &context);
+    assert!(html.contains("Commit abcdef123456"));
+    assert!(html.contains("Compared with parent: 1234567890abcdef"));
+    assert!(html.contains("Deleted file: src/old.rs"));
+    assert!(html.contains("change &lt;subject&gt;"));
 }

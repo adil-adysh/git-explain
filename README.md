@@ -17,6 +17,16 @@ For deterministic inspection without starting the browser:
 git explain --debug
 ```
 
+To explain an existing commit instead of the working tree:
+
+```text
+git explain 699fdd6
+git explain HEAD
+git explain HEAD~1 --debug
+```
+
+Commit mode compares the selected commit with its first parent and retrieves source from the selected commit itself. Root commits are compared with Git's empty tree. Merge commits use the first parent and identify that choice in debug output and the web page. Deleted files are reported but do not receive annotated source explanations yet. Renames with content changes use the new committed path; pure rename/copy metadata without a textual diff may not produce a source symbol. Binary files are skipped and never sent to the model.
+
 The model endpoint is OpenAI-compatible. For a quick one-off override, the existing environment variables remain supported:
 
 * `GIT_EXPLAIN_BASE_URL`

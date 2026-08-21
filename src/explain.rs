@@ -1,10 +1,101 @@
 use crate::{
-    diff::FileChange,
+    diff::{ChangeKind, FileChange},
     language::{LanguageRegistry, SourceSymbol},
     model::{ExplanationProvider, ExplanationRequest, FunctionExplanation},
 };
+use anyhow::Context;
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub trait SourceProvider {
+    fn read_file(&self, path: &Path) -> Result<String>;
+}
+
+pub struct WorkingTreeSourceProvider {
+    root: PathBuf,
+}
+
+impl WorkingTreeSourceProvider {
+    pub fn new(root: &Path) -> Self {
+        Self { root: root.into() }
+    }
+}
+
+impl SourceProvider for WorkingTreeSourceProvider {
+    fn read_file(&self, path: &Path) -> Result<String> {
+        std::fs::read_to_string(self.root.join(path))
+            .with_context(|| format!("read working-tree source {}", path.display()))
+    }
+}
+
+pub struct GitCommitSourceProvider {
+    root: PathBuf,
+    oid: String,
+}
+
+impl GitCommitSourceProvider {
+    pub fn new(root: &Path, oid: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            oid: oid.into(),
+        }
+    }
+}
+
+impl SourceProvider for GitCommitSourceProvider {
+    fn read_file(&self, path: &Path) -> Result<String> {
+        let git_path = path.to_string_lossy().replace('\\', "/");
+        let spec = format!("{}:{}", self.oid, git_path);
+        let output = std::process::Command::new("git")
+            .current_dir(&self.root)
+            .args(["show", &spec])
+            .output()
+            .with_context(|| format!("read committed source {}", path.display()))?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git show {spec} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        String::from_utf8(output.stdout)
+            .with_context(|| format!("committed file {} is not text", path.display()))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AnalysisMode {
+    WorkingTree,
+    Commit {
+        oid: String,
+        parent_oid: Option<String>,
+        subject: String,
+        merge_parent_count: usize,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalysisContext {
+    pub mode: AnalysisMode,
+    pub deleted_files: Vec<String>,
+}
+
+impl AnalysisContext {
+    pub fn working_tree() -> Self {
+        Self {
+            mode: AnalysisMode::WorkingTree,
+            deleted_files: vec![],
+        }
+    }
+
+    pub fn prompt_context(&self) -> String {
+        match &self.mode {
+            AnalysisMode::WorkingTree => "Change source: working tree".into(),
+            AnalysisMode::Commit { oid, subject, .. } => {
+                format!("Change source: commit {oid}\nCommit subject: {subject}")
+            }
+        }
+    }
+}
 #[derive(Clone)]
 pub struct ExplainedFunction {
     pub file: String,
@@ -12,11 +103,23 @@ pub struct ExplainedFunction {
     pub symbol: SourceSymbol,
     pub explanation: FunctionExplanation,
 }
+#[allow(dead_code)]
 pub fn symbols(root: &Path, c: &FileChange) -> Result<Vec<SourceSymbol>> {
+    let provider = WorkingTreeSourceProvider::new(root);
+    symbols_from_provider(&provider, c)
+}
+
+pub fn symbols_from_provider(
+    provider: &dyn SourceProvider,
+    c: &FileChange,
+) -> Result<Vec<SourceSymbol>> {
+    if c.kind == ChangeKind::Deleted {
+        return Ok(vec![]);
+    }
     let Some(analyzer) = LanguageRegistry::analyzer_for_path(&c.path) else {
         return Ok(vec![]);
     };
-    let source = match std::fs::read_to_string(root.join(&c.path)) {
+    let source = match provider.read_file(&c.path) {
         Ok(source) => source,
         Err(error) => {
             eprintln!("{}: unable to read changed file: {error}", c.path.display());
@@ -31,9 +134,46 @@ pub fn symbols(root: &Path, c: &FileChange) -> Result<Vec<SourceSymbol>> {
         }
     }
 }
-pub fn print_debug(root: &Path, changes: &[FileChange]) -> Result<()> {
+pub fn print_debug(
+    provider: &dyn SourceProvider,
+    changes: &[FileChange],
+    context: &AnalysisContext,
+) -> Result<()> {
+    match &context.mode {
+        AnalysisMode::WorkingTree => println!("Mode: working tree\n"),
+        AnalysisMode::Commit {
+            oid,
+            parent_oid,
+            subject,
+            merge_parent_count,
+        } => {
+            println!(
+                "Mode: commit\n\nCommit: {}\nParent: {}\nSubject: {}",
+                oid,
+                parent_oid.as_deref().unwrap_or("<empty tree>"),
+                subject
+            );
+            if *merge_parent_count > 1 {
+                println!("Merge commit detected. Showing changes relative to first parent.");
+            }
+            println!();
+        }
+    }
     for c in changes {
-        for s in symbols(root, c)? {
+        if c.kind == ChangeKind::Renamed {
+            if let Some(old_path) = &c.old_path {
+                println!(
+                    "Renamed file: {} -> {}",
+                    old_path.display(),
+                    c.path.display()
+                );
+            }
+        }
+        if c.kind == ChangeKind::Deleted {
+            println!("Deleted file: {}\nDetailed annotated source explanation is not currently supported.\n", c.path.display());
+            continue;
+        }
+        for s in symbols_from_provider(provider, c)? {
             println!(
                 "{}\n\nChanged function:\n{}\nlines {}-{}\n\n{}",
                 c.path.display(),
@@ -76,21 +216,23 @@ fn relevant_diff(change: &FileChange, symbol: &SourceSymbol) -> String {
     result
 }
 pub async fn explain_items(
-    root: &Path,
+    source_provider: &dyn SourceProvider,
     changes: &[FileChange],
-    provider: impl ExplanationProvider,
+    model_provider: impl ExplanationProvider,
+    context: &AnalysisContext,
     deep: bool,
 ) -> Result<Vec<ExplainedFunction>> {
     let mut all = vec![];
     for c in changes {
-        for s in symbols(root, c)? {
-            let e = provider
+        for s in symbols_from_provider(source_provider, c)? {
+            let e = model_provider
                 .explain(ExplanationRequest {
                     function: s.source.clone(),
                     diff: relevant_diff(c, &s),
                     language: LanguageRegistry::language_for_path(&c.path)
                         .unwrap_or("unknown")
                         .into(),
+                    git_context: context.prompt_context(),
                     deep,
                 })
                 .await
@@ -122,6 +264,8 @@ mod tests {
     fn selects_only_the_hunk_for_the_changed_function() {
         let change = FileChange {
             path: PathBuf::from("src/users.rs"),
+            old_path: None,
+            kind: crate::diff::ChangeKind::Modified,
             ranges: vec![
                 LineRange { start: 2, end: 2 },
                 LineRange { start: 8, end: 8 },
