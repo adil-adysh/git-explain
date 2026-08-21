@@ -40,6 +40,9 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
+    fn build_request(&self, request: &ExplanationRequest) -> Req {
+        self.build_request_with_retry(request, false)
+    }
     pub fn from_config(
         model: ModelConfig,
         reader: ReaderConfig,
@@ -70,7 +73,7 @@ impl OpenAiProvider {
         }
     }
 
-    fn build_request(&self, request: &ExplanationRequest) -> Req {
+    fn build_request_with_retry(&self, request: &ExplanationRequest, retry: bool) -> Req {
         let generation = if request.deep {
             &self.deep
         } else {
@@ -107,7 +110,17 @@ impl OpenAiProvider {
             .as_deref()
             .map(|text| format!("\n\nNORMAL OVERVIEW:\n{text}"))
             .unwrap_or_default();
-        let prompt = format!("{task}\n\n{}\nProgramming language: {}\nUnit kind: {}\nUnit name: {}\n{}\n\nSOURCE UNIT:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, request.unit_kind, request.unit_name, reader_context, request.source_unit, regions, request.diff, prior, self.explanation.max_annotations, self.explanation.max_annotation_words, self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
+        let limit = if retry {
+            self.explanation.max_annotations.min(2)
+        } else {
+            self.explanation.max_annotations
+        };
+        let task = if retry {
+            "Return one valid JSON object only. Be concise and use no more than two annotations."
+        } else {
+            task
+        };
+        let prompt = format!("{task}\n\n{}\nProgramming language: {}\nUnit kind: {}\nUnit name: {}\n{}\n\nSOURCE UNIT:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, request.unit_kind, request.unit_name, reader_context, request.source_unit, regions, request.diff, prior, limit, self.explanation.max_annotation_words.min(if retry { 30 } else { self.explanation.max_annotation_words }), self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
         Req {
             model: self.model.clone(),
             messages: vec![
@@ -348,7 +361,23 @@ fn deep_schema() -> Value {
 #[async_trait]
 impl ExplanationProvider for OpenAiProvider {
     async fn explain(&self, request: ExplanationRequest) -> Result<UnitExplanation> {
-        let payload = self.build_request(&request);
+        match self.explain_once(&request, false).await {
+            Ok(result) => Ok(result),
+            Err(error) if is_retryable_structured_error(&error) => {
+                eprintln!("structured model output invalid; retrying once with a concise request");
+                self.explain_once(&request, true).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+impl OpenAiProvider {
+    async fn explain_once(
+        &self,
+        request: &ExplanationRequest,
+        retry: bool,
+    ) -> Result<UnitExplanation> {
+        let payload = self.build_request_with_retry(request, retry);
         let mut req = self
             .client
             .post(format!(
@@ -403,6 +432,16 @@ impl ExplanationProvider for OpenAiProvider {
             )
         })
     }
+}
+
+fn is_retryable_structured_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("malformed explanation JSON")
+        || text.contains("invalid structured model content")
+        || text.contains("response truncated")
+        || text.contains("empty content")
+        || text.contains("omitted overview")
+        || text.contains("omitted explanation")
 }
 
 #[cfg(test)]

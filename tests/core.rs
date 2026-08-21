@@ -39,7 +39,7 @@ fn annotated_render_preserves_source_lines() {
         deep_explanation: None,
     };
     let html = git_explain::web::render(&[item], &AnalysisContext::working_tree());
-    assert_eq!(html.matches("changed();").count(), 1);
+    assert_eq!(html.matches("<code>    changed();</code>").count(), 1);
     assert!(html.contains("File changes"));
     assert!(html.contains("Changed code units"));
     assert!(html.find("changed();").unwrap() < html.find("<p>Explanation</p>").unwrap());
