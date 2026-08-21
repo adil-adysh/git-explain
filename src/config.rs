@@ -183,6 +183,22 @@ reasoning = true
 max_tokens = 2500
 temperature = 0.3
 
+[profiles.unsloth35b]
+provider = "llama_cpp"
+base_url = "http://127.0.0.1:8083/v1"
+model = "git-explain-unsloth35b"
+api_key_env = "GIT_EXPLAIN_API_KEY"
+
+[profiles.unsloth35b.normal]
+reasoning = false
+max_tokens = 500
+temperature = 0.2
+
+[profiles.unsloth35b.deep]
+reasoning = true
+max_tokens = 2500
+temperature = 0.3
+
 [profiles.ministral]
 provider = "openai_compatible"
 base_url = "http://127.0.0.1:11434/v1"
@@ -743,6 +759,20 @@ mod tests {
         assert!(init_user_config(&path, false).unwrap());
         assert!(!init_user_config(&path, false).unwrap());
         assert!(toml::from_str::<PartialConfig>(&fs::read_to_string(path).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn generated_config_includes_unsloth_llama_profile() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        init_user_config(&path, false).unwrap();
+        let config = ConfigLoader::with_paths(path, None)
+            .resolve(Some("unsloth35b"))
+            .unwrap();
+        assert_eq!(config.model.provider, "llama_cpp");
+        assert_eq!(config.model.base_url, "http://127.0.0.1:8083/v1");
+        assert_eq!(config.model.model, "git-explain-unsloth35b");
+        assert_eq!(config.model.deep.max_tokens, 2500);
     }
 
     #[test]

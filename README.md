@@ -92,6 +92,16 @@ base_url = "http://127.0.0.1:11434/v1"
 model = "ministral-3:8b"
 ```
 
+For the locally managed Unsloth llama.cpp preset used in live testing:
+
+```text
+git explain --profile unsloth35b
+```
+
+The generated example configuration includes the `unsloth35b` profile. It uses
+`http://127.0.0.1:8083/v1`, model `git-explain-unsloth35b`, concise normal
+generation, and a larger deep-mode output budget for separated reasoning.
+
 Select a profile for one invocation without changing files:
 
 ```text
