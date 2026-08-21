@@ -4,6 +4,7 @@ use git_explain::{
     explain::ExplainedUnit,
     language::{SourceUnit, SourceUnitKind},
     model::{Annotation, UnitExplanation},
+    snapshot::UnitId,
 };
 
 #[test]
@@ -14,6 +15,7 @@ fn html_escaping_is_safe() {
 #[test]
 fn annotated_render_preserves_source_lines() {
     let item = ExplainedUnit {
+        id: UnitId("unit-a".into()),
         file: "src/example.rs".into(),
         language: "Rust".into(),
         diff: "+changed();".into(),
@@ -48,6 +50,7 @@ fn annotated_render_preserves_source_lines() {
 #[test]
 fn initial_render_keeps_source_visible_without_explanation() {
     let item = ExplainedUnit {
+        id: UnitId("unit-b".into()),
         file: "src/example.rs".into(),
         language: "Rust".into(),
         diff: "+changed();".into(),
@@ -73,6 +76,22 @@ fn initial_render_keeps_source_visible_without_explanation() {
     assert!(html.contains("<button"));
     assert!(html.contains("changed();"));
     assert!(html.contains("aria-live=\"polite\""));
+    assert!(html.contains("data-unit-id=\"unit-b\""));
+    assert!(html.contains("generation"));
+}
+
+#[test]
+fn daemon_render_carries_generation_and_update_action() {
+    let html = git_explain::web::render_for_session_at_generation(
+        &[],
+        &AnalysisContext::working_tree(),
+        "session-opaque",
+        7,
+    );
+    assert!(html.contains("data-generation=\"7\""));
+    assert!(html.contains("A newer repository snapshot is available"));
+    assert!(html.contains("Reload updated snapshot"));
+    assert!(html.contains("'/api/sessions/'+session+'/snapshot'"));
 }
 
 #[test]
