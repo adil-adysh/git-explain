@@ -46,7 +46,7 @@ fn provider(base_url: String, timeout: Duration) -> OpenAiProvider {
 
 fn request(deep: bool) -> ExplanationRequest {
     ExplanationRequest {
-        function: "fn add(a: i32, b: i32) -> i32 { a + b }".into(),
+        source_unit: "fn add(a: i32, b: i32) -> i32 { a + b }".into(),
         unit_name: "add".into(),
         unit_kind: "Function".into(),
         diff: "+ a + b".into(),

@@ -98,16 +98,16 @@ impl OpenAiProvider {
             .collect::<Vec<_>>()
             .join("\n\n");
         let task = if request.deep {
-            "Return exactly one JSON object with one required string field: explanation. Give a focused, step-by-step teaching explanation. Do not review, suggest rewrites, or speculate about intent."
+            "Return exactly one JSON object with one required string field: explanation. Give a focused, step-by-step teaching explanation of the changed source unit, adapting to its unit kind. Do not review, suggest rewrites, or speculate about intent."
         } else {
-            "Return exactly one JSON object with required fields overview and annotations. Keep overview to at most two sentences. Select only the configured number of regions that materially help understanding. Do not provide a tutorial, repeat the overview, explain trivial syntax, review code, suggest rewrites, or speculate about intent."
+            "Return exactly one JSON object with required fields overview and annotations. Keep overview to at most two sentences. Select only the configured number of regions that materially help understanding. Explain the changed source unit according to its unit kind. Do not provide a tutorial, repeat the overview, explain trivial syntax, review code, suggest rewrites, or speculate about intent."
         };
         let prior = request
             .prior_explanation
             .as_deref()
             .map(|text| format!("\n\nNORMAL OVERVIEW:\n{text}"))
             .unwrap_or_default();
-        let prompt = format!("{task}\n\n{}\nProgramming language: {}\nUnit kind: {}\nUnit name: {}\n{}\n\nSOURCE UNIT:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, request.unit_kind, request.unit_name, reader_context, request.function, regions, request.diff, prior, self.explanation.max_annotations, self.explanation.max_annotation_words, self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
+        let prompt = format!("{task}\n\n{}\nProgramming language: {}\nUnit kind: {}\nUnit name: {}\n{}\n\nSOURCE UNIT:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, request.unit_kind, request.unit_name, reader_context, request.source_unit, regions, request.diff, prior, self.explanation.max_annotations, self.explanation.max_annotation_words, self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
         Req {
             model: self.model.clone(),
             messages: vec![
@@ -150,7 +150,7 @@ impl OpenAiProvider {
         &self,
         content: &str,
         request: &ExplanationRequest,
-    ) -> Result<FunctionExplanation> {
+    ) -> Result<UnitExplanation> {
         let raw: RawResponse =
             serde_json::from_str(&clean_content(content)).context("malformed explanation JSON")?;
         if request.deep {
@@ -159,7 +159,7 @@ impl OpenAiProvider {
                 .or(raw.deep)
                 .or(raw.overview)
                 .context("deep explanation response omitted explanation")?;
-            return Ok(FunctionExplanation {
+            return Ok(UnitExplanation {
                 overview: String::new(),
                 annotations: vec![],
                 deep: Some(strip_reasoning(&explanation)),
@@ -181,7 +181,7 @@ impl OpenAiProvider {
             })
             .take(self.explanation.max_annotations as usize)
             .collect();
-        Ok(FunctionExplanation {
+        Ok(UnitExplanation {
             overview: truncate_words(&truncate_sentences(&strip_reasoning(&overview), 2), 80),
             annotations,
             deep: None,
@@ -347,7 +347,7 @@ fn deep_schema() -> Value {
 
 #[async_trait]
 impl ExplanationProvider for OpenAiProvider {
-    async fn explain(&self, request: ExplanationRequest) -> Result<FunctionExplanation> {
+    async fn explain(&self, request: ExplanationRequest) -> Result<UnitExplanation> {
         let payload = self.build_request(&request);
         let mut req = self
             .client
@@ -448,7 +448,7 @@ mod tests {
     }
     fn request(deep: bool) -> ExplanationRequest {
         ExplanationRequest {
-            function: "fn work() { changed(); }".into(),
+            source_unit: "fn work() { changed(); }".into(),
             unit_name: "work".into(),
             unit_kind: "Function".into(),
             diff: "+changed".into(),

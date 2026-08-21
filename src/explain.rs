@@ -1,7 +1,7 @@
 use crate::{
     diff::{ChangeKind, FileChange},
     language::{LanguageRegistry, SourceSymbol, SourceUnit},
-    model::{ExplanationProvider, ExplanationRegion, ExplanationRequest, FunctionExplanation},
+    model::{ExplanationProvider, ExplanationRegion, ExplanationRequest, UnitExplanation},
 };
 use anyhow::Context;
 use anyhow::Result;
@@ -103,19 +103,31 @@ pub struct ExplainedUnit {
     pub diff: String,
     pub regions: Vec<ExplanationRegion>,
     pub unit: SourceUnit,
-    pub explanation: FunctionExplanation,
+    pub explanation: UnitExplanation,
 }
 pub type ExplainedFunction = ExplainedUnit;
 #[allow(dead_code)]
 pub fn symbols(root: &Path, c: &FileChange) -> Result<Vec<SourceSymbol>> {
-    let provider = WorkingTreeSourceProvider::new(root);
-    symbols_from_provider(&provider, c)
+    changed_units(root, c)
 }
 
+pub fn changed_units(root: &Path, c: &FileChange) -> Result<Vec<SourceUnit>> {
+    let provider = WorkingTreeSourceProvider::new(root);
+    units_from_provider(&provider, c)
+}
+
+#[allow(dead_code)]
 pub fn symbols_from_provider(
     provider: &dyn SourceProvider,
     c: &FileChange,
 ) -> Result<Vec<SourceSymbol>> {
+    units_from_provider(provider, c)
+}
+
+pub fn units_from_provider(
+    provider: &dyn SourceProvider,
+    c: &FileChange,
+) -> Result<Vec<SourceUnit>> {
     if c.kind == ChangeKind::Deleted {
         return Ok(vec![]);
     }
@@ -176,7 +188,7 @@ pub fn print_debug(
             println!("Deleted file: {}\nDetailed annotated source explanation is not currently supported.\n", c.path.display());
             continue;
         }
-        for s in symbols_from_provider(provider, c)? {
+        for s in units_from_provider(provider, c)? {
             println!(
                 "{}\n\nChanged unit:\nkind: {:?}\nname: {}\nlines {}-{}\n\n{}",
                 c.path.display(),
@@ -198,15 +210,16 @@ pub fn print_debug(
     Ok(())
 }
 
-fn relevant_diff(change: &FileChange, symbol: &SourceSymbol) -> String {
+fn relevant_diff(change: &FileChange, unit: &SourceUnit) -> String {
     let mut result = String::new();
     let mut range_index = 0;
     let mut selected = false;
     for line in change.diff.lines() {
         if line.starts_with("@@ ") {
-            selected = change.ranges.get(range_index).is_some_and(|range| {
-                range.start <= symbol.end_line && range.end >= symbol.start_line
-            });
+            selected = change
+                .ranges
+                .get(range_index)
+                .is_some_and(|range| range.start <= unit.end_line && range.end >= unit.start_line);
             range_index += 1;
             if selected {
                 result.push_str(line);
@@ -227,20 +240,20 @@ fn relevant_diff(change: &FileChange, symbol: &SourceSymbol) -> String {
     result
 }
 
-pub fn regions_for(change: &FileChange, symbol: &SourceSymbol) -> Vec<ExplanationRegion> {
+pub fn regions_for(change: &FileChange, unit: &SourceUnit) -> Vec<ExplanationRegion> {
     change
         .ranges
         .iter()
         .filter_map(|range| {
-            let start = range.start.max(symbol.start_line);
-            let end = range.end.min(symbol.end_line);
+            let start = range.start.max(unit.start_line);
+            let end = range.end.min(unit.end_line);
             (start <= end).then_some((start, end))
         })
         .enumerate()
         .map(|(index, (start, end))| {
-            let source_lines: Vec<_> = symbol.source.lines().collect();
-            let relative_start = start - symbol.start_line + 1;
-            let relative_end = end - symbol.start_line + 1;
+            let source_lines: Vec<_> = unit.source.lines().collect();
+            let relative_start = start - unit.start_line + 1;
+            let relative_end = end - unit.start_line + 1;
             ExplanationRegion {
                 id: index + 1,
                 start_line: relative_start,
@@ -254,14 +267,14 @@ pub fn regions_for(change: &FileChange, symbol: &SourceSymbol) -> Vec<Explanatio
         .collect()
 }
 
-fn regions_for_change(change: &FileChange, symbol: &SourceSymbol) -> Vec<ExplanationRegion> {
-    let regions = regions_for(change, symbol);
+fn regions_for_change(change: &FileChange, unit: &SourceUnit) -> Vec<ExplanationRegion> {
+    let regions = regions_for(change, unit);
     if regions.is_empty() {
         vec![ExplanationRegion {
             id: 1,
             start_line: 1,
-            end_line: symbol.source.lines().count().max(1),
-            source: symbol.source.clone(),
+            end_line: unit.source.lines().count().max(1),
+            source: unit.source.clone(),
         }]
     } else {
         regions
@@ -273,15 +286,15 @@ pub async fn explain_items(
     model_provider: impl ExplanationProvider,
     context: &AnalysisContext,
     deep: bool,
-) -> Result<Vec<ExplainedFunction>> {
+) -> Result<Vec<ExplainedUnit>> {
     let mut all = vec![];
     for c in changes {
-        for s in symbols_from_provider(source_provider, c)? {
+        for s in units_from_provider(source_provider, c)? {
             let regions = regions_for_change(c, &s);
             let diff = relevant_diff(c, &s);
             let e = match model_provider
                 .explain(ExplanationRequest {
-                    function: s.source.clone(),
+                    source_unit: s.source.clone(),
                     unit_name: s.name.clone(),
                     unit_kind: format!("{:?}", s.kind),
                     diff: diff.clone(),
@@ -302,14 +315,14 @@ pub async fn explain_items(
                         c.path.display(),
                         s.name
                     );
-                    FunctionExplanation {
+                    UnitExplanation {
                         overview: "Explanation unavailable.".into(),
                         annotations: vec![],
                         deep: None,
                     }
                 }
             };
-            all.push(ExplainedFunction {
+            all.push(ExplainedUnit {
                 file: c.path.display().to_string(),
                 language: LanguageRegistry::language_for_path(&c.path)
                     .unwrap_or("unknown")

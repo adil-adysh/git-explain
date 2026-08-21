@@ -13,7 +13,7 @@ pub struct ExplanationRegion {
 
 #[derive(Clone, Debug)]
 pub struct ExplanationRequest {
-    pub function: String,
+    pub source_unit: String,
     pub unit_name: String,
     pub unit_kind: String,
     pub diff: String,
@@ -40,5 +40,5 @@ pub struct UnitExplanation {
 pub type FunctionExplanation = UnitExplanation;
 #[async_trait]
 pub trait ExplanationProvider: Send + Sync {
-    async fn explain(&self, request: ExplanationRequest) -> Result<FunctionExplanation>;
+    async fn explain(&self, request: ExplanationRequest) -> Result<UnitExplanation>;
 }

@@ -1,6 +1,6 @@
 use crate::{
     config::ServerConfig,
-    explain::ExplainedFunction,
+    explain::ExplainedUnit,
     model::{ExplanationProvider, ExplanationRequest},
     web,
 };
@@ -14,12 +14,12 @@ use axum::{
 use std::sync::Arc;
 
 struct State {
-    items: Vec<ExplainedFunction>,
+    items: Vec<ExplainedUnit>,
     context: crate::explain::AnalysisContext,
     provider: Arc<dyn ExplanationProvider>,
 }
 pub async fn serve(
-    items: Vec<ExplainedFunction>,
+    items: Vec<ExplainedUnit>,
     provider: impl ExplanationProvider + 'static,
     context: crate::explain::AnalysisContext,
     config: ServerConfig,
@@ -54,7 +54,7 @@ async fn deep(
         return Json(serde_json::json!({"ok":false,"deep":"Unknown code unit."}));
     };
     let request = ExplanationRequest {
-        function: item.unit.source.clone(),
+        source_unit: item.unit.source.clone(),
         unit_name: item.unit.name.clone(),
         unit_kind: format!("{:?}", item.unit.kind),
         diff: item.diff.clone(),
