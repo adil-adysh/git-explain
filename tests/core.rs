@@ -46,6 +46,36 @@ fn annotated_render_preserves_source_lines() {
 }
 
 #[test]
+fn initial_render_keeps_source_visible_without_explanation() {
+    let item = ExplainedUnit {
+        file: "src/example.rs".into(),
+        language: "Rust".into(),
+        diff: "+changed();".into(),
+        regions: vec![],
+        unit: SourceUnit {
+            name: "example".into(),
+            qualified_name: None,
+            kind: SourceUnitKind::Function,
+            start_line: 1,
+            end_line: 1,
+            source: "changed();".into(),
+        },
+        explanation: UnitExplanation {
+            overview: String::new(),
+            annotations: vec![],
+            deep: None,
+        },
+        deep_explanation: None,
+    };
+    let html = git_explain::web::render(&[item], &AnalysisContext::working_tree());
+    assert!(html.contains("Explanation has not been generated."));
+    assert!(html.contains("Generate explanation"));
+    assert!(html.contains("<button"));
+    assert!(html.contains("changed();"));
+    assert!(html.contains("aria-live=\"polite\""));
+}
+
+#[test]
 fn commit_render_identifies_revision_parent_and_deleted_files() {
     let context = AnalysisContext {
         mode: git_explain::explain::AnalysisMode::Commit {
