@@ -36,3 +36,7 @@ git explain
 ```
 
 The dedicated `git-explain-qwen35b` preset is defined in `D:\llama-cpp\models.ini` with reasoning disabled and `enable_thinking` disabled for concise JSON-compatible responses.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
