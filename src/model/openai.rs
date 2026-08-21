@@ -1,11 +1,11 @@
 use super::*;
 use crate::config::{ExplanationConfig, GenerationConfig, ModelConfig, ReaderConfig};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -45,9 +45,18 @@ impl OpenAiProvider {
         reader: ReaderConfig,
         explanation: ExplanationConfig,
     ) -> Self {
+        Self::from_config_with_timeout(model, reader, explanation, Duration::from_secs(120))
+    }
+
+    pub fn from_config_with_timeout(
+        model: ModelConfig,
+        reader: ReaderConfig,
+        explanation: ExplanationConfig,
+        timeout: Duration,
+    ) -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(120))
+                .timeout(timeout)
                 .build()
                 .expect("valid model HTTP client configuration"),
             kind: ProviderKind::from_name(&model.provider),
@@ -91,14 +100,14 @@ impl OpenAiProvider {
         let task = if request.deep {
             "Return exactly one JSON object with one required string field: explanation. Give a focused, step-by-step teaching explanation. Do not review, suggest rewrites, or speculate about intent."
         } else {
-            "Return exactly one JSON object with required fields overview and annotations. Keep overview to at most two sentences. Select only 1-3 regions that materially help understanding. Do not provide a tutorial, repeat the overview, explain trivial syntax, review code, suggest rewrites, or speculate about intent."
+            "Return exactly one JSON object with required fields overview and annotations. Keep overview to at most two sentences. Select only the configured number of regions that materially help understanding. Do not provide a tutorial, repeat the overview, explain trivial syntax, review code, suggest rewrites, or speculate about intent."
         };
         let prior = request
             .prior_explanation
             .as_deref()
             .map(|text| format!("\n\nNORMAL OVERVIEW:\n{text}"))
             .unwrap_or_default();
-        let prompt = format!("{task}\n\n{}\nProgramming language: {}\n{}\n\nFUNCTION:\n{}\n\nDETERMINISTIC SOURCE REGIONS:\n{}\n\nRELEVANT DIFF:\n{}{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}.", request.git_context, request.language, reader_context, request.function, regions, request.diff, prior, self.explanation.max_annotations, self.explanation.max_annotation_words, self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
+        let prompt = format!("{task}\n\n{}\nProgramming language: {}\n{}\n\nFUNCTION:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, reader_context, request.function, regions, request.diff, prior, self.explanation.max_annotations, self.explanation.max_annotation_words, self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
         Req {
             model: self.model.clone(),
             messages: vec![
@@ -167,6 +176,7 @@ impl OpenAiProvider {
                     annotation,
                     &request.regions,
                     self.explanation.max_annotation_words,
+                    !self.kind.is_llama_cpp(),
                 )
             })
             .take(self.explanation.max_annotations as usize)
@@ -201,14 +211,36 @@ struct Msg {
 #[derive(Deserialize)]
 struct Resp {
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<Usage>,
 }
 #[derive(Deserialize)]
 struct Choice {
     message: MsgOut,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 #[derive(Deserialize)]
 struct MsgOut {
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default, rename = "reasoning_content")]
+    _reasoning_content: Option<String>,
+}
+#[derive(Deserialize, Default)]
+struct Usage {
+    #[serde(default)]
+    prompt_tokens: Option<u32>,
+    #[serde(default)]
+    completion_tokens: Option<u32>,
+}
+impl Usage {
+    fn summary(&self) -> String {
+        format!(
+            "prompt_tokens={:?}, completion_tokens={:?}",
+            self.prompt_tokens, self.completion_tokens
+        )
+    }
 }
 #[derive(Deserialize)]
 struct RawResponse {
@@ -230,6 +262,7 @@ fn map_annotation(
     annotation: RawAnnotation,
     regions: &[ExplanationRegion],
     max_words: u32,
+    allow_legacy_lines: bool,
 ) -> Option<Annotation> {
     let kind = annotation.kind.unwrap_or_else(|| "context".into());
     if !matches!(kind.as_str(), "change" | "concept" | "flow" | "context") {
@@ -238,8 +271,10 @@ fn map_annotation(
     let (start_line, end_line) = if let Some(id) = annotation.region {
         let region = regions.iter().find(|region| region.id == id)?;
         (region.start_line, region.end_line)
-    } else {
+    } else if allow_legacy_lines {
         (annotation.start_line?, annotation.end_line?)
+    } else {
+        return None;
     };
     Some(Annotation {
         start_line,
@@ -270,21 +305,8 @@ fn strip_reasoning(text: &str) -> String {
     clean_content(text)
 }
 fn clean_content(raw: &str) -> String {
-    let trimmed = raw.trim();
-    let after_thinking = if trimmed.starts_with("<think>") {
-        trimmed
-            .find("</think>")
-            .map(|index| &trimmed[index + "</think>".len()..])
-            .unwrap_or(trimmed)
-    } else if trimmed.starts_with("<|thinking|>") {
-        trimmed
-            .find("</|thinking|>")
-            .map(|index| &trimmed[index + "</|thinking|>".len()..])
-            .unwrap_or(trimmed)
-    } else {
-        trimmed
-    }
-    .trim();
+    let trimmed = strip_reasoning_sections(raw.trim());
+    let after_thinking = trimmed.trim();
     let without_fence = after_thinking
         .strip_prefix("```json")
         .or_else(|| after_thinking.strip_prefix("```"))
@@ -295,6 +317,25 @@ fn clean_content(raw: &str) -> String {
         .unwrap_or(without_fence)
         .trim()
         .to_string()
+}
+
+fn strip_reasoning_sections(raw: &str) -> String {
+    let mut result = raw.to_string();
+    for (open, close) in [("<think>", "</think>"), ("<|thinking|>", "</|thinking|>")] {
+        loop {
+            let Some(start) = result.find(open) else {
+                break;
+            };
+            let tail = &result[start + open.len()..];
+            if let Some(end) = tail.find(close) {
+                result.replace_range(start..start + open.len() + end + close.len(), "");
+            } else {
+                result.truncate(start);
+                break;
+            }
+        }
+    }
+    result.trim().to_string()
 }
 
 fn normal_schema() -> Value {
@@ -318,6 +359,7 @@ impl ExplanationProvider for OpenAiProvider {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
+        let started = Instant::now();
         let response: Resp = req
             .send()
             .await
@@ -327,14 +369,39 @@ impl ExplanationProvider for OpenAiProvider {
             .json()
             .await
             .context("model JSON envelope")?;
-        let content = response
+        let choice = response
             .choices
             .first()
-            .context("model returned no choices")?
-            .message
-            .content
-            .clone();
-        self.parse_response(&content, &request)
+            .context("model returned no choices")?;
+        let usage = response
+            .usage
+            .as_ref()
+            .map(Usage::summary)
+            .unwrap_or_else(|| "usage unavailable".into());
+        eprintln!(
+            "model request: provider={:?} model={} duration_ms={} finish_reason={:?} {}",
+            self.kind,
+            self.model,
+            started.elapsed().as_millis(),
+            choice.finish_reason,
+            usage
+        );
+        if choice.finish_reason.as_deref() == Some("length") {
+            bail!("model response truncated at token limit ({usage})");
+        }
+        let content = choice.message.content.clone().unwrap_or_default();
+        if content.trim().is_empty() {
+            if choice.message._reasoning_content.is_some() {
+                bail!("model returned reasoning separately but no visible answer ({usage})");
+            }
+            bail!("model returned empty content ({usage})");
+        }
+        self.parse_response(&content, &request).with_context(|| {
+            format!(
+                "invalid structured model content (finish_reason={:?}; {usage})",
+                choice.finish_reason
+            )
+        })
     }
 }
 
@@ -434,6 +501,10 @@ mod tests {
                 .get("deep_explanation")
                 .is_none()
         );
+        assert!(value["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("+changed"));
     }
     #[test]
     fn generic_provider_keeps_json_object_fallback() {
@@ -460,6 +531,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(deep.deep.as_deref(), Some("Visible explanation."));
+    }
+
+    #[test]
+    fn llama_annotations_must_use_deterministic_regions() {
+        let p = provider("llama_cpp");
+        let r = request(false);
+        let parsed = p
+            .parse_response(
+                r#"{"overview":"Short.","annotations":[{"start_line":1,"end_line":1,"kind":"change","text":"Wrong contract."}]}"#,
+                &r,
+            )
+            .unwrap();
+        assert!(parsed.annotations.is_empty());
+    }
+
+    #[test]
+    fn reasoning_markers_are_removed_even_when_embedded() {
+        let p = provider("llama_cpp");
+        let r = request(false);
+        let parsed = p
+            .parse_response(
+                r#"{"overview":"Before <think>secret</think> after.","annotations":[{"region":1,"kind":"context","text":"Visible <|thinking|>hidden</|thinking|> text."}]}"#,
+                &r,
+            )
+            .unwrap();
+        assert_eq!(parsed.overview, "Before after.");
+        assert_eq!(parsed.annotations[0].text, "Visible text.");
     }
     #[test]
     fn malformed_output_is_rejected() {

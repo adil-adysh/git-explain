@@ -100,6 +100,7 @@ impl AnalysisContext {
 pub struct ExplainedFunction {
     pub file: String,
     pub language: String,
+    pub diff: String,
     pub regions: Vec<ExplanationRegion>,
     pub symbol: SourceSymbol,
     pub explanation: FunctionExplanation,
@@ -275,10 +276,11 @@ pub async fn explain_items(
     for c in changes {
         for s in symbols_from_provider(source_provider, c)? {
             let regions = regions_for_change(c, &s);
-            let e = model_provider
+            let diff = relevant_diff(c, &s);
+            let e = match model_provider
                 .explain(ExplanationRequest {
                     function: s.source.clone(),
-                    diff: relevant_diff(c, &s),
+                    diff: diff.clone(),
                     language: LanguageRegistry::language_for_path(&c.path)
                         .unwrap_or("unknown")
                         .into(),
@@ -288,16 +290,27 @@ pub async fn explain_items(
                     deep,
                 })
                 .await
-                .unwrap_or(FunctionExplanation {
-                    overview: "Explanation unavailable.".into(),
-                    annotations: vec![],
-                    deep: None,
-                });
+            {
+                Ok(explanation) => explanation,
+                Err(error) => {
+                    eprintln!(
+                        "{} / {}: explanation request failed: {error:#}",
+                        c.path.display(),
+                        s.name
+                    );
+                    FunctionExplanation {
+                        overview: "Explanation unavailable.".into(),
+                        annotations: vec![],
+                        deep: None,
+                    }
+                }
+            };
             all.push(ExplainedFunction {
                 file: c.path.display().to_string(),
                 language: LanguageRegistry::language_for_path(&c.path)
                     .unwrap_or("unknown")
                     .into(),
+                diff,
                 regions,
                 symbol: s,
                 explanation: e,

@@ -54,7 +54,7 @@ async fn deep(
     };
     let request = ExplanationRequest {
         function: item.symbol.source.clone(),
-        diff: String::new(),
+        diff: item.diff.clone(),
         language: item.language.clone(),
         git_context: state.context.prompt_context(),
         regions: item.regions.clone(),
@@ -63,6 +63,12 @@ async fn deep(
     };
     match state.provider.explain(request).await {
         Ok(e) => Json(serde_json::json!({"ok":true,"deep":e.deep.unwrap_or(e.overview)})),
-        Err(_) => Json(serde_json::json!({"ok":false,"deep":"Detailed explanation unavailable."})),
+        Err(error) => {
+            eprintln!(
+                "deep explanation request failed for {}: {error:#}",
+                item.symbol.name
+            );
+            Json(serde_json::json!({"ok":false,"deep":"Detailed explanation unavailable."}))
+        }
     }
 }
