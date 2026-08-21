@@ -3,7 +3,14 @@ use git_explain::config::{ExplanationConfig, GenerationConfig, ModelConfig, Read
 use git_explain::model::openai::OpenAiProvider;
 use git_explain::model::{ExplanationProvider, ExplanationRegion, ExplanationRequest};
 use serde_json::json;
-use std::{convert::Infallible, time::Duration};
+use std::{
+    convert::Infallible,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::sync::oneshot;
 
 fn provider(base_url: String, timeout: Duration) -> OpenAiProvider {
@@ -145,6 +152,46 @@ async fn reports_invalid_json_with_finish_and_usage_metadata() {
     assert!(error.contains("invalid structured model content"));
     assert!(error.contains("finish_reason=Some(\"stop\")"));
     assert!(error.contains("completion_tokens=Some(42)"));
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn retries_malformed_structured_output_once_then_accepts_valid_output() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let attempt = seen.fetch_add(1, Ordering::SeqCst);
+            async move {
+                let content = if attempt == 0 {
+                    "not json"
+                } else {
+                    r#"{"overview":"Recovered.","annotations":[]}"#
+                };
+                axum::Json(
+                    json!({"choices":[{"finish_reason":"stop","message":{"content":content}}]}),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown, signal) = oneshot::channel();
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = signal.await;
+            })
+            .await
+            .unwrap();
+    });
+    let result = provider(format!("http://{}/v1", address), Duration::from_secs(2))
+        .explain(request(false))
+        .await
+        .unwrap();
+    assert_eq!(result.overview, "Recovered.");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
     let _ = shutdown.send(());
 }
 
