@@ -1,7 +1,11 @@
+pub mod analyzer;
 pub mod cache;
 pub mod config;
 pub mod diff;
 pub mod explain;
+pub mod git;
 pub mod language;
 pub mod model;
+pub mod runtime;
+pub mod snapshot;
 pub mod web;

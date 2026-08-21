@@ -2,6 +2,7 @@ use crate::{
     diff::{ChangeKind, FileChange},
     language::{LanguageRegistry, SourceSymbol, SourceUnit},
     model::{ExplanationProvider, ExplanationRegion, ExplanationRequest, UnitExplanation},
+    snapshot::UnitId,
 };
 use anyhow::Context;
 use anyhow::Result;
@@ -98,6 +99,7 @@ impl AnalysisContext {
 }
 #[derive(Clone)]
 pub struct ExplainedUnit {
+    pub id: UnitId,
     pub file: String,
     pub language: String,
     pub diff: String,
@@ -158,6 +160,7 @@ pub fn analysis_items(
     for c in changes {
         for unit in units_from_provider(source_provider, c)? {
             all.push(ExplainedUnit {
+                id: UnitId("pending".into()),
                 file: c.path.display().to_string(),
                 language: LanguageRegistry::language_for_path(&c.path)
                     .unwrap_or("unknown")
@@ -176,11 +179,15 @@ pub fn analysis_items(
     }
     Ok(all)
 }
-pub fn print_debug(
-    provider: &dyn SourceProvider,
-    changes: &[FileChange],
-    context: &AnalysisContext,
-) -> Result<()> {
+pub fn print_debug(snapshot: &crate::snapshot::AnalysisSnapshot) -> Result<()> {
+    let changes = &snapshot.changes;
+    let context = &snapshot.context;
+    println!(
+        "Snapshot generation: {}\nSnapshot mode: {}\nSnapshot identity: {}\n",
+        snapshot.generation.0,
+        snapshot.identity.mode(),
+        snapshot.identity.short()
+    );
     match &context.mode {
         AnalysisMode::WorkingTree => println!("Mode: working tree\n"),
         AnalysisMode::Commit {
@@ -215,7 +222,12 @@ pub fn print_debug(
             println!("Deleted file: {}\nDetailed annotated source explanation is not currently supported.\n", c.path.display());
             continue;
         }
-        for s in units_from_provider(provider, c)? {
+        for item in snapshot
+            .units
+            .iter()
+            .filter(|item| item.file == c.path.display().to_string())
+        {
+            let s = &item.unit;
             println!(
                 "{}\n\nChanged unit:\nkind: {:?}\nname: {}\nlines {}-{}\n\n{}",
                 c.path.display(),
@@ -225,6 +237,7 @@ pub fn print_debug(
                 s.end_line,
                 s.source
             );
+            println!("id: {}", item.id);
             println!("Regions:");
             for region in regions_for_change(c, &s) {
                 println!(
@@ -350,6 +363,7 @@ pub async fn explain_items(
                 }
             };
             all.push(ExplainedUnit {
+                id: UnitId("pending".into()),
                 file: c.path.display().to_string(),
                 language: LanguageRegistry::language_for_path(&c.path)
                     .unwrap_or("unknown")

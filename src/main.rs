@@ -1,26 +1,31 @@
+mod analyzer;
 mod cache;
 mod cli;
 mod config;
+mod daemon;
 mod diff;
 mod explain;
 mod git;
 mod language;
 mod model;
+mod runtime;
 mod server;
+mod snapshot;
 mod web;
 
+use analyzer::RepositoryAnalyzer;
 use anyhow::Result;
 use clap::Parser;
 use cli::{CacheAction, Cli, Command, ConfigAction};
 use config::{format_show, init_user_config, ConfigLoader};
-use explain::{
-    AnalysisContext, AnalysisMode, GitCommitSourceProvider, SourceProvider,
-    WorkingTreeSourceProvider,
-};
+use snapshot::SnapshotGeneration;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::Daemon(command)) = &cli.command {
+        return daemon::command(&command.action).await;
+    }
     if let Some(Command::Config(command)) = &cli.command {
         let repository = git::repository_root().ok();
         let loader = ConfigLoader::for_repository(repository.as_deref())?;
@@ -73,40 +78,52 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
-    let (changes, source_provider, context): (Vec<_>, Box<dyn SourceProvider>, AnalysisContext) =
-        if let Some(revision) = cli.revision.as_deref() {
-            let analysis = git::commit_analysis(&repo, revision)?;
-            let context = AnalysisContext {
-                mode: AnalysisMode::Commit {
-                    oid: analysis.oid.clone(),
-                    parent_oid: analysis.parent_oid.clone(),
-                    subject: analysis.subject.clone(),
-                    merge_parent_count: analysis.parent_count,
-                },
-                deleted_files: analysis
-                    .changes
-                    .iter()
-                    .filter(|change| change.kind == crate::diff::ChangeKind::Deleted)
-                    .map(|change| change.path.display().to_string())
-                    .collect(),
-            };
-            (
-                analysis.changes,
-                Box::new(GitCommitSourceProvider::new(&repo, analysis.oid)),
-                context,
-            )
-        } else {
-            (
-                git::working_tree_changes(&repo, &resolved.git)?,
-                Box::new(WorkingTreeSourceProvider::new(&repo)),
-                AnalysisContext::working_tree(),
-            )
-        };
-    if changes.is_empty() {
+    if !cli.debug && !cli.direct {
+        return daemon::open_repository(
+            &repo,
+            cli.revision.as_deref(),
+            cli.profile.as_deref(),
+            cli.port,
+        )
+        .await;
+    }
+    if cli.direct {
+        return run_direct(repo, resolved, cli.revision.as_deref(), cli.port, cli.debug).await;
+    }
+    let analyzer = RepositoryAnalyzer::new(&repo, resolved.clone());
+    let snapshot = if let Some(revision) = cli.revision.as_deref() {
+        analyzer.analyze_commit(revision, SnapshotGeneration(1))?
+    } else {
+        analyzer.analyze_working_tree(SnapshotGeneration(1))?
+    };
+    if snapshot.changes.is_empty() {
         anyhow::bail!("No supported changes found for analysis.");
     }
     if cli.debug {
-        explain::print_debug(source_provider.as_ref(), &changes, &context)?;
+        explain::print_debug(&snapshot)?;
+        return Ok(());
+    }
+    unreachable!("debug path returned above")
+}
+
+async fn run_direct(
+    repo: std::path::PathBuf,
+    resolved: config::ResolvedConfig,
+    revision: Option<&str>,
+    port: Option<u16>,
+    debug: bool,
+) -> Result<()> {
+    let analyzer = RepositoryAnalyzer::new(&repo, resolved.clone());
+    let snapshot = if let Some(revision) = revision {
+        analyzer.analyze_commit(revision, SnapshotGeneration(1))?
+    } else {
+        analyzer.analyze_working_tree(SnapshotGeneration(1))?
+    };
+    if snapshot.changes.is_empty() {
+        anyhow::bail!("No supported changes found for analysis.");
+    }
+    if debug {
+        explain::print_debug(&snapshot)?;
         return Ok(());
     }
     let provider = model::openai::OpenAiProvider::from_config(
@@ -114,9 +131,8 @@ async fn main() -> Result<()> {
         resolved.reader.clone(),
         resolved.explanation.clone(),
     );
-    let items = explain::analysis_items(source_provider.as_ref(), &changes)?;
     let mut server = resolved.server;
-    if let Some(port) = cli.port {
+    if let Some(port) = port {
         server.port = port;
     }
     let cache = if resolved.cache.enabled {
@@ -125,9 +141,8 @@ async fn main() -> Result<()> {
         None
     };
     server::serve(
-        items,
+        snapshot,
         provider,
-        context,
         server,
         cache,
         resolved.model,

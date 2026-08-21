@@ -1,8 +1,10 @@
 use crate::{
     cache::ExplanationCache,
     config::{ExplanationConfig, ModelConfig, ReaderConfig, ServerConfig},
-    explain::{AnalysisContext, ExplainedUnit},
-    model::{ExplanationProvider, ExplanationRequest, UnitExplanation},
+    explain::ExplainedUnit,
+    model::{ExplanationProvider, UnitExplanation},
+    runtime,
+    snapshot::{AnalysisSnapshot, SnapshotGeneration, UnitId},
     web,
 };
 use anyhow::Result;
@@ -12,41 +14,53 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use std::sync::{Arc, Mutex};
+use serde::Deserialize;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 struct StateData {
-    items: Mutex<Vec<ExplainedUnit>>,
-    context: AnalysisContext,
+    snapshot: AnalysisSnapshot,
+    items: Mutex<HashMap<UnitId, ExplainedUnit>>,
     provider: Arc<dyn ExplanationProvider>,
     cache: Option<ExplanationCache>,
     model: ModelConfig,
     reader: ReaderConfig,
     explanation: ExplanationConfig,
 }
+#[derive(Debug, Deserialize)]
+struct SnapshotRequest {
+    generation: Option<SnapshotGeneration>,
+}
 pub async fn serve(
-    items: Vec<ExplainedUnit>,
+    snapshot: AnalysisSnapshot,
     provider: impl ExplanationProvider + 'static,
-    context: AnalysisContext,
     config: ServerConfig,
     cache: Option<ExplanationCache>,
     model: ModelConfig,
     reader: ReaderConfig,
     explanation: ExplanationConfig,
 ) -> Result<()> {
-    let mut items = items;
+    let mut items: HashMap<_, _> = snapshot
+        .units
+        .iter()
+        .cloned()
+        .map(|item| (item.id.clone(), item))
+        .collect();
     if let Some(cache_ref) = &cache {
-        hydrate(
+        runtime::hydrate(
             &mut items,
             cache_ref,
-            &context,
+            &snapshot,
             &model,
             &reader,
             &explanation,
         );
     }
     let state = Arc::new(StateData {
+        snapshot,
         items: Mutex::new(items),
-        context,
         provider: Arc::new(provider),
         cache,
         model,
@@ -70,108 +84,71 @@ pub async fn serve(
     axum::serve(listener, app).await?;
     Ok(())
 }
-fn hydrate(
-    items: &mut [ExplainedUnit],
-    cache: &ExplanationCache,
-    context: &AnalysisContext,
-    model: &ModelConfig,
-    reader: &ReaderConfig,
-    explanation: &ExplanationConfig,
-) {
-    for item in items {
-        for deep in [false, true] {
-            let request = ExplanationRequest {
-                source_unit: item.unit.source.clone(),
-                unit_name: item
-                    .unit
-                    .qualified_name
-                    .clone()
-                    .unwrap_or_else(|| item.unit.name.clone()),
-                unit_kind: format!("{:?}", item.unit.kind),
-                diff: item.diff.clone(),
-                language: item.language.clone(),
-                git_context: context.prompt_context(),
-                regions: item.regions.clone(),
-                prior_explanation: deep
-                    .then_some(item.explanation.overview.clone())
-                    .filter(|s| !s.is_empty()),
-                deep,
-            };
-            let key = ExplanationCache::key(&request, model, reader, explanation);
-            if let Ok(Some(json)) = cache.get(&key) {
-                if let Ok(e) = serde_json::from_str::<UnitExplanation>(&json) {
-                    if deep {
-                        item.deep_explanation =
-                            e.deep.or((!e.overview.is_empty()).then_some(e.overview));
-                    } else {
-                        item.explanation = e;
-                    }
-                }
-            }
-        }
-    }
-}
 async fn index(State(state): State<Arc<StateData>>) -> Html<String> {
-    Html(web::render(&state.items.lock().unwrap(), &state.context))
+    let items = state.items.lock().unwrap();
+    let ordered: Vec<_> = state
+        .snapshot
+        .units
+        .iter()
+        .filter_map(|unit| items.get(&unit.id))
+        .cloned()
+        .collect();
+    Html(web::render(&ordered, &state.snapshot.context))
 }
 async fn explain(
-    Path(id): Path<usize>,
+    Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
+    body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, false, false, state).await
+    generate(id, false, false, body.map(|Json(body)| body), state).await
 }
 async fn deep(
-    Path(id): Path<usize>,
+    Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
+    body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, true, false, state).await
+    generate(id, true, false, body.map(|Json(body)| body), state).await
 }
 async fn deep_regenerate(
-    Path(id): Path<usize>,
+    Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
+    body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, true, true, state).await
+    generate(id, true, true, body.map(|Json(body)| body), state).await
 }
 async fn regenerate(
-    Path(id): Path<usize>,
+    Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
+    body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, false, true, state).await
+    generate(id, false, true, body.map(|Json(body)| body), state).await
 }
 async fn generate(
-    id: usize,
+    id: String,
     deep: bool,
     regenerate: bool,
+    body: Option<SnapshotRequest>,
     state: Arc<StateData>,
 ) -> Json<serde_json::Value> {
-    let item = { state.items.lock().unwrap().get(id).cloned() };
+    let requested = body.and_then(|body| body.generation);
+    if requested.is_some_and(|generation| generation != state.snapshot.generation) {
+        return stale();
+    }
+    let unit_id = UnitId(id);
+    let item = { state.items.lock().unwrap().get(&unit_id).cloned() };
     let Some(item) = item else {
         return Json(serde_json::json!({"ok":false,"error":"Unknown code unit."}));
     };
-    let request = ExplanationRequest {
-        source_unit: item.unit.source.clone(),
-        unit_name: item
-            .unit
-            .qualified_name
-            .clone()
-            .unwrap_or_else(|| item.unit.name.clone()),
-        unit_kind: format!("{:?}", item.unit.kind),
-        diff: item.diff.clone(),
-        language: item.language.clone(),
-        git_context: state.context.prompt_context(),
-        regions: item.regions.clone(),
-        prior_explanation: deep
-            .then_some(item.explanation.overview.clone())
-            .filter(|s| !s.is_empty()),
-        deep,
-    };
+    let request = runtime::request_for(&item, &state.snapshot.context, deep);
     let key = ExplanationCache::key(&request, &state.model, &state.reader, &state.explanation);
     if !regenerate {
         if let Some(cache) = &state.cache {
             if let Ok(Some(json)) = cache.get(&key) {
                 if let Ok(e) = serde_json::from_str::<UnitExplanation>(&json) {
-                    update(&state, id, e.clone(), deep);
-                    return Json(result(e, true, deep));
+                    if update(&state, &unit_id, state.snapshot.generation, e.clone(), deep) {
+                        return Json(runtime::result(e, true, deep));
+                    }
+                    return stale();
                 }
             }
         }
@@ -186,24 +163,35 @@ async fn generate(
                     &serde_json::to_string(&e).unwrap(),
                 );
             }
-            update(&state, id, e.clone(), deep);
-            Json(result(e, false, deep))
+            if update(&state, &unit_id, state.snapshot.generation, e.clone(), deep) {
+                Json(runtime::result(e, false, deep))
+            } else {
+                stale()
+            }
         }
         Err(error) => {
-            eprintln!("unit {} explanation failed: {error:#}", id);
+            eprintln!("unit {} explanation failed: {error:#}", unit_id);
             Json(serde_json::json!({"ok":false,"error":"Explanation unavailable."}))
         }
     }
 }
-fn update(state: &StateData, id: usize, e: UnitExplanation, deep: bool) {
-    if let Some(item) = state.items.lock().unwrap().get_mut(id) {
-        if deep {
-            item.deep_explanation = e.deep.or((!e.overview.is_empty()).then_some(e.overview));
-        } else {
-            item.explanation = e;
-        }
+fn update(
+    state: &StateData,
+    id: &UnitId,
+    generation: SnapshotGeneration,
+    e: UnitExplanation,
+    deep: bool,
+) -> bool {
+    if generation != state.snapshot.generation {
+        return false;
     }
+    let mut items = state.items.lock().unwrap();
+    let Some(item) = items.get_mut(id) else {
+        return false;
+    };
+    runtime::apply(item, e, deep);
+    true
 }
-fn result(e: UnitExplanation, hit: bool, deep: bool) -> serde_json::Value {
-    serde_json::json!({"ok":true,"cache_hit":hit,"overview":e.overview,"annotations":e.annotations,"deep":e.deep,"mode":if deep{"deep"}else{"normal"}})
+fn stale() -> Json<serde_json::Value> {
+    Json(serde_json::json!({"ok":false,"stale":true,"error":"Repository snapshot has changed."}))
 }

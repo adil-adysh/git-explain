@@ -48,6 +48,9 @@ pub fn working_tree_changes(root: &Path, config: &GitConfig) -> Result<Vec<FileC
     }
     parse_unified_diff(&String::from_utf8(out.stdout)?)
 }
+pub fn head_oid(root: &Path) -> Result<String> {
+    git_output(root, &["rev-parse", "HEAD"])
+}
 
 #[derive(Clone, Debug)]
 pub struct CommitAnalysis {

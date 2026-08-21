@@ -20,6 +20,8 @@ pub struct Cli {
     pub profile: Option<String>,
     #[arg(long, help = "Override the configured web-server port")]
     pub port: Option<u16>,
+    #[arg(long, hide = true, help = "Use the original one-shot server path")]
+    pub direct: bool,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -28,6 +30,22 @@ pub struct Cli {
 pub enum Command {
     Config(ConfigCommand),
     Cache(CacheCommand),
+    Daemon(DaemonCommand),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct DaemonCommand {
+    #[command(subcommand)]
+    pub action: DaemonAction,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum DaemonAction {
+    Start,
+    Stop,
+    Status,
+    Refresh,
+    Run,
 }
 
 #[derive(Clone, Debug, Args)]
