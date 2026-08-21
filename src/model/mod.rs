@@ -4,11 +4,21 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
+pub struct ExplanationRegion {
+    pub id: usize,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub source: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct ExplanationRequest {
     pub function: String,
     pub diff: String,
     pub language: String,
     pub git_context: String,
+    pub regions: Vec<ExplanationRegion>,
+    pub prior_explanation: Option<String>,
     pub deep: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

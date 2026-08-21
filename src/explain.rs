@@ -1,7 +1,7 @@
 use crate::{
     diff::{ChangeKind, FileChange},
     language::{LanguageRegistry, SourceSymbol},
-    model::{ExplanationProvider, ExplanationRequest, FunctionExplanation},
+    model::{ExplanationProvider, ExplanationRegion, ExplanationRequest, FunctionExplanation},
 };
 use anyhow::Context;
 use anyhow::Result;
@@ -100,6 +100,7 @@ impl AnalysisContext {
 pub struct ExplainedFunction {
     pub file: String,
     pub language: String,
+    pub regions: Vec<ExplanationRegion>,
     pub symbol: SourceSymbol,
     pub explanation: FunctionExplanation,
 }
@@ -182,6 +183,13 @@ pub fn print_debug(
                 s.end_line,
                 s.source
             );
+            println!("Regions:");
+            for region in regions_for_change(c, &s) {
+                println!(
+                    "\nRegion {}\nlines {}-{}\n{}",
+                    region.id, region.start_line, region.end_line, region.source
+                );
+            }
         }
     }
     Ok(())
@@ -215,6 +223,47 @@ fn relevant_diff(change: &FileChange, symbol: &SourceSymbol) -> String {
     }
     result
 }
+
+pub fn regions_for(change: &FileChange, symbol: &SourceSymbol) -> Vec<ExplanationRegion> {
+    change
+        .ranges
+        .iter()
+        .filter_map(|range| {
+            let start = range.start.max(symbol.start_line);
+            let end = range.end.min(symbol.end_line);
+            (start <= end).then_some((start, end))
+        })
+        .enumerate()
+        .map(|(index, (start, end))| {
+            let source_lines: Vec<_> = symbol.source.lines().collect();
+            let relative_start = start - symbol.start_line + 1;
+            let relative_end = end - symbol.start_line + 1;
+            ExplanationRegion {
+                id: index + 1,
+                start_line: relative_start,
+                end_line: relative_end,
+                source: source_lines
+                    .get(relative_start.saturating_sub(1)..relative_end.min(source_lines.len()))
+                    .unwrap_or(&[])
+                    .join("\n"),
+            }
+        })
+        .collect()
+}
+
+fn regions_for_change(change: &FileChange, symbol: &SourceSymbol) -> Vec<ExplanationRegion> {
+    let regions = regions_for(change, symbol);
+    if regions.is_empty() {
+        vec![ExplanationRegion {
+            id: 1,
+            start_line: 1,
+            end_line: symbol.source.lines().count().max(1),
+            source: symbol.source.clone(),
+        }]
+    } else {
+        regions
+    }
+}
 pub async fn explain_items(
     source_provider: &dyn SourceProvider,
     changes: &[FileChange],
@@ -225,6 +274,7 @@ pub async fn explain_items(
     let mut all = vec![];
     for c in changes {
         for s in symbols_from_provider(source_provider, c)? {
+            let regions = regions_for_change(c, &s);
             let e = model_provider
                 .explain(ExplanationRequest {
                     function: s.source.clone(),
@@ -233,6 +283,8 @@ pub async fn explain_items(
                         .unwrap_or("unknown")
                         .into(),
                     git_context: context.prompt_context(),
+                    regions: regions.clone(),
+                    prior_explanation: None,
                     deep,
                 })
                 .await
@@ -246,6 +298,7 @@ pub async fn explain_items(
                 language: LanguageRegistry::language_for_path(&c.path)
                     .unwrap_or("unknown")
                     .into(),
+                regions,
                 symbol: s,
                 explanation: e,
             });
@@ -282,5 +335,29 @@ mod tests {
         let diff = relevant_diff(&change, &symbol);
         assert!(diff.contains("new one"));
         assert!(!diff.contains("new two"));
+    }
+
+    #[test]
+    fn regions_are_relative_to_the_selected_function() {
+        let change = FileChange {
+            path: PathBuf::from("src/users.rs"),
+            old_path: None,
+            kind: crate::diff::ChangeKind::Modified,
+            ranges: vec![LineRange { start: 4, end: 5 }],
+            diff: String::new(),
+        };
+        let symbol = SourceSymbol {
+            name: "first".into(),
+            kind: SymbolKind::Function,
+            start_line: 3,
+            end_line: 7,
+            source: "fn first() {\n    let a = 1;\n    changed();\n    finish();\n}".into(),
+        };
+
+        let regions = regions_for(&change, &symbol);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].id, 1);
+        assert_eq!((regions[0].start_line, regions[0].end_line), (2, 3));
+        assert_eq!(regions[0].source, "    let a = 1;\n    changed();");
     }
 }

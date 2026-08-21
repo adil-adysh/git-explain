@@ -57,6 +57,8 @@ async fn deep(
         diff: String::new(),
         language: item.language.clone(),
         git_context: state.context.prompt_context(),
+        regions: item.regions.clone(),
+        prior_explanation: Some(item.explanation.overview.clone()),
         deep: true,
     };
     match state.provider.explain(request).await {

@@ -91,10 +91,6 @@ async fn main() -> Result<()> {
         explain::print_debug(source_provider.as_ref(), &changes, &context)?;
         return Ok(());
     }
-    let default_depth_deep = resolved
-        .explanation
-        .default_depth
-        .eq_ignore_ascii_case("deep");
     let provider = model::openai::OpenAiProvider::from_config(
         resolved.model,
         resolved.reader,
@@ -105,7 +101,7 @@ async fn main() -> Result<()> {
         &changes,
         provider.clone(),
         &context,
-        default_depth_deep,
+        false,
     )
     .await?;
     let mut server = resolved.server;
