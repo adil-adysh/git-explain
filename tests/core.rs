@@ -16,6 +16,7 @@ fn annotated_render_preserves_source_lines() {
     let item = ExplainedFunction {
         file: "src/example.rs".into(),
         language: "Rust".into(),
+        diff: "+changed();".into(),
         regions: vec![],
         symbol: SourceSymbol {
             name: "example".into(),
