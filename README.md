@@ -40,7 +40,21 @@ Only changed supported-language functions and their relevant Git diff are sent t
 
 The analyzer registry supports Rust (`.rs`), Python (`.py`), Go (`.go`), Java (`.java`), C# (`.cs`), TypeScript (`.ts`, `.tsx`), JavaScript (`.js`, `.jsx`), C (`.c`), and C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`). A single change set may contain any mix of these files; unsupported files are ignored without preventing supported files from being explained. Python decorators, async functions, class methods, and nested functions are included where relevant. Go functions and pointer/value receiver methods are qualified by name, such as `Service.Authenticate`.
 
-The local explanation page runs at `http://127.0.0.1:8081` by default. Set `GIT_EXPLAIN_BASE_URL` to the OpenAI-compatible model server you want to use; the model server must listen on a different port from the web page.
+The daemon explanation page runs at `http://127.0.0.1:8192` by default. The explicit `--direct` fallback uses the configured one-shot page port (8081 by default). Set `GIT_EXPLAIN_BASE_URL` to the OpenAI-compatible model server you want to use; the model server must listen on a different port from the web page.
+
+## Local daemon
+
+Normal web-mode commands use a local loopback-only daemon automatically:
+
+```text
+git explain
+git explain HEAD~1
+git explain daemon status
+git explain daemon refresh
+git explain daemon stop
+```
+
+The daemon normally listens on `127.0.0.1:8192`. It starts idle, then opens a repository session when `git explain` runs; sessions receive opaque IDs and remain isolated from one another. The most recently opened session is active for `git explain daemon refresh`, while previously opened sessions remain available until the bounded registry evicts the least recently used session. Refresh deterministically reanalyzes the active repository, compares snapshot identity, and atomically replaces the snapshot only when the repository changed. It never triggers model inference; the previous snapshot remains active while analysis runs. An open daemon page checks its session snapshot generation periodically and shows an accessible reload action when a newer snapshot is available. For troubleshooting, run `git explain daemon run` in the foreground. `git explain --direct` remains an explicit one-shot fallback.
 
 ## Configuration
 
