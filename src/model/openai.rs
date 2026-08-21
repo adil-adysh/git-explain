@@ -126,6 +126,14 @@ impl OpenAiProvider {
                 .kind
                 .is_llama_cpp()
                 .then(|| json!({"enable_thinking": generation.reasoning})),
+            reasoning_effort: self.kind.is_llama_cpp().then(|| {
+                if generation.reasoning {
+                    "high".into()
+                } else {
+                    "none".into()
+                }
+            }),
+            reasoning_format: self.kind.is_llama_cpp().then(|| "deepseek".into()),
         }
     }
 
@@ -180,6 +188,10 @@ struct Req {
     response_format: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     chat_template_kwargs: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_format: Option<String>,
 }
 #[derive(Serialize, Debug)]
 struct Msg {
@@ -391,6 +403,8 @@ mod tests {
         assert!((value["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
         assert_eq!(value["max_tokens"], 500);
         assert_eq!(value["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(value["reasoning_effort"], "none");
+        assert_eq!(value["reasoning_format"], "deepseek");
         assert_eq!(value["response_format"]["type"], "json_schema");
         assert_eq!(
             value["response_format"]["json_schema"]["schema"]["required"],
@@ -409,6 +423,8 @@ mod tests {
         assert!((value["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
         assert_eq!(value["max_tokens"], 2500);
         assert_eq!(value["chat_template_kwargs"]["enable_thinking"], true);
+        assert_eq!(value["reasoning_effort"], "high");
+        assert_eq!(value["reasoning_format"], "deepseek");
         assert_eq!(
             value["response_format"]["json_schema"]["schema"]["required"],
             json!(["explanation"])
@@ -426,6 +442,8 @@ mod tests {
                 .unwrap();
         assert_eq!(value["response_format"], json!({"type":"json_object"}));
         assert!(value.get("chat_template_kwargs").is_none());
+        assert!(value.get("reasoning_effort").is_none());
+        assert!(value.get("reasoning_format").is_none());
     }
     #[test]
     fn region_annotations_map_and_reasoning_is_removed() {
