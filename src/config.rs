@@ -16,6 +16,7 @@ pub struct ResolvedConfig {
     pub explanation: ExplanationConfig,
     pub server: ServerConfig,
     pub git: GitConfig,
+    pub cache: CacheConfig,
     pub paths: ConfigPaths,
 }
 
@@ -68,6 +69,11 @@ pub struct GitConfig {
     pub diff_target: String,
     pub include_staged: bool,
     pub include_untracked: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CacheConfig {
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -217,6 +223,9 @@ model = "ministral-3:8b"
 # explain_framework_concepts = true
 # infer_intent = false
 
+[cache]
+# enabled = true
+
 [server]
 # host = "127.0.0.1"
 # port = 8081
@@ -295,6 +304,7 @@ struct PartialConfig {
     explanation: Option<PartialExplanationConfig>,
     server: Option<PartialServerConfig>,
     git: Option<PartialGitConfig>,
+    cache: Option<PartialCacheConfig>,
 }
 
 impl PartialConfig {
@@ -317,6 +327,9 @@ impl PartialConfig {
             left.merge(right)
         });
         merge_option(&mut self.git, other.git, |left, right| left.merge(right));
+        merge_option(&mut self.cache, other.cache, |left, right| {
+            left.merge(right)
+        });
     }
 }
 
@@ -482,6 +495,19 @@ struct PartialGitConfig {
     include_untracked: Option<bool>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartialCacheConfig {
+    enabled: Option<bool>,
+}
+impl PartialCacheConfig {
+    fn merge(&mut self, other: Self) {
+        if other.enabled.is_some() {
+            self.enabled = other.enabled;
+        }
+    }
+}
+
 impl PartialGitConfig {
     fn merge(&mut self, other: Self) {
         if other.diff_target.is_some() {
@@ -608,6 +634,9 @@ fn resolve(
         explanation: explanation_config(merged.explanation),
         server: server_config(merged.server),
         git: git_config(merged.git),
+        cache: CacheConfig {
+            enabled: merged.cache.and_then(|c| c.enabled).unwrap_or(true),
+        },
         paths: paths.clone(),
     })
 }

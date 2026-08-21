@@ -7,6 +7,8 @@ description = "Accessible local explanations for changed source code"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
+sha2 = "0.10"
+rusqlite = { version = "0.32", features = ["bundled"] }
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 directories = "5"

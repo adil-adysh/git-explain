@@ -27,6 +27,18 @@ pub struct Cli {
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
     Config(ConfigCommand),
+    Cache(CacheCommand),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct CacheCommand {
+    #[command(subcommand)]
+    pub action: CacheAction,
+}
+#[derive(Clone, Debug, Subcommand)]
+pub enum CacheAction {
+    Status,
+    Clear,
 }
 
 #[derive(Clone, Debug, Args)]

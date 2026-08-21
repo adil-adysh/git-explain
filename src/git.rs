@@ -16,6 +16,22 @@ pub fn repository_root() -> Result<PathBuf> {
     }
     Ok(PathBuf::from(String::from_utf8(out.stdout)?.trim()))
 }
+pub fn git_dir(root: &Path) -> Result<PathBuf> {
+    let out = Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .context("resolve Git directory")?;
+    if !out.status.success() {
+        anyhow::bail!("unable to resolve Git directory");
+    }
+    let path = PathBuf::from(String::from_utf8(out.stdout)?.trim());
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    })
+}
 pub fn working_tree_changes(root: &Path, config: &GitConfig) -> Result<Vec<FileChange>> {
     let mut args = vec!["diff".to_string(), "--unified=0".to_string()];
     if config.include_staged {
