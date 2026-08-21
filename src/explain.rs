@@ -1,5 +1,5 @@
 use crate::{
-    diff::{ChangeKind, FileChange},
+    diff::{ChangeKind, FileChange, LineRange},
     language::{LanguageRegistry, SourceSymbol, SourceUnit},
     model::{ExplanationProvider, ExplanationRegion, ExplanationRequest, UnitExplanation},
     snapshot::UnitId,
@@ -209,6 +209,14 @@ pub fn print_debug(snapshot: &crate::snapshot::AnalysisSnapshot) -> Result<()> {
         }
     }
     for c in changes {
+        for range in whitespace_only_changed_ranges(c) {
+            println!(
+                "Skipped changed range:\n{} lines {}-{}\nreason: whitespace-only change\n",
+                c.path.display(),
+                range.start,
+                range.end
+            );
+        }
         if c.kind == ChangeKind::Renamed {
             if let Some(old_path) = &c.old_path {
                 println!(
@@ -248,6 +256,37 @@ pub fn print_debug(snapshot: &crate::snapshot::AnalysisSnapshot) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn whitespace_only_changed_ranges(change: &FileChange) -> Vec<LineRange> {
+    let mut skipped = Vec::new();
+    let mut range_index = 0;
+    let mut saw_addition = false;
+    let mut saw_meaningful_addition = false;
+
+    for line in change.diff.lines() {
+        if line.starts_with("@@ ") {
+            if saw_addition && !saw_meaningful_addition {
+                if let Some(range) = change.ranges.get(range_index) {
+                    skipped.push(range.clone());
+                }
+            }
+            range_index += 1;
+            saw_addition = false;
+            saw_meaningful_addition = false;
+        } else if line.starts_with('+') && !line.starts_with("+++") {
+            saw_addition = true;
+            if !line[1..].chars().all(char::is_whitespace) {
+                saw_meaningful_addition = true;
+            }
+        }
+    }
+    if saw_addition && !saw_meaningful_addition {
+        if let Some(range) = change.ranges.get(range_index) {
+            skipped.push(range.clone());
+        }
+    }
+    skipped
 }
 
 fn relevant_diff(change: &FileChange, unit: &SourceUnit) -> String {

@@ -70,6 +70,15 @@ fn request(deep: bool) -> ExplanationRequest {
     }
 }
 
+#[tokio::test]
+async fn whitespace_only_source_is_rejected_before_http_request() {
+    let provider = provider("http://127.0.0.1:1/v1".into(), Duration::from_millis(50));
+    let mut request = request(false);
+    request.source_unit = "\r\n\t  ".into();
+    let error = provider.explain(request).await.unwrap_err();
+    assert!(format!("{error:#}").contains("whitespace-only source"));
+}
+
 async fn serve_response(response: serde_json::Value) -> (String, oneshot::Sender<()>) {
     let app = Router::new().route(
         "/v1/chat/completions",

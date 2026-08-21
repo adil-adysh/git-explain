@@ -1,5 +1,5 @@
 use git_explain::diff::LineRange;
-use git_explain::language::{LanguageRegistry, SourceUnitKind};
+use git_explain::language::{contains_meaningful_source, LanguageRegistry, SourceUnitKind};
 use std::path::Path;
 
 fn units(
@@ -19,6 +19,28 @@ fn units(
             .collect::<Vec<_>>(),
     )
     .unwrap()
+}
+
+#[test]
+fn meaningful_source_only_rejects_whitespace() {
+    for source in ["", " ", "    ", "\n", "\r\n", "\t", "\n\n\t   "] {
+        assert!(!contains_meaningful_source(source), "{source:?}");
+    }
+    for source in ["fn x() {}", "// comment", "# comment", "use std::io;"] {
+        assert!(contains_meaningful_source(source), "{source:?}");
+    }
+}
+
+#[test]
+fn whitespace_changed_range_does_not_hide_meaningful_neighbor() {
+    let source = "\nfn load() {\n    changed();\n}\n";
+    let found = units("src/lib.rs", source, &[(1, 1), (3, 3)]);
+    assert!(found
+        .iter()
+        .all(|unit| contains_meaningful_source(&unit.source)));
+    assert!(found
+        .iter()
+        .any(|unit| { unit.kind == SourceUnitKind::Function && unit.name.contains("load") }));
 }
 
 #[test]

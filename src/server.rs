@@ -139,6 +139,9 @@ async fn generate(
     let Some(item) = item else {
         return Json(serde_json::json!({"ok":false,"error":"Unknown code unit."}));
     };
+    if !crate::language::contains_meaningful_source(&item.unit.source) {
+        return Json(serde_json::json!({"ok":false,"error":"No meaningful source to explain."}));
+    }
     let request = runtime::request_for(&item, &state.snapshot.context, deep);
     let key = ExplanationCache::key(&request, &state.model, &state.reader, &state.explanation);
     if !regenerate {

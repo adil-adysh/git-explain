@@ -45,6 +45,12 @@ pub struct SourceUnit {
 }
 pub type SourceSymbol = SourceUnit;
 pub type SymbolKind = SourceUnitKind;
+
+/// Returns whether source contains anything other than whitespace.
+/// Comments and all other non-whitespace text remain meaningful by design.
+pub fn contains_meaningful_source(source: &str) -> bool {
+    source.chars().any(|character| !character.is_whitespace())
+}
 pub trait LanguageAnalyzer {
     fn supports_path(&self, path: &Path) -> bool;
     fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceUnit>>;
@@ -147,7 +153,10 @@ pub fn smallest_symbols(symbols: Vec<SourceSymbol>, ranges: &[LineRange]) -> Vec
 pub fn smallest_units(units: Vec<SourceUnit>, ranges: &[LineRange]) -> Vec<SourceUnit> {
     let mut symbols: Vec<_> = units
         .into_iter()
-        .filter(|symbol| overlaps(symbol.start_line, symbol.end_line, ranges))
+        .filter(|symbol| {
+            overlaps(symbol.start_line, symbol.end_line, ranges)
+                && contains_meaningful_source(&symbol.source)
+        })
         .collect();
     let all_symbols = symbols.clone();
     symbols.retain(|symbol| {
@@ -186,6 +195,10 @@ fn fallback_units(
     let lines: Vec<_> = source.lines().collect();
     let mut result: Vec<SourceUnit> = vec![];
     for range in ranges {
+        let changed_source = source_for_lines(source, range.start, range.end);
+        if !contains_meaningful_source(&changed_source) {
+            continue;
+        }
         if existing
             .iter()
             .any(|unit| overlaps(unit.start_line, unit.end_line, std::slice::from_ref(range)))

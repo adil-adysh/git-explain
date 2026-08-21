@@ -361,6 +361,9 @@ fn deep_schema() -> Value {
 #[async_trait]
 impl ExplanationProvider for OpenAiProvider {
     async fn explain(&self, request: ExplanationRequest) -> Result<UnitExplanation> {
+        if !crate::language::contains_meaningful_source(&request.source_unit) {
+            bail!("refusing to explain whitespace-only source");
+        }
         match self.explain_once(&request, false).await {
             Ok(result) => Ok(result),
             Err(error) if is_retryable_structured_error(&error) => {
