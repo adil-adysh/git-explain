@@ -42,13 +42,39 @@ fn annotated_render_preserves_source_lines() {
     };
     let html = git_explain::web::render(&[item], &AnalysisContext::working_tree());
     assert!(
-        html.contains(r#"<div class="source-region rendered-source"><pre><code>fn example() {"#)
+        html.contains(r#"<div id="rendered-source-unit-a" class="source-region rendered-source"><pre><code>fn example() {"#)
     );
     assert!(html.contains("<textarea"));
     assert!(html.contains("readonly"));
     assert!(html.contains("spellcheck=\"false\""));
     assert!(html.contains("changed code unit"));
     assert!(html.find("changed();").unwrap() < html.find("<p>Explanation</p>").unwrap());
+    assert!(html.contains("data-start-line=\"2\" data-end-line=\"2\""));
+    assert!(html.contains("<span class=\"annotation-lines\">Lines 2–2</span>"));
+}
+
+#[test]
+fn overlapping_annotations_do_not_duplicate_source_lines() {
+    let mut item = action_state_item("Overview", None);
+    item.unit.source = "one\ntwo\nthree\nfour".into();
+    item.explanation.annotations = vec![
+        Annotation {
+            start_line: 2,
+            end_line: 3,
+            kind: "change".into(),
+            text: "First region".into(),
+        },
+        Annotation {
+            start_line: 3,
+            end_line: 4,
+            kind: "concept".into(),
+            text: "Overlapping region".into(),
+        },
+    ];
+    let html = git_explain::web::render(&[item], &AnalysisContext::working_tree());
+    assert_eq!(html.matches("<code>two\nthree</code>").count(), 1);
+    assert_eq!(html.matches("<pre><code>four</code></pre>").count(), 1);
+    assert_eq!(html.matches("Overlapping region").count(), 1);
 }
 
 #[test]
@@ -208,7 +234,7 @@ fn explanation_actions_transition_without_reload_and_preserve_visibility() {
     assert!(html.contains("button.textContent='Regenerate detailed explanation'"));
     assert!(html.contains("let explanationsHidden=false"));
     assert!(html.contains("section.hidden=explanationsHidden"));
-    assert!(html.contains("class=\"annotation ai-explanation\"'+(explanationsHidden?' hidden':'')"));
+    assert!(html.contains("class=\"annotation ai-explanation\" data-start-line=\"'+startLine+'\" data-end-line=\"'+endLine+'\"'+hidden"));
 }
 
 #[test]
@@ -278,6 +304,19 @@ fn code_modes_hide_duplicate_accessible_source() {
     assert!(html.contains("class=\"source-region text-source\" hidden"));
     assert!(html.contains("mode.textContent=textMode?'Show rendered code':'Read code as text'"));
     assert!(html.contains("rendered.hidden=textMode;text.hidden=!textMode"));
+    assert!(html.contains("aria-controls=\"rendered-source-unit-modes text-source-unit-modes\""));
+    assert!(html.contains("id=\"rendered-source-unit-modes\""));
+    assert!(html.contains("id=\"text-source-unit-modes\""));
+}
+
+#[test]
+fn generated_annotations_restore_after_global_toggle_is_reenabled() {
+    let html = git_explain::web::render(
+        &[action_state_item("", None)],
+        &AnalysisContext::working_tree(),
+    );
+    assert!(html.contains("hidden data-toggle-hidden=\"true\""));
+    assert!(html.contains("delete node.dataset.toggleHidden"));
 }
 
 #[test]
