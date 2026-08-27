@@ -51,6 +51,10 @@ fn annotated_render_preserves_source_lines() {
     assert!(html.find("changed();").unwrap() < html.find("<p>Explanation</p>").unwrap());
     assert!(html.contains("data-start-line=\"2\" data-end-line=\"2\""));
     assert!(html.contains("<span class=\"annotation-lines\">Lines 2–2</span>"));
+    assert!(html.contains("Show Git diff"));
+    assert!(html.contains("class=\"source-region diff-source\" hidden"));
+    assert!(html.contains("class=\"diff-added\""));
+    assert!(html.contains("Added line"));
 }
 
 #[test]
@@ -110,6 +114,9 @@ fn initial_render_keeps_source_visible_without_explanation() {
     assert!(html.contains("aria-live=\"polite\""));
     assert!(html.contains("data-unit-id=\"unit-b\""));
     assert!(html.contains("generation"));
+    assert_eq!(html.matches("async function call(button)").count(), 1);
+    assert!(html.contains("setAttribute('role','alert')"));
+    assert!(html.contains("130000"));
 }
 
 fn action_state_item(overview: &str, deep: Option<&str>) -> ExplainedUnit {
@@ -235,6 +242,23 @@ fn explanation_actions_transition_without_reload_and_preserve_visibility() {
     assert!(html.contains("let explanationsHidden=false"));
     assert!(html.contains("section.hidden=explanationsHidden"));
     assert!(html.contains("class=\"annotation ai-explanation\" data-start-line=\"'+startLine+'\" data-end-line=\"'+endLine+'\"'+hidden"));
+}
+
+#[test]
+fn rendered_units_expose_a_clear_explanation_structure() {
+    let html = git_explain::web::render(
+        &[action_state_item("Overview", Some("Detailed explanation"))],
+        &AnalysisContext::working_tree(),
+    );
+    assert!(html.contains("<h4>Overview</h4>"));
+    assert!(html.contains("<h4>Code and explanation</h4>"));
+    assert!(html.contains("aria-controls=\"rendered-source-actions text-source-actions\""));
+    assert!(html.contains("aria-expanded=\"false\""));
+    assert!(html.contains("Read code as text"));
+    assert!(
+        html.contains("Explain this code in depth")
+            || html.contains("Regenerate detailed explanation")
+    );
 }
 
 #[test]
