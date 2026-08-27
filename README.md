@@ -8,12 +8,15 @@ Use it when a change is unfamiliar, when reviewing a commit, or when you want a 
 
 ## Quick start
 
-From a Git repository with a reachable configured model endpoint:
+From a Git repository, install the command and create the optional user configuration:
 
 ```text
 cargo install --path .
-git explain
+git explain config init
+git explain config show
 ```
+
+Choose a local or cloud model endpoint in the generated profile, or use the environment overrides described below. Then run `git explain`.
 
 The normal command starts the local daemon when needed, creates a repository session, and opens the explanation page. To explain an existing commit:
 
@@ -41,6 +44,8 @@ Git changes
 ```
 
 The analyzer does not normally send the whole repository. It sends the complete selected source unit and its relevant diff hunk, together with metadata such as language, unit name, changed regions, and Git context.
+
+`git-explain` does not host the language model. It sends an OpenAI-compatible chat-completions request to the endpoint in the selected profile. That endpoint may be local llama.cpp, local Ollama, or a remote service.
 
 ## What it explains
 
@@ -153,6 +158,10 @@ CLI profile and flags
 
 `config init` does not overwrite an existing user file unless `--force` is supplied. `config show` displays configuration paths, the active and available profiles, resolved model/server settings, and a redacted API-key status.
 
+### Choosing local or cloud inference
+
+Local inference with llama.cpp or Ollama keeps the selected source on the machine and can work offline without per-token provider charges. Cloud inference avoids local GPU requirements and can provide access to stronger hosted models, but the selected source unit and relevant diff are sent to the remote service.
+
 ### Profiles and llama.cpp
 
 Profiles describe different model servers and generation settings. This is a valid llama.cpp-compatible profile:
@@ -163,7 +172,7 @@ profile = "qwen35b"
 
 [profiles.qwen35b]
 provider = "llama_cpp"
-base_url = "http://127.0.0.1:8081/v1"
+base_url = "http://127.0.0.1:8083/v1"
 model = "qwen36-35b-a3b"
 api_key_env = "GIT_EXPLAIN_API_KEY"
 
@@ -180,6 +189,8 @@ temperature = 0.3
 
 The normal profile controls the initial concise explanation; deep controls the optional detailed explanation. `git-explain` does not start llama.cpp.
 
+The model endpoint and the `git-explain` explanation web server must use different ports. The direct web server defaults to `8081`, so this example uses `8083` for llama.cpp.
+
 ### Ollama
 
 Ollama is used through its OpenAI-compatible endpoint, not its native API:
@@ -191,9 +202,84 @@ base_url = "http://127.0.0.1:11434/v1"
 model = "ministral-3:8b"
 ```
 
+### Cloud OpenAI-compatible endpoints
+
+The generic provider sends a `POST` request to `<base_url>/chat/completions` and, when configured, authenticates with `Authorization: Bearer <key>`. A remote endpoint must accept the OpenAI Chat Completions request shape used by this project and return a response whose first choice contains JSON text in `message.content`. It must also accept the selected model name and the normal/deep generation settings.
+
+Example reusable cloud profile:
+
+```toml
+[profiles.cloud]
+provider = "openai_compatible"
+base_url = "https://example-provider.com/v1"
+model = "<model-name>"
+api_key_env = "GIT_EXPLAIN_API_KEY"
+
+[profiles.cloud.normal]
+reasoning = false
+max_tokens = 500
+temperature = 0.2
+
+[profiles.cloud.deep]
+reasoning = true
+max_tokens = 2500
+temperature = 0.3
+```
+
+Use a profile for a named reusable setup:
+
+```powershell
+$env:GIT_EXPLAIN_API_KEY = "<api-key>"
+git explain --profile cloud
+```
+
+On a POSIX shell:
+
+```bash
+export GIT_EXPLAIN_API_KEY="<api-key>"
+git explain --profile cloud
+```
+
+The same generic mechanism can work with the official OpenAI API or another compatible service, but model availability, pricing, quotas, and retention are controlled by that provider. This project has no provider-specific integrations. Azure OpenAI is not directly supported when it requires Azure deployment URLs, `api-version` query parameters, or `api-key` headers; the current client sends a bearer token to the configured base URL.
+
+For the official OpenAI API, use the same generic provider with a current model name supplied by OpenAI:
+
+```toml
+[profiles.openai]
+provider = "openai_compatible"
+base_url = "https://api.openai.com/v1"
+model = "<model-name>"
+api_key_env = "OPENAI_API_KEY"
+```
+
+```powershell
+$env:OPENAI_API_KEY = "<api-key>"
+git explain --profile openai
+```
+
 ### Environment overrides
 
 Supported variables are `GIT_EXPLAIN_BASE_URL`, `GIT_EXPLAIN_MODEL`, `GIT_EXPLAIN_API_KEY`, and `GIT_EXPLAIN_PROFILE`. The API key may be omitted for local servers. CLI profile selection takes precedence over `GIT_EXPLAIN_PROFILE`; environment URL, model, and API-key values override profile values.
+
+For a temporary cloud override without editing a profile:
+
+```powershell
+$env:GIT_EXPLAIN_BASE_URL = "https://example-provider.com/v1"
+$env:GIT_EXPLAIN_MODEL = "<model-name>"
+$env:GIT_EXPLAIN_API_KEY = "<api-key>"
+git explain
+```
+
+```bash
+export GIT_EXPLAIN_BASE_URL="https://example-provider.com/v1"
+export GIT_EXPLAIN_MODEL="<model-name>"
+export GIT_EXPLAIN_API_KEY="<api-key>"
+git explain
+```
+
+Keep keys in environment variables rather than committing them to `.git/git-explain.toml`. `api_key_env` may name another environment variable, such as `OPENAI_API_KEY` or `MY_CLOUD_MODEL_KEY`.
+
+To switch between local and cloud inference, set `[model].profile = "local"` for the default and run `git explain --profile cloud` when cloud inference is wanted. The CLI profile overrides the configured default for that invocation.
 
 ### Reader context
 
@@ -224,9 +310,11 @@ Python decorators, async functions, class methods, and nested functions are hand
 
 ## Privacy and security
 
-`git-explain` binds its web server to loopback only, does not execute source code, does not read Git internals directly, does not modify source files, skips binary files, and sends only selected changed source units, relevant diff context, and explanation metadata to the configured endpoint.
+`git-explain` binds its web server to loopback only, does not execute source code, does not read Git internals directly, does not modify source files, skips binary files, and sends selected changed source units, relevant diff context, changed regions, language and symbol metadata, Git context, reader context, and the project prompt to the configured endpoint.
 
 If that endpoint is remote, the selected source and diff context leave the machine. Local hosting by `git-explain` does not make a remote model service local.
+
+The entire repository, unrelated files, and `.git` contents are not uploaded by the analyzer. Once a request reaches a remote provider, its storage, retention, logging, and training policies control what happens to that request.
 
 ## Current limitations
 
@@ -236,10 +324,11 @@ If that endpoint is remote, the selected source and diff context leave the machi
 - Untracked files are not analyzed.
 - `git.include_untracked` is parsed and displayed but is not implemented in Git diff collection.
 - Explanations are model-generated and should be checked against the displayed source and diff.
+- Endpoints that require custom authentication headers, Azure deployment parameters, query parameters, or non-OpenAI request/response formats are not supported by the current client.
 
 ## Troubleshooting
 
-For a clean tree or unsupported changes, run `git explain --debug`; these are successful no-op states. For model or profile failures, run `git explain config show` and verify the configured OpenAI-compatible endpoint and model name. For daemon or port problems, use:
+For a clean tree or unsupported changes, run `git explain --debug`; these are successful no-op states. For daemon or port problems, use:
 
 ```text
 git explain daemon status
@@ -248,6 +337,8 @@ git explain daemon run
 ```
 
 Unknown profiles list available names. Malformed configuration is reported with the affected file. If the browser does not open, use the URL printed by the command. The daemon binds to loopback and stale metadata is removed when its recorded process is no longer healthy.
+
+For a local endpoint, check that llama.cpp or Ollama is running, the port is correct, the model is loaded, and the profile model name matches. For a cloud endpoint, check the API key, base URL, model name, provider rate limits, TLS/network access, and compatibility with bearer authentication and the expected OpenAI Chat Completions JSON shape. In both cases, `git explain config show` is the first diagnostic command.
 
 Errors go to stderr. Exit status `0` means success or a legitimate no-op; `2` means a Git, revision, configuration, or usage problem; `3` means model connectivity or inference failure; `4` means a daemon/process failure; and `1` is reserved for unexpected failures.
 

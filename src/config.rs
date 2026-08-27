@@ -176,7 +176,7 @@ profile = "qwen35b"
 
 [profiles.qwen35b]
 provider = "llama_cpp"
-base_url = "http://127.0.0.1:8081/v1"
+base_url = "http://127.0.0.1:8083/v1"
 model = "qwen36-35b-a3b"
 api_key_env = "GIT_EXPLAIN_API_KEY"
 
@@ -778,6 +778,25 @@ mod tests {
     }
 
     #[test]
+    fn cloud_profile_uses_bearer_key_environment_setting() {
+        let config = loader(
+            "[profiles.cloud]\nprovider = \"openai_compatible\"\nbase_url = \"https://example.test/v1\"\nmodel = \"cloud-model\"\napi_key_env = \"OPENAI_API_KEY\"\n",
+            None,
+        )
+        .resolve_with_environment(
+            Some("cloud"),
+            &EnvironmentOverrides {
+                api_key: Some("test-secret".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(config.model.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(config.model.api_key.as_deref(), Some("test-secret"));
+        assert_eq!(config.model.base_url, "https://example.test/v1");
+    }
+
+    #[test]
     fn malformed_and_unknown_fields_include_path() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("config.toml");
@@ -810,6 +829,18 @@ mod tests {
         assert_eq!(config.model.base_url, "http://127.0.0.1:8083/v1");
         assert_eq!(config.model.model, "git-explain-unsloth35b");
         assert_eq!(config.model.deep.max_tokens, 2500);
+    }
+
+    #[test]
+    fn generated_llama_profile_does_not_share_direct_server_port() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        init_user_config(&path, false).unwrap();
+        let config = ConfigLoader::with_paths(path, None)
+            .resolve(Some("qwen35b"))
+            .unwrap();
+        assert_ne!(config.model.base_url, "http://127.0.0.1:8081/v1");
+        assert_eq!(config.server.port, 8081);
     }
 
     #[test]
