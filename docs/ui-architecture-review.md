@@ -8,6 +8,20 @@ The difficult part is server-side HTML construction in `src/web.rs`, not client-
 
 Recommendation for the next implementation step: **B. Refactor into server-rendered semantic components plus separate CSS/JS, without a client framework.** Keep assets embedded so the binary remains self-contained. Split the Rust renderer into small render functions/view helpers, move the inline CSS and JavaScript into checked-in asset files (embedded with `include_str!` or equivalent), and centralize the small browser API/DOM helpers. Do not introduce React/Vue/Svelte or a Rust template dependency yet.
 
+## UEX validation (2026-08-27)
+
+The current UEX meets the project’s local-first, explanation-only philosophy, with the following evidence and limits:
+
+| Criterion | Assessment | Evidence / remaining limit |
+| --- | --- | --- |
+| Inline explanation | Meets | Each changed unit has an overview plus source-adjacent annotation sections with explicit line ranges; the source is never modified. `tests/core.rs` covers source preservation, overlap handling, and annotation placement. |
+| Inclusive accessibility | Strong baseline; not a certification | The page uses `lang`, landmarks, heading hierarchy, native buttons, a read-only text-code alternative, `aria-controls`, `aria-expanded`, `aria-busy`, live status, and alert feedback. Automated tests cover emitted semantics. A screen-reader audit and automated WCAG tool run are still required before claiming conformance. |
+| Mental model and structure | Meets for the current scope | The page is organized as context → file → changed unit → overview → actions → code/annotations, with explicit line ranges and an optional indentation view. The global “Hide explanations” control and per-unit actions preserve the distinction between understanding and editing. |
+| Cognitive load | Generally decreases; one tradeoff remains | Progressive disclosure keeps deep explanations, annotations, text mode, and indentation details optional. Multiple actions per unit and the global visibility toggle add choice; labels are intentionally explicit and the page keeps controls local to each unit. |
+| Project alignment | Meets | The UI is server-rendered and progressively enhanced, binds locally, keeps source read-only, exposes model failures without leaking provider details, and treats stale snapshots as recoverable rather than silently applying outdated results. |
+
+Error UEX is now explicit at the API boundary: model unavailable, timeout, authentication, rate limiting, configuration failure, generic generation failure, stale snapshot/session, missing unit, and empty source each have stable `code` values and actionable `error` text. Detailed provider errors remain in server logs. Browser requests disable the active control, expose busy state, enforce a client timeout, retain a per-unit alert, and restore the control for retry. A live browser/screen-reader pass could not be completed in this environment because the locally started daemon exited before its session endpoint was reachable; this is recorded as a verification gap, not as evidence of accessibility conformance.
+
 This is not a recommendation to leave correctness work until later. Before or during that refactor, preserve and extend the existing source/annotation overlap and visibility tests. The current code has already addressed several accessibility and annotation-rendering concerns in the working tree, but those tests prove emitted strings and not actual browser behavior.
 
 ## Current Rendering Architecture
