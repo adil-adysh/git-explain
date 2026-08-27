@@ -1183,7 +1183,19 @@ fn repository_toml(path: &Path) -> Result<toml::Value> {
 }
 
 fn write_toml(path: &Path, root: toml::Value) -> Result<()> {
-    atomic_write(path, &toml::to_string_pretty(&root)?)
+    let values = toml::to_string_pretty(&root)?;
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    let template = if existing.starts_with("# git-explain user configuration") {
+        Some(example_config())
+    } else if existing.starts_with("# git-explain repository configuration") {
+        Some(repository_example_config())
+    } else {
+        None
+    };
+    let content = template.map_or(values.clone(), |template| {
+        format!("{template}\n# Active values written by git-explain\n\n{values}")
+    });
+    atomic_write(path, &content)
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<()> {
@@ -1203,19 +1215,119 @@ fn atomic_write(path: &Path, content: &str) -> Result<()> {
 }
 
 pub fn example_config() -> &'static str {
-    r#"# git-explain configuration. Profiles are trusted user settings; repository
-# configuration may select a profile name but cannot define endpoints or credentials.
+    r#"# git-explain user configuration
 #
-# Add a real profile before running git-explain, for example:
-# git explain profile add local --preset llama-cpp --model your-model
-# git explain profile use local
+# This template documents every TOML-backed user setting. Values are commented
+# so the application/provider defaults remain unpinned until you opt in.
 
-[reader]
+# ----------------------------------------------------------------------
+# Model selection
+# ----------------------------------------------------------------------
+# [model]
+# profile = "local" # Default: no profile selected
+
+# ----------------------------------------------------------------------
+# Example local model profile (all lines are examples, not an active profile)
+# ----------------------------------------------------------------------
+# [profiles.local]
+# provider = "openai_compatible" # The only supported provider value
+# preset = "llama_cpp" # Presets: "llama_cpp", "ollama"
+# base_url = "http://127.0.0.1:8083/v1" # llama.cpp preset endpoint
+# model = "your-model"
+# Store only an environment variable name here, never a secret value.
+# api_key_env = "LOCAL_MODEL_API_KEY"
+#
+# [profiles.local.normal]
+# Omit reasoning to let the provider/model decide.
+# reasoning = false
+# Example override; omitted values are omitted from requests.
+# max_tokens = 500
+# temperature = 0.2
+#
+# [profiles.local.deep]
+# Omit reasoning to let the provider/model decide.
+# reasoning = true
+# Example override; omitted values are omitted from requests.
+# max_tokens = 2500
+# temperature = 0.3
+
+# ----------------------------------------------------------------------
+# Reader context
+# ----------------------------------------------------------------------
+# [reader]
+# git-explain defaults experience to "experienced" and lists to [].
 # experience = "experienced"
-# known_languages = ["python", "go"]
-# learning_languages = ["rust", "typescript"]
+# known_languages = []
+# learning_languages = []
+# known_frameworks = []
+# learning_frameworks = []
 
-[explanation]
+# ----------------------------------------------------------------------
+# Explanation behavior
+# ----------------------------------------------------------------------
+# [explanation]
+# Defaults: normal depth, 3 annotations, 60 words per annotation.
+# default_depth = "normal"
+# max_annotations = 3
+# max_annotation_words = 60
+# Defaults: language/framework concepts enabled; infer intent disabled.
+# explain_language_concepts = true
+# explain_framework_concepts = true
+# infer_intent = false
+
+# ----------------------------------------------------------------------
+# Cache
+# ----------------------------------------------------------------------
+# [cache]
+# git-explain defaults caching to enabled.
+# enabled = true
+
+# ----------------------------------------------------------------------
+# Local git-explain web server (not the model endpoint)
+# ----------------------------------------------------------------------
+# [server]
+# Defaults: loopback host, port 8081, open browser.
+# host = "127.0.0.1"
+# port = 8081
+# open_browser = true
+
+# ----------------------------------------------------------------------
+# Git analysis
+# ----------------------------------------------------------------------
+# [git]
+# Defaults: compare against HEAD and include staged changes.
+# diff_target = "HEAD"
+# include_staged = true
+# Parsed but not yet implemented; default is false.
+# include_untracked = false
+
+# Runtime-only overrides are not stored in TOML:
+#   git explain --profile cloud
+#   git explain --port 9000
+# Environment-only overrides are not stored in TOML:
+#   GIT_EXPLAIN_USER_CONFIG (user configuration file path)
+#   GIT_EXPLAIN_PROFILE (profile selection for this process)
+"#
+}
+
+pub fn repository_example_config() -> &'static str {
+    r#"# git-explain repository configuration
+#
+# A repository may select a trusted user-defined profile by name, but profiles,
+# endpoints, providers, models, and credential references never belong here.
+
+# [model]
+# profile = "work"
+
+# Repository-safe application settings use the same keys as user configuration.
+# [reader]
+# experience = "experienced"
+# known_languages = []
+# learning_languages = []
+# known_frameworks = []
+# learning_frameworks = []
+
+# [explanation]
 # default_depth = "normal"
 # max_annotations = 3
 # max_annotation_words = 60
@@ -1223,23 +1335,20 @@ pub fn example_config() -> &'static str {
 # explain_framework_concepts = true
 # infer_intent = false
 
-[cache]
+# [cache]
 # enabled = true
 
-[server]
+# [server]
+# These configure the local git-explain server, never the model endpoint.
 # host = "127.0.0.1"
 # port = 8081
 # open_browser = true
 
-[git]
+# [git]
 # diff_target = "HEAD"
 # include_staged = true
-# include_untracked = false # parsed but not yet included in Git diffs
+# include_untracked = false
 "#
-}
-
-pub fn repository_example_config() -> &'static str {
-    "# Repository-specific git-explain configuration.\n#\n# Model profiles and endpoints belong in user configuration. This repository\n# may select an existing trusted profile.\n\n[model]\n# profile = \"work\"\n"
 }
 
 #[allow(dead_code)]
@@ -1993,7 +2102,7 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("profile = \"work\""));
         assert!(!text.contains("base_url"));
-        assert!(!text.contains("profiles"));
+        assert!(!text.contains("[profiles."));
     }
 
     #[test]
@@ -2083,7 +2192,160 @@ mod tests {
         let path = directory.path().join("config.toml");
         assert!(init_user_config(&path, false).unwrap());
         assert!(!init_user_config(&path, false).unwrap());
-        assert!(toml::from_str::<PartialConfig>(&fs::read_to_string(path).unwrap()).is_ok());
+        let generated = fs::read_to_string(path).unwrap();
+        assert!(toml::from_str::<PartialConfig>(&generated).is_ok());
+        assert!(generated.contains("This template documents every TOML-backed user setting"));
+        assert!(generated.contains("# max_annotations = 3"));
+        assert!(generated.contains("# Local git-explain web server (not the model endpoint)"));
+    }
+
+    #[test]
+    fn user_template_documents_every_user_setting_without_creating_a_profile() {
+        // Keep this inventory in sync whenever a user-editable TOML field is added.
+        let template = example_config();
+        for field in [
+            "# profile = \"local\"",
+            "# provider = \"openai_compatible\"",
+            "# preset = \"llama_cpp\"",
+            "# base_url = \"http://127.0.0.1:8083/v1\"",
+            "# model = \"your-model\"",
+            "# api_key_env = \"LOCAL_MODEL_API_KEY\"",
+            "# reasoning = false",
+            "# reasoning = true",
+            "# max_tokens = 500",
+            "# max_tokens = 2500",
+            "# temperature = 0.2",
+            "# temperature = 0.3",
+            "# experience = \"experienced\"",
+            "# known_languages = []",
+            "# learning_languages = []",
+            "# known_frameworks = []",
+            "# learning_frameworks = []",
+            "# default_depth = \"normal\"",
+            "# max_annotations = 3",
+            "# max_annotation_words = 60",
+            "# explain_language_concepts = true",
+            "# explain_framework_concepts = true",
+            "# infer_intent = false",
+            "# enabled = true",
+            "# host = \"127.0.0.1\"",
+            "# port = 8081",
+            "# open_browser = true",
+            "# diff_target = \"HEAD\"",
+            "# include_staged = true",
+            "# include_untracked = false",
+            "GIT_EXPLAIN_USER_CONFIG",
+            "GIT_EXPLAIN_PROFILE",
+            "git explain --profile cloud",
+            "git explain --port 9000",
+        ] {
+            assert!(template.contains(field), "missing template field: {field}");
+        }
+        let parsed: PartialConfig = toml::from_str(template).unwrap();
+        assert!(parsed.model.is_none());
+        assert!(parsed.profiles.is_empty());
+        assert!(parsed.reader.is_none());
+        assert!(parsed.explanation.is_none());
+        assert!(parsed.cache.is_none());
+        assert!(parsed.server.is_none());
+        assert!(parsed.git.is_none());
+    }
+
+    #[test]
+    fn generated_user_template_stays_documented_after_profile_and_config_edits() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        init_user_config(&path, false).unwrap();
+        assert!(profile_names(&path).unwrap().is_empty());
+        add_profile(
+            &path,
+            ProfileDraft {
+                name: "qwen35b".into(),
+                provider: None,
+                preset: Some("llama_cpp".into()),
+                base_url: None,
+                model_port: None,
+                model: "git-explain-unsloth35b".into(),
+                api_key_env: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(profile_names(&path).unwrap(), ["qwen35b"]);
+        assert_eq!(
+            ConfigLoader::with_paths(path.clone(), None)
+                .resolve_with_environment(Some("qwen35b"), &EnvironmentOverrides::default())
+                .unwrap()
+                .model
+                .model,
+            "git-explain-unsloth35b"
+        );
+        edit_config(
+            &path,
+            false,
+            &ConfigUpdate {
+                server: ServerUpdate {
+                    port: Some(9000),
+                    ..ServerUpdate::default()
+                },
+                ..ConfigUpdate::default()
+            },
+            &[],
+        )
+        .unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# Example local model profile"));
+        assert!(text.contains("# Active values written by git-explain"));
+        assert_eq!(
+            ConfigLoader::with_paths(path, None)
+                .application_config(None)
+                .unwrap()
+                .server
+                .port,
+            9000
+        );
+    }
+
+    #[test]
+    fn repository_template_documents_all_safe_settings_and_no_profile_definition() {
+        // Keep this inventory in sync whenever a repository-safe TOML field changes.
+        let template = repository_example_config();
+        for field in [
+            "# profile = \"work\"",
+            "# experience = \"experienced\"",
+            "# known_languages = []",
+            "# default_depth = \"normal\"",
+            "# max_annotations = 3",
+            "# enabled = true",
+            "# host = \"127.0.0.1\"",
+            "# port = 8081",
+            "# diff_target = \"HEAD\"",
+            "# include_staged = true",
+            "# include_untracked = false",
+        ] {
+            assert!(
+                template.contains(field),
+                "missing repository field: {field}"
+            );
+        }
+        let parsed: RepositoryConfig = toml::from_str(template).unwrap();
+        assert!(parsed.model.is_none());
+        assert!(parsed.reader.is_none());
+        assert!(parsed.explanation.is_none());
+        assert!(parsed.cache.is_none());
+        assert!(parsed.server.is_none());
+        assert!(parsed.git.is_none());
+        for unsafe_field in [
+            "[profiles.",
+            "base_url",
+            "api_key_env",
+            "provider =",
+            "preset =",
+        ] {
+            assert!(
+                !template.contains(unsafe_field),
+                "unsafe repository field: {unsafe_field}"
+            );
+        }
     }
 
     #[test]

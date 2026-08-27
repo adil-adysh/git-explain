@@ -89,7 +89,9 @@ pub enum ConfigAction {
     Show,
     #[command(about = "Show the user and repository config paths")]
     Path,
-    #[command(about = "Initialize user configuration, or repository configuration with --repo")]
+    #[command(
+        about = "Create a documented user template, or a restricted repository-safe template with --repo"
+    )]
     Init {
         #[arg(
             short = 'f',
@@ -100,7 +102,7 @@ pub enum ConfigAction {
         #[arg(
             short = 'r',
             long,
-            help = "Initialize configuration for the current repository"
+            help = "Create the restricted configuration template for the current repository"
         )]
         repo: bool,
     },

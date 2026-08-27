@@ -37,7 +37,7 @@ The global `git explain --port <PORT>` flag changes the git-explain local web-se
 
 A profile is a trusted user-level description of one model endpoint. It contains the protocol, optional preset, endpoint, model, optional environment-variable name for a credential, and optional normal/deep generation settings. All current profiles use `provider = "openai_compatible"`. `llama_cpp` and `ollama` are presets, not providers.
 
-The generated configuration deliberately contains no placeholder profile. Add a real endpoint before selecting it. A profile looks like:
+The generated configuration documents every supported user TOML setting, including a fully commented profile example, but deliberately creates no placeholder profile. Add a real endpoint before selecting it. A profile looks like:
 
 ```toml
 [model]
@@ -80,7 +80,7 @@ profile = "work"
 
 It cannot define profiles, endpoints, credential environment variables, or authentication. The `work` profile must be defined in the user configuration. This prevents a repository from silently redirecting source to an unexpected endpoint.
 
-Create the restricted repository file with `git explain config init --repo`, then select a trusted user profile with `git explain profile use work --repo`. Endpoints, models, presets, generation settings, and credentials remain user-owned. `git explain config path` prints both configuration locations, and `git explain config show` identifies where the selection came from.
+Create the restricted repository template with `git explain config init --repo`, then select a trusted user profile with `git explain profile use work --repo`. It documents every repository-safe application setting but never profile definitions, endpoints, models, presets, or credential references. `git explain config path` prints both configuration locations, and `git explain config show` identifies where the selection came from.
 
 ## Application configuration
 
