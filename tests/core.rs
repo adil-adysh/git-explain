@@ -42,7 +42,7 @@ fn annotated_render_preserves_source_lines() {
     };
     let html = git_explain::web::render(&[item], &AnalysisContext::working_tree());
     assert!(
-        html.contains(r#"<div id="rendered-source-unit-a" class="source-region rendered-source"><pre><code>fn example() {"#)
+        html.contains(r#"<div id="rendered-source-unit-a" class="source-region rendered-source" role="region" aria-label="Rendered source code"><pre><code>fn example() {"#)
     );
     assert!(html.contains("<textarea"));
     assert!(html.contains("readonly"));
@@ -52,9 +52,16 @@ fn annotated_render_preserves_source_lines() {
     assert!(html.contains("data-start-line=\"2\" data-end-line=\"2\""));
     assert!(html.contains("<span class=\"annotation-lines\">Lines 2–2</span>"));
     assert!(html.contains("Show Git diff"));
-    assert!(html.contains("class=\"source-region diff-source\" hidden"));
+    assert!(html.contains(
+        "class=\"source-region diff-source\" role=\"region\" aria-label=\"Git diff\" hidden"
+    ));
     assert!(html.contains("class=\"diff-added\""));
     assert!(html.contains("Added line"));
+    assert!(html.contains("aria-label=\"Code unit example\""));
+    assert!(html.contains("role=\"region\" aria-label=\"Rendered source code\""));
+    assert!(html.contains("aria-label=\"Git diff\""));
+    assert!(html.contains("button:focus-visible"));
+    assert!(html.contains("prefers-reduced-motion: reduce"));
 }
 
 #[test]

@@ -20,7 +20,7 @@ The current UEX meets the project’s local-first, explanation-only philosophy, 
 | Cognitive load | Generally decreases; one tradeoff remains | Progressive disclosure keeps deep explanations, annotations, text mode, and indentation details optional. Multiple actions per unit and the global visibility toggle add choice; labels are intentionally explicit and the page keeps controls local to each unit. |
 | Project alignment | Meets | The UI is server-rendered and progressively enhanced, binds locally, keeps source read-only, exposes model failures without leaking provider details, and treats stale snapshots as recoverable rather than silently applying outdated results. |
 
-Error UEX is now explicit at the API boundary: model unavailable, timeout, authentication, rate limiting, configuration failure, generic generation failure, stale snapshot/session, missing unit, and empty source each have stable `code` values and actionable `error` text. Detailed provider errors remain in server logs. Browser requests disable the active control, expose busy state, enforce a client timeout, retain a per-unit alert, and restore the control for retry. A live browser/screen-reader pass could not be completed in this environment because the locally started daemon exited before its session endpoint was reachable; this is recorded as a verification gap, not as evidence of accessibility conformance.
+Error UEX is now explicit at the API boundary: model unavailable, timeout, authentication, rate limiting, configuration failure, generic generation failure, stale snapshot/session, missing unit, and empty source each have stable `code` values and actionable `error` text. Detailed provider errors remain in server logs. Browser requests disable the active control, expose busy state, enforce a client timeout, retain a per-unit alert, and restore the control for retry. A live browser pass verified named controls and regions, valid ARIA targets, the diff toggle/status announcement, and no horizontal overflow at the tested viewport. A manual screen-reader audit and automated WCAG tool run remain open verification work; the live checks do not establish formal conformance.
 
 This is not a recommendation to leave correctness work until later. Before or during that refactor, preserve and extend the existing source/annotation overlap and visibility tests. The current code has already addressed several accessibility and annotation-rendering concerns in the working tree, but those tests prove emitted strings and not actual browser behavior.
 
@@ -163,7 +163,7 @@ The most important architectural duplication is `rendered_source` in Rust (`src/
 | Deep explanation content/visibility | Deep section paragraph plus `hidden` | Yes for current page | Server/session overlay rehydrates content; visibility resets hidden. |
 | Snapshot generation | `data-generation` on `#snapshot-update` and each action button | Yes until reload | New page gets the current generation. |
 | Snapshot update availability | Hidden state and message text in `#snapshot-update` | Yes | No; reload replaces the page. |
-| Request-in-progress state | None beyond status text; button is not disabled | Not represented | Not persisted. |
+| Request-in-progress state | Initiating button is disabled, marked `aria-busy`, and given a generating label; timeout/error remains visible on the unit | Not persisted across reload. |
 
 The server-side state is more substantial but not browser-side UI state: `RepositorySession.snapshot` is immutable for a generation, while `items: Mutex<HashMap<UnitId, ExplainedUnit>>` is the mutable explanation overlay. Cache hydration happens before initial HTML. Refresh replaces the session snapshot and cancels/guards old inference work.
 
@@ -181,7 +181,7 @@ The server-side state is more substantial but not browser-side UI state: `Reposi
 | Snapshot polling | `GET /api/sessions/{session}/snapshot` every 5 seconds in session mode | If generation is newer, sets update message and removes hidden state | Update availability becomes visible. |
 | Reload snapshot | No fetch of page data; `location.reload()` | Full document replacement | All ephemeral client state is lost and current server snapshot is rendered. |
 
-The JavaScript does not move focus explicitly. It does not disable buttons during requests. The focused button remains in place for normal/deep updates, while a full `location.reload()` necessarily replaces the document. The status region is the only announcement mechanism.
+The JavaScript does not move focus explicitly. The initiating generation button remains focused and is disabled with `aria-busy` during the request; the focused button remains in place for normal/deep updates, while a full `location.reload()` necessarily replaces the document. The status region and per-unit alert are the announcement mechanisms.
 
 ## HTTP/API Boundary
 
@@ -244,7 +244,7 @@ The source contains explicit semantic/accessibility markup:
 
 The two source representations are emitted together, but the rendered source is visible and the textarea is initially `hidden`. JavaScript toggles the two `hidden` states so they are not both exposed at once. `tests/core.rs::code_modes_hide_duplicate_accessible_source` checks the emitted IDs, hidden source, and toggle script. This is implemented semantic intent; the repository contains no manual NVDA/JAWS/browser screen-reader test evidence, so screen-reader behavior should not be claimed beyond the source semantics.
 
-JavaScript changes accessible names in several controls by changing button text, changes `aria-expanded`, and announces status through `textContent`. It does not move focus, set focus targets, or explicitly restore focus after reload. It also does not update `aria-busy` or expose a per-button loading state.
+JavaScript changes accessible names in several controls by changing button text, changes `aria-expanded`, updates `aria-busy`/disabled state during generation, and announces status through `textContent`. It does not move focus, set focus targets, or explicitly restore focus after reload.
 
 ## DOM Mutation Model
 
