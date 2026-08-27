@@ -21,7 +21,14 @@ use config::{format_show, init_user_config, ConfigLoader};
 use snapshot::SnapshotGeneration;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("{}", user_facing_error(&error));
+        std::process::exit(error_exit_code(&error));
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
     if let Some(Command::Daemon(command)) = &cli.command {
         return daemon::command(&command.action).await;
@@ -96,14 +103,64 @@ async fn main() -> Result<()> {
     } else {
         analyzer.analyze_working_tree(SnapshotGeneration(1))?
     };
-    if snapshot.changes.is_empty() {
-        anyhow::bail!("No supported changes found for analysis.");
+    if let Some(message) = snapshot.context.no_op.as_deref() {
+        println!("{message}");
+        return Ok(());
     }
     if cli.debug {
         explain::print_debug(&snapshot)?;
         return Ok(());
     }
     unreachable!("debug path returned above")
+}
+
+fn user_facing_error(error: &anyhow::Error) -> String {
+    let details = format!("{error:#}");
+    if details.contains("not inside a Git repository") {
+        return "This command must be run inside a Git repository. Run it from a repository containing the changes or commit to explain.".into();
+    }
+    if details.contains("Unable to resolve Git revision") {
+        return format!(
+            "The requested Git revision could not be resolved. Check the revision name and try again.\nDetails: {details}"
+        );
+    }
+    if details.contains("unknown model profile") {
+        return format!(
+            "The configured model profile is not available. Run `git explain config show` to inspect the available profiles.\nDetails: {details}"
+        );
+    }
+    if details.contains("daemon") || details.contains("bind loopback") {
+        return format!(
+            "The git-explain daemon could not complete the request. Try `git explain daemon status` or use `git explain --direct`.\nDetails: {details}"
+        );
+    }
+    if details.contains("connect") || details.contains("timed out") || details.contains("model") {
+        return format!(
+            "The configured model service could not complete the request. Run `git explain config show` to inspect the endpoint, then check that the model server is running.\nDetails: {details}"
+        );
+    }
+    details
+}
+
+fn error_exit_code(error: &anyhow::Error) -> i32 {
+    let details = format!("{error:#}");
+    if details.contains("not inside a Git repository")
+        || details.contains("Unable to resolve Git revision")
+        || details.contains("unknown model profile")
+        || details.contains("parse configuration")
+        || details.contains("invalid repository path")
+    {
+        2
+    } else if details.contains("daemon") || details.contains("bind loopback") {
+        4
+    } else if details.contains("connect")
+        || details.contains("timed out")
+        || details.contains("model")
+    {
+        3
+    } else {
+        1
+    }
 }
 
 async fn run_direct(
@@ -119,8 +176,9 @@ async fn run_direct(
     } else {
         analyzer.analyze_working_tree(SnapshotGeneration(1))?
     };
-    if snapshot.changes.is_empty() {
-        anyhow::bail!("No supported changes found for analysis.");
+    if let Some(message) = snapshot.context.no_op.as_deref() {
+        println!("{message}");
+        return Ok(());
     }
     if debug {
         explain::print_debug(&snapshot)?;

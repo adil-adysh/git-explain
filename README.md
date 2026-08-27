@@ -11,6 +11,8 @@ cargo install --path .
 git explain
 ```
 
+Use `git explain -h` for the subcommand's options and examples. Git reserves `git explain --help` for looking up external command documentation.
+
 ## Task automation
 
 This project includes a [Task](https://taskfile.dev/) workflow for repeatable Windows builds and installation:
@@ -37,6 +39,8 @@ For deterministic inspection without starting the browser:
 git explain --debug
 ```
 
+The command exits successfully for legitimate no-op states and reports them plainly, such as `Working tree is clean. Nothing to explain.` or `Changes exist, but none are in supported source files.`
+
 To explain an existing commit instead of the working tree:
 
 ```text
@@ -55,6 +59,8 @@ The model endpoint is OpenAI-compatible. For a quick one-off override, the exist
 * `GIT_EXPLAIN_PROFILE`
 
 Only changed supported-language functions and their relevant Git diff are sent to the configured model. The tool does not execute source, read `.git` internals, or write explanations into source files. The server binds to `127.0.0.1` only.
+
+Errors are written to stderr. Exit status `0` means success or a legitimate no-op; `2` means a Git, revision, configuration, or usage problem; `3` means model connectivity or inference failure; and `4` means a daemon/process failure. Unexpected failures use `1`.
 
 ## Supported languages
 
@@ -76,6 +82,8 @@ git explain daemon stop
 
 The daemon normally listens on `127.0.0.1:8192`. It starts idle, then opens a repository session when `git explain` runs; sessions receive opaque IDs and remain isolated from one another. The most recently opened session is active for `git explain daemon refresh`, while previously opened sessions remain available until the bounded registry evicts the least recently used session. Refresh deterministically reanalyzes the active repository, compares snapshot identity, and atomically replaces the snapshot only when the repository changed. It never triggers model inference; the previous snapshot remains active while analysis runs. An open daemon page checks its session snapshot generation periodically and shows an accessible reload action when a newer snapshot is available. For troubleshooting, run `git explain daemon run` in the foreground. `git explain --direct` remains an explicit one-shot fallback.
 
+`git explain daemon status` reports the loopback address, process ID, and whether a repository session is active. If automatic browser opening fails after a page is created, the command keeps the result available and prints the URL to open manually.
+
 ## Configuration
 
 Initialize a user configuration and inspect the paths used by the loader:
@@ -92,7 +100,7 @@ Configuration precedence is:
 CLI > environment > repository (.git/git-explain.toml) > user config > built-in defaults
 ```
 
-The user file is stored in the platform-appropriate per-user configuration directory. `config init` never overwrites an existing file unless `--force` is supplied. `config show` redacts API key contents.
+The user file is stored in the platform-appropriate per-user configuration directory. `config init` never overwrites an existing file unless `--force` is supplied. `config show` reports the active and available profiles and redacts API key contents.
 
 ### llama.cpp profile
 
@@ -159,11 +167,11 @@ For the llama.cpp preset used during live testing:
 
 ```powershell
 $env:GIT_EXPLAIN_BASE_URL = "http://127.0.0.1:8083/v1"
-$env:GIT_EXPLAIN_MODEL = "git-explain-qwen35b"
+$env:GIT_EXPLAIN_MODEL = "git-explain-unsloth35b"
 git explain
 ```
 
-The dedicated `git-explain-qwen35b` preset is defined in `D:\llama-cpp\models.ini` with reasoning disabled and `enable_thinking` disabled for concise JSON-compatible responses.
+The dedicated `git-explain-unsloth35b` preset is defined in `D:\llama-cpp\models.ini` with reasoning disabled and `enable_thinking` disabled for concise JSON-compatible responses.
 
 ## License
 

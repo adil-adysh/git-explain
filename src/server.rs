@@ -79,7 +79,10 @@ pub async fn serve(
     let url = format!("http://{}", listener.local_addr()?);
     println!("git explain: {}", url);
     if config.open_browser {
-        let _ = webbrowser::open(&url);
+        if let Err(error) = webbrowser::open(&url) {
+            eprintln!("Could not open the browser automatically: {error}");
+            eprintln!("Open:\n{url}");
+        }
     }
     axum::serve(listener, app).await?;
     Ok(())

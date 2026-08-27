@@ -78,6 +78,7 @@ pub enum AnalysisMode {
 pub struct AnalysisContext {
     pub mode: AnalysisMode,
     pub deleted_files: Vec<String>,
+    pub no_op: Option<String>,
 }
 
 impl AnalysisContext {
@@ -85,6 +86,7 @@ impl AnalysisContext {
         Self {
             mode: AnalysisMode::WorkingTree,
             deleted_files: vec![],
+            no_op: None,
         }
     }
 

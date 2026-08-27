@@ -29,9 +29,10 @@ impl RepositoryAnalyzer {
     pub fn analyze_working_tree(&self, generation: SnapshotGeneration) -> Result<AnalysisSnapshot> {
         let changes = git::working_tree_changes(&self.repo_root, &self.config.git)?;
         let provider = WorkingTreeSourceProvider::new(&self.repo_root);
-        let context = AnalysisContext::working_tree();
+        let mut context = AnalysisContext::working_tree();
         let mut units = analysis_items(&provider, &changes)?;
         assign_ids(&mut units);
+        context.no_op = no_op_message(&context, &changes, &units);
         let head = git::head_oid(&self.repo_root).unwrap_or_default();
         let fingerprint = working_tree_fingerprint(&head, &self.config.git.diff_target, &changes);
         Ok(AnalysisSnapshot {
@@ -48,7 +49,7 @@ impl RepositoryAnalyzer {
         generation: SnapshotGeneration,
     ) -> Result<AnalysisSnapshot> {
         let analysis = git::commit_analysis(&self.repo_root, revision)?;
-        let context = AnalysisContext {
+        let mut context = AnalysisContext {
             mode: AnalysisMode::Commit {
                 oid: analysis.oid.clone(),
                 parent_oid: analysis.parent_oid.clone(),
@@ -61,10 +62,12 @@ impl RepositoryAnalyzer {
                 .filter(|c| c.kind == ChangeKind::Deleted)
                 .map(|c| c.path.display().to_string())
                 .collect(),
+            no_op: None,
         };
         let provider = GitCommitSourceProvider::new(&self.repo_root, analysis.oid.clone());
         let mut units = analysis_items(&provider, &analysis.changes)?;
         assign_ids(&mut units);
+        context.no_op = no_op_message(&context, &analysis.changes, &units);
         Ok(AnalysisSnapshot {
             generation,
             identity: SnapshotIdentity::Commit { oid: analysis.oid },
@@ -73,6 +76,36 @@ impl RepositoryAnalyzer {
             units,
         })
     }
+}
+
+fn no_op_message(
+    context: &AnalysisContext,
+    changes: &[crate::diff::FileChange],
+    units: &[crate::explain::ExplainedUnit],
+) -> Option<String> {
+    if !units.is_empty() || !context.deleted_files.is_empty() {
+        return None;
+    }
+    if changes.is_empty() {
+        return Some(
+            match context.mode {
+                AnalysisMode::WorkingTree => "Working tree is clean. Nothing to explain.",
+                AnalysisMode::Commit { .. } => "Commit contains no file changes to explain.",
+            }
+            .into(),
+        );
+    }
+    let supported = changes
+        .iter()
+        .any(|change| crate::language::LanguageRegistry::analyzer_for_path(&change.path).is_some());
+    Some(
+        if supported {
+            "Supported files changed, but no changed code units were detected."
+        } else {
+            "Changes exist, but none are in supported source files."
+        }
+        .into(),
+    )
 }
 fn assign_ids(units: &mut [crate::explain::ExplainedUnit]) {
     for unit in units {

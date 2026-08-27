@@ -374,10 +374,23 @@ fn commit_render_identifies_revision_parent_and_deleted_files() {
             merge_parent_count: 1,
         },
         deleted_files: vec!["src/old.rs".into()],
+        no_op: None,
     };
     let html = git_explain::web::render(&[], &context);
     assert!(html.contains("Commit abcdef123456"));
     assert!(html.contains("Compared with parent: 1234567890abcdef"));
     assert!(html.contains("Deleted file: src/old.rs"));
     assert!(html.contains("change &lt;subject&gt;"));
+}
+
+#[test]
+fn no_op_render_is_announced_without_an_empty_explanation_controls() {
+    let context = AnalysisContext {
+        mode: git_explain::explain::AnalysisMode::WorkingTree,
+        deleted_files: vec![],
+        no_op: Some("Changes exist, but none are in supported source files.".into()),
+    };
+    let html = git_explain::web::render(&[], &context);
+    assert!(html.contains("role=\"status\""));
+    assert!(html.contains("Changes exist, but none are in supported source files."));
 }

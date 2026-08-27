@@ -163,6 +163,16 @@ pub async fn open_repository(
         .await
         .context("read daemon repository response")?;
     if !value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if value.get("code").and_then(|v| v.as_str()) == Some("no_op") {
+            println!(
+                "{}",
+                value
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Nothing to explain.")
+            );
+            return Ok(());
+        }
         anyhow::bail!(
             "daemon could not open repository: {}",
             value
@@ -173,7 +183,10 @@ pub async fn open_repository(
     }
     let url = value["url"].as_str().unwrap_or_default();
     println!("git explain: {url}");
-    let _ = webbrowser::open(url);
+    if let Err(error) = webbrowser::open(url) {
+        eprintln!("Could not open the browser automatically: {error}");
+        eprintln!("Open:\n{url}");
+    }
     Ok(())
 }
 
@@ -267,9 +280,29 @@ async fn futures_health(response: reqwest::Response) -> Option<bool> {
 
 async fn status() -> Result<()> {
     if let Some(metadata) = discover().await? {
+        let active_session = match reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/api/health", metadata.port))
+            .send()
+            .await
+        {
+            Ok(response) => response
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("active_session")
+                        .and_then(|value| value.as_bool())
+                })
+                .unwrap_or(false),
+            Err(_) => false,
+        };
         println!(
-            "running\npid: {}\nurl: http://127.0.0.1:{}\nprotocol: {}",
-            metadata.pid, metadata.port, metadata.protocol_version
+            "Daemon: running\nAddress: http://127.0.0.1:{}\nPID: {}\nActive session: {}\nProtocol: {}",
+            metadata.port,
+            metadata.pid,
+            if active_session { "yes" } else { "no" },
+            metadata.protocol_version
         );
     } else {
         println!("not running");
@@ -409,9 +442,9 @@ async fn run(port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn health() -> Json<serde_json::Value> {
+async fn health(State(state): State<Arc<DaemonState>>) -> Json<serde_json::Value> {
     Json(
-        serde_json::json!({"ok":true,"protocol_version":DAEMON_PROTOCOL_VERSION,"version":env!("CARGO_PKG_VERSION")}),
+        serde_json::json!({"ok":true,"protocol_version":DAEMON_PROTOCOL_VERSION,"version":env!("CARGO_PKG_VERSION"),"active_session":state.active_session.read().await.is_some()}),
     )
 }
 fn authorized(headers: &HeaderMap, state: &DaemonState) -> bool {
@@ -470,6 +503,12 @@ async fn open(
         Ok(session) => session,
         Err(error) => return error_json(StatusCode::BAD_REQUEST, error.to_string()),
     };
+    if let Some(message) = session.snapshot.context.no_op.as_deref() {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok":false,"code":"no_op","error":message,"retryable":false})),
+        );
+    }
     let response = serde_json::json!({"ok":true,"session_id":session.id.0,"generation":session.snapshot.generation.0,"url":format!("http://127.0.0.1:{}/sessions/{}", state.port, session.id.0)});
     register_session(&state, session).await;
     (StatusCode::OK, Json(response))
@@ -599,9 +638,6 @@ fn build_session_from_analyzer(
     } else {
         analyzer.analyze_working_tree(generation)?
     };
-    if snapshot.changes.is_empty() {
-        anyhow::bail!("No supported changes found for analysis");
-    }
     let git_dir = crate::git::git_dir(&root)?;
     let cache = if config.cache.enabled {
         Some(ExplanationCache::open(&git_dir)?)

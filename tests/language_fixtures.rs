@@ -129,6 +129,95 @@ fn git_explain_debug_discovers_mixed_language_changes_in_one_run() {
 }
 
 #[test]
+fn debug_clean_tree_is_a_successful_no_op() {
+    let directory = tempdir().unwrap();
+    run_git(directory.path(), &["init", "-q"]);
+    run_git(
+        directory.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    run_git(directory.path(), &["config", "user.name", "Test"]);
+    fs::write(directory.path().join("README.md"), "initial\n").unwrap();
+    run_git(directory.path(), &["add", "."]);
+    run_git(directory.path(), &["commit", "-qm", "initial"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_git-explain"))
+        .arg("--debug")
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "Working tree is clean. Nothing to explain."
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn debug_unsupported_only_changes_are_a_successful_no_op() {
+    let directory = tempdir().unwrap();
+    run_git(directory.path(), &["init", "-q"]);
+    run_git(
+        directory.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    run_git(directory.path(), &["config", "user.name", "Test"]);
+    fs::write(directory.path().join("README.md"), "initial\n").unwrap();
+    run_git(directory.path(), &["add", "."]);
+    run_git(directory.path(), &["commit", "-qm", "initial"]);
+    fs::write(directory.path().join("README.md"), "updated\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_git-explain"))
+        .arg("--debug")
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "Changes exist, but none are in supported source files."
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn cli_reports_repository_errors_with_a_user_facing_exit_code() {
+    let directory = tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_git-explain"))
+        .arg("--debug")
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("must be run inside a Git repository"));
+    assert!(!stderr.starts_with("Error:"));
+}
+
+#[test]
+fn cli_reports_invalid_revision_with_a_user_facing_exit_code() {
+    let directory = tempdir().unwrap();
+    run_git(directory.path(), &["init", "-q"]);
+    run_git(
+        directory.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    run_git(directory.path(), &["config", "user.name", "Test"]);
+    fs::write(directory.path().join("README.md"), "initial\n").unwrap();
+    run_git(directory.path(), &["add", "."]);
+    run_git(directory.path(), &["commit", "-qm", "initial"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_git-explain"))
+        .args(["missing-revision", "--debug"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("could not be resolved"));
+}
+
+#[test]
 fn unreadable_or_malformed_file_does_not_block_valid_file() {
     let directory = tempdir().unwrap();
     fs::write(directory.path().join("broken.py"), [0xff, 0xfe, 0xfd]).unwrap();

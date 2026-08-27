@@ -11,6 +11,7 @@ use std::{
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedConfig {
     pub profile: String,
+    pub available_profiles: Vec<String>,
     pub model: ModelConfig,
     pub reader: ReaderConfig,
     pub explanation: ExplanationConfig,
@@ -251,6 +252,12 @@ pub fn format_show(config: &ResolvedConfig) -> String {
     )
     .unwrap();
     writeln!(output, "\nActive profile:\n{}", config.profile).unwrap();
+    writeln!(
+        output,
+        "Available profiles:\n{}",
+        config.available_profiles.join(", ")
+    )
+    .unwrap();
     writeln!(
         output,
         "\nModel:\nprovider: {}\nbase_url: {}\nmodel: {}\napi_key: {}",
@@ -629,6 +636,7 @@ fn resolve(
     };
     Ok(ResolvedConfig {
         profile,
+        available_profiles: merged.profiles.keys().cloned().collect(),
         model,
         reader: reader_config(merged.reader),
         explanation: explanation_config(merged.explanation),
@@ -819,5 +827,7 @@ mod tests {
         let shown = format_show(&config);
         assert!(!shown.contains("secret-value"));
         assert!(shown.contains("api_key: <set>"));
+        assert!(shown.contains("Available profiles:"));
+        assert!(shown.contains("default"));
     }
 }
