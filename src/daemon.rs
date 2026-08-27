@@ -1032,7 +1032,7 @@ mod tests {
 
     fn test_config(dir: &Path) -> ResolvedConfig {
         let path = dir.join("git-explain-test.toml");
-        fs::write(&path, "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"test-model\"\n").unwrap();
+        fs::write(&path, "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"test-model\"\n").unwrap();
         ConfigLoader::with_paths(path, None)
             .resolve(Some("local"))
             .unwrap()

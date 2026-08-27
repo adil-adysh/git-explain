@@ -459,7 +459,7 @@ mod tests {
             ResolvedProfile {
                 provider: "openai_compatible".into(),
                 preset: name.eq("llama_cpp").then(|| "llama_cpp".into()),
-                base_url: "http://localhost:8083/v1".into(),
+                base_url: "http://localhost:8080/v1".into(),
                 model: "test-model".into(),
                 api_key_env: None,
                 api_key: None,

@@ -762,7 +762,7 @@ mod tests {
             .resolve(Some("local"))
             .unwrap();
         assert_eq!(created.model.model, "qwen");
-        assert_eq!(created.model.base_url, "http://127.0.0.1:8083/v1");
+        assert_eq!(created.model.base_url, "http://127.0.0.1:8080/v1");
         assert!(created.model.api_key.is_none());
         assert!(String::from_utf8(output)
             .unwrap()

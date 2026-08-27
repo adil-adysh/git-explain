@@ -137,7 +137,7 @@ mod tests {
 
     fn config(dir: &Path) -> ResolvedConfig {
         let path = dir.join("config.toml");
-        std::fs::write(&path, "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"local\"").unwrap();
+        std::fs::write(&path, "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"local\"").unwrap();
         crate::config::ConfigLoader::with_paths(path, None)
             .resolve(Some("local"))
             .unwrap()

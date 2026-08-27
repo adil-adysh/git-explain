@@ -496,7 +496,7 @@ const PROFILE_PRESETS: &[ProfilePreset] = &[
         id: "llama_cpp",
         display_name: "llama.cpp",
         provider: "openai_compatible",
-        default_base_url: Some("http://127.0.0.1:8083/v1"),
+        default_base_url: Some("http://127.0.0.1:8080/v1"),
     },
     ProfilePreset {
         id: "ollama",
@@ -1232,7 +1232,7 @@ pub fn example_config() -> &'static str {
 # [profiles.local]
 # provider = "openai_compatible" # The only supported provider value
 # preset = "llama_cpp" # Presets: "llama_cpp", "ollama"
-# base_url = "http://127.0.0.1:8083/v1" # llama.cpp preset endpoint
+# base_url = "http://127.0.0.1:8080/v1" # llama.cpp preset endpoint
 # model = "your-model"
 # Store only an environment variable name here, never a secret value.
 # api_key_env = "LOCAL_MODEL_API_KEY"
@@ -2035,7 +2035,7 @@ mod tests {
 
     #[test]
     fn defaults_are_safe() {
-        let config = loader("[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"local\"", None)
+        let config = loader("[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"local\"", None)
             .resolve_with_environment(Some("local"), &EnvironmentOverrides::default())
             .unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
@@ -2046,7 +2046,7 @@ mod tests {
     #[test]
     fn repository_deep_merges_user_values() {
         let config = loader(
-            "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"local\"\n[server]\nport = 8081\nopen_browser = true\n",
+            "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"local\"\n[server]\nport = 8081\nopen_browser = true\n",
             Some("[server]\nport = 8090\n"),
         )
         .resolve_with_environment(Some("local"), &EnvironmentOverrides::default())
@@ -2058,7 +2058,7 @@ mod tests {
     #[test]
     fn repository_cannot_define_a_profile_or_endpoint() {
         let error = loader(
-            "[profiles.safe]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"local\"",
+            "[profiles.safe]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"local\"",
             Some("[profiles.safe]\nbase_url = \"https://unexpected.example/v1\""),
         )
         .resolve_with_environment(Some("safe"), &EnvironmentOverrides::default())
@@ -2131,7 +2131,7 @@ mod tests {
     #[test]
     fn profile_lookup_exposes_requested_and_available_names() {
         let error = loader(
-            "[profiles.qwen35b]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"qwen\"",
+            "[profiles.qwen35b]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"qwen\"",
             None,
         )
         .resolve_with_environment(Some("q"), &EnvironmentOverrides::default())
@@ -2207,7 +2207,7 @@ mod tests {
             "# profile = \"local\"",
             "# provider = \"openai_compatible\"",
             "# preset = \"llama_cpp\"",
-            "# base_url = \"http://127.0.0.1:8083/v1\"",
+            "# base_url = \"http://127.0.0.1:8080/v1\"",
             "# model = \"your-model\"",
             "# api_key_env = \"LOCAL_MODEL_API_KEY\"",
             "# reasoning = false",
@@ -2364,7 +2364,7 @@ mod tests {
     fn editing_a_profile_is_partial_and_can_clear_optional_fields() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("config.toml");
-        fs::write(&path, "[model]\nprofile = \"local\"\n[profiles.local]\nprovider = \"openai_compatible\"\npreset = \"llama_cpp\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"old\"\napi_key_env = \"LOCAL_KEY\"\n[profiles.local.normal]\nmax_tokens = 500\ntemperature = 0.2\n[reader]\nexperience = \"new\"\n[profiles.other]\nprovider = \"openai_compatible\"\nbase_url = \"http://example.test/v1\"\nmodel = \"other\"").unwrap();
+        fs::write(&path, "[model]\nprofile = \"local\"\n[profiles.local]\nprovider = \"openai_compatible\"\npreset = \"llama_cpp\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"old\"\napi_key_env = \"LOCAL_KEY\"\n[profiles.local.normal]\nmax_tokens = 500\ntemperature = 0.2\n[reader]\nexperience = \"new\"\n[profiles.other]\nprovider = \"openai_compatible\"\nbase_url = \"http://example.test/v1\"\nmodel = \"other\"").unwrap();
         edit_profile(
             &path,
             "local",
@@ -2394,7 +2394,7 @@ mod tests {
     fn invalid_edit_does_not_change_existing_profile() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("config.toml");
-        let original = "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"local\"\n";
+        let original = "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"local\"\n";
         fs::write(&path, original).unwrap();
         assert!(edit_profile(
             &path,
@@ -2416,7 +2416,7 @@ mod tests {
             name: "local".into(),
             provider: Some("openai_compatible".into()),
             preset: Some("llama_cpp".into()),
-            base_url: Some("http://127.0.0.1:8083/v1".into()),
+            base_url: Some("http://127.0.0.1:8080/v1".into()),
             model: "local".into(),
             api_key_env: None,
             model_port: None,
@@ -2482,7 +2482,7 @@ mod tests {
 
     #[test]
     fn show_redacts_api_key() {
-        let mut config = loader("[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"local\"", None)
+        let mut config = loader("[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"local\"", None)
             .resolve_with_environment(Some("local"), &EnvironmentOverrides::default())
             .unwrap();
         config.model.api_key = Some("secret-value".into());
@@ -2499,7 +2499,7 @@ mod tests {
 
     #[test]
     fn profile_definition_display_does_not_claim_selection_provenance() {
-        let config = loader("[profiles.local]\nprovider = \"openai_compatible\"\npreset = \"llama_cpp\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"local\"", None)
+        let config = loader("[profiles.local]\nprovider = \"openai_compatible\"\npreset = \"llama_cpp\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"local\"", None)
             .resolve_with_environment(Some("local"), &EnvironmentOverrides::default())
             .unwrap();
         let shown = format_profile_show(&config);
@@ -2543,7 +2543,7 @@ mod tests {
         let loader = ConfigLoader::with_paths(path, None);
         assert_eq!(
             loader.resolve(Some("local")).unwrap().model.base_url,
-            "http://127.0.0.1:8083/v1"
+            "http://127.0.0.1:8080/v1"
         );
         assert_eq!(
             loader.resolve(Some("ollama")).unwrap().model.base_url,

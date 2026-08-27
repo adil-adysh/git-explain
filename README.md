@@ -19,6 +19,13 @@ git explain profile use qwen35b
 git explain
 ```
 
+If your llama.cpp server uses a different port, override only that port when
+creating the profile:
+
+```text
+git explain profile add qwen35b-9000 --preset llama-cpp --model-port 9000 --model qwen3.5-35b
+```
+
 For Ollama, use its OpenAI-compatible endpoint instead:
 
 ```text
@@ -58,7 +65,7 @@ git explain config init --repo
 git explain profile use qwen35b --repo
 ```
 
-Known presets provide local model-server defaults: `llama-cpp` uses `http://127.0.0.1:8083/v1`, and `ollama` uses `http://127.0.0.1:11434/v1`. Use `--model-port` to change only a preset endpoint's port, for example `git explain profile add local --preset llama-cpp --model-port 9000 --model your-model`. Use `--base-url` for a complete custom model endpoint; it cannot be combined with `--model-port`. Generic profiles require `--base-url`.
+Known presets provide local model-server defaults: `llama-cpp` uses `http://127.0.0.1:8080/v1`, and `ollama` uses `http://127.0.0.1:11434/v1`. Use `--model-port` to change only a preset endpoint's port, for example `git explain profile add local --preset llama-cpp --model-port 9000 --model your-model`. Use `--base-url` for a complete custom model endpoint; it cannot be combined with `--model-port`. Generic profiles require `--base-url`.
 
 The global `git explain --port <PORT>` flag changes the git-explain local web-server port. It does not change the model endpoint. Profile `--model-port <PORT>` changes the model-server port.
 
@@ -75,7 +82,7 @@ profile = "local"
 [profiles.local]
 provider = "openai_compatible"
 preset = "llama_cpp"
-base_url = "http://127.0.0.1:8083/v1"
+base_url = "http://127.0.0.1:8080/v1"
 model = "your-local-model"
 
 [profiles.local.normal]
