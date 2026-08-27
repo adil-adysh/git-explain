@@ -153,6 +153,43 @@ The key invariant is:
 
 No model request is made by `RepositoryAnalyzer`.
 
+## Configuration and profile boundary
+
+`src/config.rs` owns configuration parsing, precedence, validation, preset and
+endpoint resolution, and atomic TOML persistence. User configuration owns
+profile definitions; a repository configuration can only select one of those
+trusted profile names and supply repository-safe application settings. It
+cannot define a provider, endpoint, credential source, or profile.
+
+```text
+CLI flags / line-oriented interactive editor
+              ↓
+ProfileDraft or ProfileUpdate
+              ↓
+validation + preset/endpoint resolution
+              ↓
+user-config atomic write, or ResolvedProfile
+              ↓
+model HTTP provider
+```
+
+`ProfileDraft` represents construction, `ProfileUpdate` represents a partial
+mutation, and `ResolvedProfile` is the complete runtime model configuration;
+there are no compatibility aliases for those distinct roles. The model client
+accepts `ResolvedProfile` directly. `src/terminal.rs` owns the shared
+line-oriented input and confirmation primitives used by both interactive
+editors, while the editors retain their own menus and reviews.
+Optional generation settings use explicit `Update::Unchanged`, `Update::Set`,
+and `Update::Clear` semantics at the mutation boundary. A missing generation
+setting remains omitted from model requests, preserving provider defaults.
+
+Profile selection precedence is command line, `GIT_EXPLAIN_PROFILE`, repository
+selection, then user selection. The resolver exposes the selection source and
+raises a typed profile-not-found error with the requested and available names;
+CLI presentation supplies operation-specific recovery guidance. Presets and
+their default endpoints have one registry, and `--model-port` edits the URL
+port through URL parsing rather than string manipulation.
+
 ## Migration plan and remaining daemon work
 
 The daemon now maintains a bounded multi-repository session registry. Each session has an opaque ID, an immutable current snapshot, repository-scoped cache and in-flight inference state, and a cancellation signal. Opening a repository makes it active without invalidating other sessions; the registry evicts the least recently used session at its capacity limit and cancels its work. Refresh still targets only the active session, reuses `RepositoryAnalyzer`, compares snapshot identity, and replaces the snapshot atomically. Existing direct CLI/server mode remains available through `git explain --direct`.
