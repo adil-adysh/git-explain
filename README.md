@@ -1,92 +1,139 @@
 # git-explain
 
-Local, screen-reader-first explanations of changed functions across Rust, Python, Go, Java, C#, TypeScript, JavaScript, C, and C++.
+`git-explain` is a local, screen-reader-first Git subcommand that explains changed functions and methods. It analyzes Git changes, sends selected source context to a configured OpenAI-compatible model, and presents the result in an accessible local web page.
 
-## Use
+## Why git-explain
 
-Build and install the Git subcommand:
+Use it when a change is unfamiliar, when reviewing a commit, or when you want a concise explanation of control flow and concepts around changed code. It focuses on changed code units instead of sending or explaining an entire repository.
+
+## Quick start
+
+From a Git repository with a reachable configured model endpoint:
 
 ```text
 cargo install --path .
 git explain
 ```
 
-Use `git explain -h` for the subcommand's options and examples. Git reserves `git explain --help` for looking up external command documentation.
-
-## Task automation
-
-This project includes a [Task](https://taskfile.dev/) workflow for repeatable Windows builds and installation:
+The normal command starts the local daemon when needed, creates a repository session, and opens the explanation page. To explain an existing commit:
 
 ```text
-task build              # development binary
-task build-release      # optimized release binary
-task check              # format check, tests, and diff check
-task install            # build and install the release binary
-task install-dev        # build and install the development binary
+git explain HEAD
 ```
 
-Installation targets `C:\Users\<user>\.local\bin\git-explain.exe`. If the local daemon is running, the installer stops it before replacing the locked binary and starts it again afterward. If graceful shutdown leaves the process busy, use:
-
-```text
-task install FORCE=true
-```
-
-The force path terminates only the `git-explain.exe` process running from the user-local install path before copying the verified binary.
-
-For deterministic inspection without starting the browser:
+To inspect Git analysis without starting a browser or calling the model:
 
 ```text
 git explain --debug
 ```
 
-The command exits successfully for legitimate no-op states and reports them plainly, such as `Working tree is clean. Nothing to explain.` or `Changes exist, but none are in supported source files.`
+Use `git explain -h` for options and examples. Git reserves `git explain --help` for external command documentation lookup.
 
-To explain an existing commit instead of the working tree:
+## What happens when it runs
 
 ```text
-git explain 699fdd6
-git explain HEAD
-git explain HEAD~1 --debug
+Git changes
+  -> supported source files
+  -> changed functions, methods, and declarations
+  -> selected source unit plus relevant diff
+  -> configured OpenAI-compatible model endpoint
+  -> accessible explanation page
 ```
 
-Commit mode compares the selected commit with its first parent and retrieves source from the selected commit itself. Root commits are compared with Git's empty tree. Merge commits use the first parent and identify that choice in debug output and the web page. Deleted files are reported but do not receive annotated source explanations yet. Renames with content changes use the new committed path; pure rename/copy metadata without a textual diff may not produce a source symbol. Binary files are skipped and never sent to the model.
+The analyzer does not normally send the whole repository. It sends the complete selected source unit and its relevant diff hunk, together with metadata such as language, unit name, changed regions, and Git context.
 
-The model endpoint is OpenAI-compatible. For a quick one-off override, the existing environment variables remain supported:
+## What it explains
 
-* `GIT_EXPLAIN_BASE_URL`
-* `GIT_EXPLAIN_MODEL`
-* `GIT_EXPLAIN_API_KEY` (optional for local servers)
-* `GIT_EXPLAIN_PROFILE`
+Working-tree analysis uses Git's diff against the configured target, with staged changes included by default. Untracked files are currently excluded.
 
-Only changed supported-language functions and their relevant Git diff are sent to the configured model. The tool does not execute source, read `.git` internals, or write explanations into source files. The server binds to `127.0.0.1` only.
+Commit analysis compares the selected commit with its first parent. A root commit is compared with Git's empty tree. Merge commits use the first parent, and the selected commit supplies the source text. Renames with content changes use the new path. Deleted files are reported but do not receive annotated source explanations. Binary files and unsupported files are skipped and are never sent to the model.
 
-Errors are written to stderr. Exit status `0` means success or a legitimate no-op; `2` means a Git, revision, configuration, or usage problem; `3` means model connectivity or inference failure; and `4` means a daemon/process failure. Unexpected failures use `1`.
+Clean trees, unsupported-only changes, and supported files with no detectable changed unit are successful no-op states; the command reports them instead of opening an empty page.
 
-## Supported languages
+## Installation
 
-The analyzer registry supports Rust (`.rs`), Python (`.py`), Go (`.go`), Java (`.java`), C# (`.cs`), TypeScript (`.ts`, `.tsx`), JavaScript (`.js`, `.jsx`), C (`.c`), and C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`). A single change set may contain any mix of these files; unsupported files are ignored without preventing supported files from being explained. Python decorators, async functions, class methods, and nested functions are included where relevant. Go functions and pointer/value receiver methods are qualified by name, such as `Service.Authenticate`.
+### From a checkout
 
-The daemon explanation page runs at `http://127.0.0.1:8192` by default. The explicit `--direct` fallback uses the configured one-shot page port (8081 by default). Set `GIT_EXPLAIN_BASE_URL` to the OpenAI-compatible model server you want to use; the model server must listen on a different port from the web page.
+```text
+cargo install --path .
+```
 
-## Local daemon
+On Windows, the Taskfile installs the binary into:
 
-Normal web-mode commands use a local loopback-only daemon automatically:
+```text
+C:\Users\<user>\.local\bin\git-explain.exe
+```
+
+Supported Taskfile commands:
+
+```text
+task build
+task build-release
+task check
+task install
+task install-dev
+```
+
+The installer gracefully stops the same user-local daemon before replacing a locked binary, verifies the copied binary's SHA-256 hash, and restarts the daemon when appropriate. If graceful stop leaves it busy, use `task install FORCE=true`.
+
+## Usage
+
+### Working tree
 
 ```text
 git explain
+```
+
+This is the normal workflow. Staged and unstaged changes are combined when `git.include_staged` is enabled, which is the default. Untracked files are not included.
+
+### Existing commits
+
+```text
+git explain HEAD
 git explain HEAD~1
+git explain <commit-or-revision>
+```
+
+Revision expressions use Git revision resolution. The page identifies the selected commit, subject, parent, and first-parent behavior for merges.
+
+### Debug mode
+
+```text
+git explain --debug
+git explain HEAD~1 --debug
+```
+
+Debug mode performs deterministic Git and source analysis, prints detected changes and units, and exits without starting the browser or requesting model explanations. It is useful for checking revision selection, diff interpretation, parser discovery, deleted files, and changed regions.
+
+### Direct mode
+
+```text
+git explain --direct
+git explain HEAD --direct
+```
+
+Direct mode bypasses the background daemon and runs a one-shot web server using the configured server port, `8081` by default. It is a fallback for daemon troubleshooting. It opens the browser when `server.open_browser` is enabled; if opening fails, it prints the URL for manual use.
+
+`--profile <name>` selects a profile for one invocation. `--port <port>` overrides the port used when starting the relevant server. Place these options before a subcommand, for example `git explain --profile unsloth35b`.
+
+## Local daemon
+
+Normal web-mode commands use a loopback-only daemon at `http://127.0.0.1:8192` by default:
+
+```text
 git explain daemon status
 git explain daemon refresh
 git explain daemon stop
+git explain daemon run
 ```
 
-The daemon normally listens on `127.0.0.1:8192`. It starts idle, then opens a repository session when `git explain` runs; sessions receive opaque IDs and remain isolated from one another. The most recently opened session is active for `git explain daemon refresh`, while previously opened sessions remain available until the bounded registry evicts the least recently used session. Refresh deterministically reanalyzes the active repository, compares snapshot identity, and atomically replaces the snapshot only when the repository changed. It never triggers model inference; the previous snapshot remains active while analysis runs. An open daemon page checks its session snapshot generation periodically and shows an accessible reload action when a newer snapshot is available. For troubleshooting, run `git explain daemon run` in the foreground. `git explain --direct` remains an explicit one-shot fallback.
+`daemon status` reports whether the daemon is running, its address, process ID, protocol version, and whether an active repository session exists. `daemon refresh` reanalyzes that active repository, reports whether the snapshot changed, and does not perform model inference. When the repository is unchanged, the current snapshot remains active.
 
-`git explain daemon status` reports the loopback address, process ID, and whether a repository session is active. If automatic browser opening fails after a page is created, the command keeps the result available and prints the URL to open manually.
+Sessions are repository-isolated and can coexist. The most recently opened session is active for refresh; the bounded registry evicts the least recently used session when full. `daemon run` keeps the server in the foreground for troubleshooting startup and bind failures.
 
 ## Configuration
 
-Initialize a user configuration and inspect the paths used by the loader:
+Use these commands to inspect configuration:
 
 ```text
 git explain config init
@@ -94,15 +141,21 @@ git explain config path
 git explain config show
 ```
 
-Configuration precedence is:
+The user file is stored in the platform-appropriate application configuration directory. Repository configuration, when present, is stored at `.git/git-explain.toml`. Values are resolved in this order:
 
 ```text
-CLI > environment > repository (.git/git-explain.toml) > user config > built-in defaults
+CLI profile and flags
+  > environment variables
+  > repository configuration
+  > user configuration
+  > built-in defaults
 ```
 
-The user file is stored in the platform-appropriate per-user configuration directory. `config init` never overwrites an existing file unless `--force` is supplied. `config show` reports the active and available profiles and redacts API key contents.
+`config init` does not overwrite an existing user file unless `--force` is supplied. `config show` displays configuration paths, the active and available profiles, resolved model/server settings, and a redacted API-key status.
 
-### llama.cpp profile
+### Profiles and llama.cpp
+
+Profiles describe different model servers and generation settings. This is a valid llama.cpp-compatible profile:
 
 ```toml
 [model]
@@ -125,32 +178,26 @@ max_tokens = 2500
 temperature = 0.3
 ```
 
-### Ollama profile
+The normal profile controls the initial concise explanation; deep controls the optional detailed explanation. `git-explain` does not start llama.cpp.
+
+### Ollama
+
+Ollama is used through its OpenAI-compatible endpoint, not its native API:
 
 ```toml
-[profiles.ministral]
+[profiles.ollama]
 provider = "openai_compatible"
 base_url = "http://127.0.0.1:11434/v1"
 model = "ministral-3:8b"
 ```
 
-For the locally managed Unsloth llama.cpp preset used in live testing:
+### Environment overrides
 
-```text
-git explain --profile unsloth35b
-```
+Supported variables are `GIT_EXPLAIN_BASE_URL`, `GIT_EXPLAIN_MODEL`, `GIT_EXPLAIN_API_KEY`, and `GIT_EXPLAIN_PROFILE`. The API key may be omitted for local servers. CLI profile selection takes precedence over `GIT_EXPLAIN_PROFILE`; environment URL, model, and API-key values override profile values.
 
-The generated example configuration includes the `unsloth35b` profile. It uses
-`http://127.0.0.1:8083/v1`, model `git-explain-unsloth35b`, concise normal
-generation, and a larger deep-mode output budget for separated reasoning.
+### Reader context
 
-Select a profile for one invocation without changing files:
-
-```text
-git explain --profile ministral
-```
-
-Reader context can be configured without changing the explanation workflow:
+Reader settings shape assumed background and terminology. They do not change static analysis:
 
 ```toml
 [reader]
@@ -161,18 +208,70 @@ known_frameworks = ["fastapi"]
 learning_frameworks = ["axum"]
 ```
 
-`git.include_untracked` is parsed and shown but is not currently included in Git diffs; untracked-file analysis is intentionally not implied by the setting.
+## Supported languages
 
-For the llama.cpp preset used during live testing:
+- Rust: `.rs`
+- Python: `.py`
+- Go: `.go`
+- Java: `.java`
+- C#: `.cs`
+- TypeScript: `.ts`, `.tsx`
+- JavaScript: `.js`, `.jsx`
+- C: `.c`
+- C++: `.cpp`, `.cc`, `.cxx`, `.hpp`
 
-```powershell
-$env:GIT_EXPLAIN_BASE_URL = "http://127.0.0.1:8083/v1"
-$env:GIT_EXPLAIN_MODEL = "git-explain-unsloth35b"
-git explain
+Python decorators, async functions, class methods, and nested functions are handled where relevant. Go receiver methods can be reported with qualified names such as `Service.Authenticate`.
+
+## Privacy and security
+
+`git-explain` binds its web server to loopback only, does not execute source code, does not read Git internals directly, does not modify source files, skips binary files, and sends only selected changed source units, relevant diff context, and explanation metadata to the configured endpoint.
+
+If that endpoint is remote, the selected source and diff context leave the machine. Local hosting by `git-explain` does not make a remote model service local.
+
+## Current limitations
+
+- Deleted files are reported but are not source-explained.
+- Pure rename or copy metadata without a textual diff may not yield a source unit.
+- Unsupported files and binary files are skipped.
+- Untracked files are not analyzed.
+- `git.include_untracked` is parsed and displayed but is not implemented in Git diff collection.
+- Explanations are model-generated and should be checked against the displayed source and diff.
+
+## Troubleshooting
+
+For a clean tree or unsupported changes, run `git explain --debug`; these are successful no-op states. For model or profile failures, run `git explain config show` and verify the configured OpenAI-compatible endpoint and model name. For daemon or port problems, use:
+
+```text
+git explain daemon status
+git explain daemon stop
+git explain daemon run
 ```
 
-The dedicated `git-explain-unsloth35b` preset is defined in `D:\llama-cpp\models.ini` with reasoning disabled and `enable_thinking` disabled for concise JSON-compatible responses.
+Unknown profiles list available names. Malformed configuration is reported with the affected file. If the browser does not open, use the URL printed by the command. The daemon binds to loopback and stale metadata is removed when its recorded process is no longer healthy.
+
+Errors go to stderr. Exit status `0` means success or a legitimate no-op; `2` means a Git, revision, configuration, or usage problem; `3` means model connectivity or inference failure; `4` means a daemon/process failure; and `1` is reserved for unexpected failures.
+
+## Development
+
+The project uses Rust stable. Common commands are:
+
+```text
+task check
+task build
+task build-release
+task install-dev
+```
+
+Equivalent commands are:
+
+```text
+cargo fmt -- --check
+cargo test
+cargo build
+```
+
+Tests use temporary Git repositories and local fakes where needed. Do not commit binaries, `target/` output, model files, credentials, or machine-specific configuration.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
