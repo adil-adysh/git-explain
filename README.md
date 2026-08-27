@@ -4,22 +4,32 @@
 
 ## Quick start
 
-Create the starter configuration:
+From inside a Git repository, create the documented starter configuration:
 
 ```text
 git explain config init
 ```
 
-Configure and select a local llama.cpp endpoint:
+Choose one local model-server preset. For llama.cpp running on its default port:
 
 ```text
-git explain profile add local --preset llama-cpp --model your-model
-git explain profile test local
-git explain profile use local
+git explain profile add qwen35b --preset llama-cpp --model qwen3.5-35b
+git explain profile test qwen35b
+git explain profile use qwen35b
 git explain
 ```
 
-For a hosted OpenAI-compatible endpoint, keep the secret outside configuration:
+For Ollama, use its OpenAI-compatible endpoint instead:
+
+```text
+git explain profile add ollama --preset ollama --model qwen3:8b
+git explain profile test ollama
+git explain --profile ollama
+```
+
+Replace the example model names with the model loaded by your local server. `profile test` is a safe connection check: it never sends repository source.
+
+For a hosted OpenAI-compatible endpoint, set the credential in your shell first, then keep only its environment-variable name in the profile:
 
 ```text
 git explain profile add cloud --base-url https://api.example.com/v1 --model example-model --api-key-env CLOUD_API_KEY
@@ -27,7 +37,26 @@ git explain profile test cloud
 git explain --profile cloud
 ```
 
-`profile test` never sends repository source. It verifies model listing when available and otherwise uses a fixed, source-free compatibility request. `--profile` affects one invocation. `GIT_EXPLAIN_PROFILE` can select a profile when an explicit command-line selection is not provided.
+Use `--profile` for a one-off run; `git explain profile use <name>` makes a profile the default. `GIT_EXPLAIN_PROFILE` can select a profile when an explicit command-line selection is not provided.
+
+Useful first-run commands:
+
+```text
+# See the changed source units without contacting a model or opening a browser.
+git explain --debug
+
+# Inspect the effective configuration and available profiles.
+git explain config show
+git explain profile list
+
+# Use a different local git-explain web-server port for this run.
+git explain --port 9000
+
+# Create repository-scoped preferences; it can select a trusted user profile,
+# but cannot define an endpoint or credential.
+git explain config init --repo
+git explain profile use qwen35b --repo
+```
 
 Known presets provide local model-server defaults: `llama-cpp` uses `http://127.0.0.1:8083/v1`, and `ollama` uses `http://127.0.0.1:11434/v1`. Use `--model-port` to change only a preset endpoint's port, for example `git explain profile add local --preset llama-cpp --model-port 9000 --model your-model`. Use `--base-url` for a complete custom model endpoint; it cannot be combined with `--model-port`. Generic profiles require `--base-url`.
 
