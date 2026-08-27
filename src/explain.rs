@@ -1,7 +1,7 @@
 use crate::{
     diff::{ChangeKind, FileChange, LineRange},
     language::{LanguageRegistry, SourceSymbol, SourceUnit},
-    model::{ExplanationProvider, ExplanationRegion, ExplanationRequest, UnitExplanation},
+    model::{ExplanationRegion, UnitExplanation},
     snapshot::UnitId,
 };
 use anyhow::Context;
@@ -110,7 +110,6 @@ pub struct ExplainedUnit {
     pub explanation: UnitExplanation,
     pub deep_explanation: Option<String>,
 }
-pub type ExplainedFunction = ExplainedUnit;
 #[allow(dead_code)]
 pub fn symbols(root: &Path, c: &FileChange) -> Result<Vec<SourceSymbol>> {
     changed_units(root, c)
@@ -249,7 +248,7 @@ pub fn print_debug(snapshot: &crate::snapshot::AnalysisSnapshot) -> Result<()> {
             );
             println!("id: {}", item.id);
             println!("Regions:");
-            for region in regions_for_change(c, &s) {
+            for region in regions_for_change(c, s) {
                 println!(
                     "\nRegion {}\nlines {}-{}\n{}",
                     region.id, region.start_line, region.end_line, region.source
@@ -306,14 +305,12 @@ fn relevant_diff(change: &FileChange, unit: &SourceUnit) -> String {
                 result.push_str(line);
                 result.push('\n');
             }
-        } else if line.starts_with("diff ")
+        } else if selected
+            || line.starts_with("diff ")
             || line.starts_with("index ")
             || line.starts_with("--- ")
             || line.starts_with("+++ ")
         {
-            result.push_str(line);
-            result.push('\n');
-        } else if selected {
             result.push_str(line);
             result.push('\n');
         }
@@ -361,65 +358,6 @@ fn regions_for_change(change: &FileChange, unit: &SourceUnit) -> Vec<Explanation
         regions
     }
 }
-pub async fn explain_items(
-    source_provider: &dyn SourceProvider,
-    changes: &[FileChange],
-    model_provider: impl ExplanationProvider,
-    context: &AnalysisContext,
-    deep: bool,
-) -> Result<Vec<ExplainedUnit>> {
-    let mut all = vec![];
-    for c in changes {
-        for s in units_from_provider(source_provider, c)? {
-            let regions = regions_for_change(c, &s);
-            let diff = relevant_diff(c, &s);
-            let e = match model_provider
-                .explain(ExplanationRequest {
-                    source_unit: s.source.clone(),
-                    unit_name: s.qualified_name.clone().unwrap_or_else(|| s.name.clone()),
-                    unit_kind: format!("{:?}", s.kind),
-                    diff: diff.clone(),
-                    language: LanguageRegistry::language_for_path(&c.path)
-                        .unwrap_or("unknown")
-                        .into(),
-                    git_context: context.prompt_context(),
-                    regions: regions.clone(),
-                    prior_explanation: None,
-                    deep,
-                })
-                .await
-            {
-                Ok(explanation) => explanation,
-                Err(error) => {
-                    eprintln!(
-                        "{} / {}: explanation request failed: {error:#}",
-                        c.path.display(),
-                        s.name
-                    );
-                    UnitExplanation {
-                        overview: crate::model::user_facing_error(&error).message.into(),
-                        annotations: vec![],
-                        deep: None,
-                    }
-                }
-            };
-            all.push(ExplainedUnit {
-                id: UnitId("pending".into()),
-                file: c.path.display().to_string(),
-                language: LanguageRegistry::language_for_path(&c.path)
-                    .unwrap_or("unknown")
-                    .into(),
-                diff,
-                regions,
-                unit: s,
-                explanation: e,
-                deep_explanation: None,
-            });
-        }
-    }
-    Ok(all)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

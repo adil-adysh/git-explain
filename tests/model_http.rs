@@ -1,5 +1,5 @@
 use axum::{http::StatusCode, response::IntoResponse, routing::post, Router};
-use git_explain::config::{ExplanationConfig, GenerationConfig, ModelConfig, ReaderConfig};
+use git_explain::config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile};
 use git_explain::model::openai::OpenAiProvider;
 use git_explain::model::{
     user_facing_error, ExplanationProvider, ExplanationRegion, ExplanationRequest,
@@ -17,21 +17,22 @@ use tokio::sync::oneshot;
 
 fn provider(base_url: String, timeout: Duration) -> OpenAiProvider {
     OpenAiProvider::from_config_with_timeout(
-        ModelConfig {
-            provider: "llama_cpp".into(),
+        ResolvedProfile {
+            provider: "openai_compatible".into(),
+            preset: Some("llama_cpp".into()),
             base_url,
             model: "unsloth-test".into(),
             api_key_env: None,
             api_key: None,
             normal: GenerationConfig {
-                reasoning: false,
-                max_tokens: 500,
-                temperature: 0.2,
+                reasoning: Some(false),
+                max_tokens: Some(500),
+                temperature: Some(0.2),
             },
             deep: GenerationConfig {
-                reasoning: true,
-                max_tokens: 2500,
-                temperature: 0.3,
+                reasoning: Some(true),
+                max_tokens: Some(2500),
+                temperature: Some(0.3),
             },
         },
         ReaderConfig {

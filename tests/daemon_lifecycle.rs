@@ -25,20 +25,31 @@ fn cli(dir: &Path, port: u16, args: &[&str]) -> Output {
         .args(args)
         .env("GIT_EXPLAIN_DAEMON_DIR", dir)
         .env("GIT_EXPLAIN_DAEMON_PORT", port.to_string())
+        .env("GIT_EXPLAIN_USER_CONFIG", user_config_path(dir))
         .output()
         .unwrap()
 }
 
 fn spawn_daemon(dir: &Path) -> Child {
+    write_user_config(dir);
     Command::new(binary())
         .args(["daemon", "run"])
         .env("GIT_EXPLAIN_DAEMON_DIR", dir)
         .env("GIT_EXPLAIN_DAEMON_PORT", "0")
+        .env("GIT_EXPLAIN_USER_CONFIG", user_config_path(dir))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap()
+}
+
+fn user_config_path(dir: &Path) -> PathBuf {
+    dir.join("user-config.toml")
+}
+
+fn write_user_config(dir: &Path) {
+    fs::write(user_config_path(dir), "[model]\nprofile = \"test\"\n\n[profiles.test]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"test-model\"\n").unwrap();
 }
 
 async fn read_metadata(dir: &Path) -> Metadata {

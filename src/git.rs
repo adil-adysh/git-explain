@@ -6,16 +6,31 @@ use std::{
     process::Command,
 };
 
-pub fn repository_root() -> Result<PathBuf> {
-    let out = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .context("run git")?;
-    if !out.status.success() {
-        anyhow::bail!("not inside a Git repository");
-    }
-    Ok(PathBuf::from(String::from_utf8(out.stdout)?.trim()))
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepositoryContext {
+    pub worktree_root: PathBuf,
+    pub git_dir: PathBuf,
 }
+
+impl RepositoryContext {
+    pub fn discover() -> Result<Self> {
+        let root = git_output_from_current(&["rev-parse", "--show-toplevel"])
+            .context("not inside a Git repository")?;
+        let worktree_root = PathBuf::from(root);
+        let git_dir = git_output(&worktree_root, &["rev-parse", "--git-dir"])
+            .context("resolve Git directory")?;
+        let git_dir = PathBuf::from(git_dir);
+        Ok(Self {
+            git_dir: if git_dir.is_absolute() {
+                git_dir
+            } else {
+                worktree_root.join(git_dir)
+            },
+            worktree_root,
+        })
+    }
+}
+
 pub fn git_dir(root: &Path) -> Result<PathBuf> {
     let out = Command::new("git")
         .current_dir(root)
@@ -100,6 +115,21 @@ pub fn resolve_revision(root: &Path, revision: &str) -> Result<String> {
 fn git_output(root: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .current_dir(root)
+        .args(args)
+        .output()
+        .with_context(|| format!("run git {}", args.join(" ")))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+fn git_output_from_current(args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
         .args(args)
         .output()
         .with_context(|| format!("run git {}", args.join(" ")))?;

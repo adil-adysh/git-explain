@@ -17,8 +17,7 @@ impl GoAnalyzer {
             .next()
             .unwrap_or(text)
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .filter(|token| !token.is_empty())
-            .last()?;
+            .rfind(|token| !token.is_empty())?;
         Some(token.to_string())
     }
 

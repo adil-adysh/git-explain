@@ -13,7 +13,6 @@ use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceUnitKind {
-    File,
     Namespace,
     Function,
     Method,
@@ -30,9 +29,6 @@ pub enum SourceUnitKind {
     TypeAlias,
     ImportBlock,
     TopLevelBlock,
-    Lambda,
-    Module,
-    Other,
 }
 #[derive(Clone, Debug)]
 pub struct SourceUnit {
@@ -55,6 +51,10 @@ pub trait LanguageAnalyzer {
     fn supports_path(&self, path: &Path) -> bool;
     fn find_changed_units(&self, source: &str, ranges: &[LineRange]) -> Result<Vec<SourceUnit>>;
 
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "Focused parser tests exercise this helper.")
+    )]
     fn find_containing_symbols(
         &self,
         source: &str,

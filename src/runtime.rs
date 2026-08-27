@@ -1,6 +1,6 @@
 use crate::{
     cache::ExplanationCache,
-    config::{ExplanationConfig, ModelConfig, ReaderConfig},
+    config::{ExplanationConfig, ReaderConfig, ResolvedProfile},
     explain::{AnalysisContext, ExplainedUnit},
     model::{ExplanationRequest, UnitExplanation},
     snapshot::{AnalysisSnapshot, UnitId},
@@ -11,7 +11,7 @@ pub fn hydrate(
     items: &mut HashMap<UnitId, ExplainedUnit>,
     cache: &ExplanationCache,
     snapshot: &AnalysisSnapshot,
-    model: &ModelConfig,
+    model: &ResolvedProfile,
     reader: &ReaderConfig,
     explanation: &ExplanationConfig,
 ) {

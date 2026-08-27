@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{ExplanationConfig, GenerationConfig, ModelConfig, ReaderConfig};
+use crate::config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -14,8 +14,8 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    fn from_name(name: &str) -> Self {
-        if name.eq_ignore_ascii_case("llama_cpp") {
+    fn from_preset(preset: Option<&str>) -> Self {
+        if preset.is_some_and(|name| name.eq_ignore_ascii_case("llama_cpp")) {
             Self::LlamaCpp
         } else {
             Self::OpenAiCompatible
@@ -40,11 +40,12 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
+    #[cfg(test)]
     fn build_request(&self, request: &ExplanationRequest) -> Req {
         self.build_request_with_retry(request, false)
     }
     pub fn from_config(
-        model: ModelConfig,
+        model: ResolvedProfile,
         reader: ReaderConfig,
         explanation: ExplanationConfig,
     ) -> Self {
@@ -52,7 +53,7 @@ impl OpenAiProvider {
     }
 
     pub fn from_config_with_timeout(
-        model: ModelConfig,
+        model: ResolvedProfile,
         reader: ReaderConfig,
         explanation: ExplanationConfig,
         timeout: Duration,
@@ -62,7 +63,7 @@ impl OpenAiProvider {
                 .timeout(timeout)
                 .build()
                 .expect("valid model HTTP client configuration"),
-            kind: ProviderKind::from_name(&model.provider),
+            kind: ProviderKind::from_preset(model.preset.as_deref()),
             base_url: model.base_url,
             model: model.model,
             api_key: model.api_key,
@@ -147,9 +148,9 @@ impl OpenAiProvider {
             chat_template_kwargs: self
                 .kind
                 .is_llama_cpp()
-                .then(|| json!({"enable_thinking": generation.reasoning})),
+                .then(|| json!({"enable_thinking": generation.reasoning.unwrap_or(false)})),
             reasoning_effort: self.kind.is_llama_cpp().then(|| {
-                if generation.reasoning {
+                if generation.reasoning.unwrap_or(false) {
                     "high".into()
                 } else {
                     "none".into()
@@ -206,8 +207,10 @@ impl OpenAiProvider {
 struct Req {
     model: String,
     messages: Vec<Msg>,
-    temperature: f32,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     response_format: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     chat_template_kwargs: Option<Value>,
@@ -335,10 +338,7 @@ fn clean_content(raw: &str) -> String {
 fn strip_reasoning_sections(raw: &str) -> String {
     let mut result = raw.to_string();
     for (open, close) in [("<think>", "</think>"), ("<|thinking|>", "</|thinking|>")] {
-        loop {
-            let Some(start) = result.find(open) else {
-                break;
-            };
+        while let Some(start) = result.find(open) {
             let tail = &result[start + open.len()..];
             if let Some(end) = tail.find(close) {
                 result.replace_range(start..start + open.len() + end + close.len(), "");
@@ -430,7 +430,7 @@ impl OpenAiProvider {
             }
             bail!("model returned empty content ({usage})");
         }
-        self.parse_response(&content, &request).with_context(|| {
+        self.parse_response(&content, request).with_context(|| {
             format!(
                 "invalid structured model content (finish_reason={:?}; {usage})",
                 choice.finish_reason
@@ -452,25 +452,26 @@ fn is_retryable_structured_error(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ExplanationConfig, GenerationConfig, ModelConfig, ReaderConfig};
+    use crate::config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile};
 
     fn provider(name: &str) -> OpenAiProvider {
         OpenAiProvider::from_config(
-            ModelConfig {
-                provider: name.into(),
+            ResolvedProfile {
+                provider: "openai_compatible".into(),
+                preset: name.eq("llama_cpp").then(|| "llama_cpp".into()),
                 base_url: "http://localhost:8083/v1".into(),
                 model: "test-model".into(),
                 api_key_env: None,
                 api_key: None,
                 normal: GenerationConfig {
-                    reasoning: false,
-                    max_tokens: 500,
-                    temperature: 0.2,
+                    reasoning: Some(false),
+                    max_tokens: Some(500),
+                    temperature: Some(0.2),
                 },
                 deep: GenerationConfig {
-                    reasoning: true,
-                    max_tokens: 2500,
-                    temperature: 0.3,
+                    reasoning: Some(true),
+                    max_tokens: Some(2500),
+                    temperature: Some(0.3),
                 },
             },
             ReaderConfig {
@@ -561,6 +562,18 @@ mod tests {
         assert!(value.get("chat_template_kwargs").is_none());
         assert!(value.get("reasoning_effort").is_none());
         assert!(value.get("reasoning_format").is_none());
+    }
+    #[test]
+    fn unspecified_generation_settings_are_not_sent() {
+        let mut provider = provider("openai_compatible");
+        provider.normal = GenerationConfig {
+            reasoning: None,
+            max_tokens: None,
+            temperature: None,
+        };
+        let value = serde_json::to_value(provider.build_request(&request(false))).unwrap();
+        assert!(value.get("temperature").is_none());
+        assert!(value.get("max_tokens").is_none());
     }
     #[test]
     fn region_annotations_map_and_reasoning_is_removed() {

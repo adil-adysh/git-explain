@@ -1,5 +1,5 @@
 use crate::{
-    config::{ExplanationConfig, GenerationConfig, ModelConfig, ReaderConfig},
+    config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile},
     model::ExplanationRequest,
 };
 use anyhow::{Context, Result};
@@ -65,7 +65,7 @@ impl ExplanationCache {
     }
     pub fn key(
         request: &ExplanationRequest,
-        model: &ModelConfig,
+        model: &ResolvedProfile,
         reader: &ReaderConfig,
         explanation: &ExplanationConfig,
     ) -> String {
@@ -118,7 +118,7 @@ impl ExplanationCache {
         &self,
         key: &str,
         request: &ExplanationRequest,
-        model: &ModelConfig,
+        model: &ResolvedProfile,
         response: &str,
     ) -> Result<()> {
         let db = self.db.lock().unwrap();
@@ -152,13 +152,13 @@ impl<T> OptionalRow<T> for rusqlite::Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ExplanationConfig, GenerationConfig, ModelConfig, ReaderConfig};
+    use crate::config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile};
     use crate::model::ExplanationRegion;
     use tempfile::tempdir;
 
     fn setup() -> (
         ExplanationCache,
-        ModelConfig,
+        ResolvedProfile,
         ReaderConfig,
         ExplanationConfig,
         ExplanationRequest,
@@ -166,21 +166,22 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ExplanationCache::open(dir.path()).unwrap();
         std::mem::forget(dir);
-        let model = ModelConfig {
-            provider: "llama_cpp".into(),
+        let model = ResolvedProfile {
+            provider: "openai_compatible".into(),
+            preset: Some("llama_cpp".into()),
             base_url: "http://localhost".into(),
             model: "m".into(),
             api_key_env: None,
             api_key: None,
             normal: GenerationConfig {
-                reasoning: false,
-                max_tokens: 10,
-                temperature: 0.2,
+                reasoning: Some(false),
+                max_tokens: Some(10),
+                temperature: Some(0.2),
             },
             deep: GenerationConfig {
-                reasoning: true,
-                max_tokens: 20,
-                temperature: 0.3,
+                reasoning: Some(true),
+                max_tokens: Some(20),
+                temperature: Some(0.3),
             },
         };
         let reader = ReaderConfig {

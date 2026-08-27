@@ -2,7 +2,7 @@ use crate::{
     analyzer::RepositoryAnalyzer,
     cache::ExplanationCache,
     cli::DaemonAction,
-    config::{ConfigLoader, ExplanationConfig, ModelConfig, ReaderConfig},
+    config::{ConfigLoader, ExplanationConfig, ReaderConfig, ResolvedProfile},
     explain::ExplainedUnit,
     model::{
         user_facing_error, ExplanationProvider, ExplanationRequest, UnitExplanation,
@@ -56,7 +56,6 @@ pub struct RepositorySessionId(pub String);
 struct RepositorySession {
     id: RepositorySessionId,
     repo_root: PathBuf,
-    git_dir: PathBuf,
     analyzer: RepositoryAnalyzer,
     revision: Option<String>,
     config: crate::config::ResolvedConfig,
@@ -64,7 +63,7 @@ struct RepositorySession {
     items: Mutex<HashMap<UnitId, ExplainedUnit>>,
     provider: Arc<dyn ExplanationProvider>,
     cache: Option<ExplanationCache>,
-    model: ModelConfig,
+    model: ResolvedProfile,
     reader: ReaderConfig,
     explanation: ExplanationConfig,
     cancellation: Arc<SessionCancellation>,
@@ -638,8 +637,8 @@ fn build_session_from_analyzer(
     } else {
         analyzer.analyze_working_tree(generation)?
     };
-    let git_dir = crate::git::git_dir(&root)?;
     let cache = if config.cache.enabled {
+        let git_dir = crate::git::git_dir(&root)?;
         Some(ExplanationCache::open(&git_dir)?)
     } else {
         None
@@ -668,7 +667,6 @@ fn build_session_from_analyzer(
     Ok(Arc::new(RepositorySession {
         id,
         repo_root: root,
-        git_dir,
         analyzer,
         revision,
         config: config.clone(),
@@ -974,6 +972,7 @@ fn write_metadata(metadata: &Metadata) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ResolvedConfig;
     use async_trait::async_trait;
     use axum::http::HeaderValue;
     use std::sync::atomic::AtomicUsize;
@@ -1031,6 +1030,14 @@ mod tests {
             .success());
     }
 
+    fn test_config(dir: &Path) -> ResolvedConfig {
+        let path = dir.join("git-explain-test.toml");
+        fs::write(&path, "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"test-model\"\n").unwrap();
+        ConfigLoader::with_paths(path, None)
+            .resolve(Some("local"))
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn refresh_replaces_snapshot_atomically_and_increments_generation() {
         let dir = tempdir().unwrap();
@@ -1045,9 +1052,7 @@ mod tests {
             "fn first() { let changed = true; }\n",
         )
         .unwrap();
-        let config = ConfigLoader::with_paths(dir.path().join("missing"), None)
-            .resolve(None)
-            .unwrap();
+        let config = test_config(dir.path());
         let session = build_session(
             RepositorySessionId("stable-session".into()),
             dir.path().to_path_buf(),
@@ -1096,9 +1101,7 @@ mod tests {
             "fn first() { let changed = true; }\n",
         )
         .unwrap();
-        let config = ConfigLoader::with_paths(dir.path().join("missing"), None)
-            .resolve(None)
-            .unwrap();
+        let config = test_config(dir.path());
         let session = build_session(
             RepositorySessionId("stable-session".into()),
             dir.path().to_path_buf(),
@@ -1133,9 +1136,7 @@ mod tests {
             "fn first() { let changed = true; let current = true; }\n",
         )
         .unwrap();
-        let config = ConfigLoader::with_paths(dir.path().join("missing"), None)
-            .resolve(None)
-            .unwrap();
+        let config = test_config(dir.path());
         let state = test_state(None);
         let mut first = None;
 
@@ -1194,9 +1195,8 @@ mod tests {
 
     #[tokio::test]
     async fn identical_inference_requests_share_one_provider_call() {
-        let config = ConfigLoader::with_paths(PathBuf::from("missing"), None)
-            .resolve(None)
-            .unwrap();
+        let directory = tempdir().unwrap();
+        let config = test_config(directory.path());
         let provider = Arc::new(CountingProvider {
             calls: AtomicUsize::new(0),
             started: Notify::new(),
@@ -1205,7 +1205,6 @@ mod tests {
         let session = Arc::new(RepositorySession {
             id: RepositorySessionId("dedup-session".into()),
             repo_root: PathBuf::from("."),
-            git_dir: PathBuf::from("."),
             analyzer: RepositoryAnalyzer::new(".", config.clone()),
             revision: None,
             config: config.clone(),

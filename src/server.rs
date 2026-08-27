@@ -1,6 +1,6 @@
 use crate::{
     cache::ExplanationCache,
-    config::{ExplanationConfig, ModelConfig, ReaderConfig, ServerConfig},
+    config::{ExplanationConfig, ReaderConfig, ResolvedProfile, ServerConfig},
     explain::ExplainedUnit,
     model::{user_facing_error, ExplanationProvider, UnitExplanation},
     runtime,
@@ -25,7 +25,7 @@ struct StateData {
     items: Mutex<HashMap<UnitId, ExplainedUnit>>,
     provider: Arc<dyn ExplanationProvider>,
     cache: Option<ExplanationCache>,
-    model: ModelConfig,
+    model: ResolvedProfile,
     reader: ReaderConfig,
     explanation: ExplanationConfig,
 }
@@ -38,7 +38,7 @@ pub async fn serve(
     provider: impl ExplanationProvider + 'static,
     config: ServerConfig,
     cache: Option<ExplanationCache>,
-    model: ModelConfig,
+    model: ResolvedProfile,
     reader: ReaderConfig,
     explanation: ExplanationConfig,
 ) -> Result<()> {

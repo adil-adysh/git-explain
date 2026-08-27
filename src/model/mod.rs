@@ -37,7 +37,6 @@ pub struct UnitExplanation {
     #[serde(default)]
     pub deep: Option<String>,
 }
-pub type FunctionExplanation = UnitExplanation;
 
 /// Safe, stable categories for the local HTTP API. Provider details stay in logs.
 #[derive(Clone, Debug, PartialEq, Eq)]

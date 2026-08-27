@@ -1,5 +1,5 @@
 use crate::{
-    config::ResolvedConfig,
+    config::{GitConfig, ResolvedConfig},
     diff::ChangeKind,
     explain::{
         analysis_items, AnalysisContext, AnalysisMode, GitCommitSourceProvider,
@@ -17,24 +17,30 @@ use std::path::PathBuf;
 #[derive(Clone)]
 pub struct RepositoryAnalyzer {
     repo_root: PathBuf,
-    config: ResolvedConfig,
+    git_config: GitConfig,
 }
 impl RepositoryAnalyzer {
     pub fn new(repo_root: impl Into<PathBuf>, config: ResolvedConfig) -> Self {
         Self {
             repo_root: repo_root.into(),
-            config,
+            git_config: config.git,
+        }
+    }
+    pub fn with_git_config(repo_root: impl Into<PathBuf>, git_config: GitConfig) -> Self {
+        Self {
+            repo_root: repo_root.into(),
+            git_config,
         }
     }
     pub fn analyze_working_tree(&self, generation: SnapshotGeneration) -> Result<AnalysisSnapshot> {
-        let changes = git::working_tree_changes(&self.repo_root, &self.config.git)?;
+        let changes = git::working_tree_changes(&self.repo_root, &self.git_config)?;
         let provider = WorkingTreeSourceProvider::new(&self.repo_root);
         let mut context = AnalysisContext::working_tree();
         let mut units = analysis_items(&provider, &changes)?;
         assign_ids(&mut units);
         context.no_op = no_op_message(&context, &changes, &units);
         let head = git::head_oid(&self.repo_root).unwrap_or_default();
-        let fingerprint = working_tree_fingerprint(&head, &self.config.git.diff_target, &changes);
+        let fingerprint = working_tree_fingerprint(&head, &self.git_config.diff_target, &changes);
         Ok(AnalysisSnapshot {
             generation,
             identity: SnapshotIdentity::WorkingTree { fingerprint },
@@ -130,8 +136,10 @@ mod tests {
     }
 
     fn config(dir: &Path) -> ResolvedConfig {
-        crate::config::ConfigLoader::with_paths(dir.join("missing"), None)
-            .resolve(None)
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8083/v1\"\nmodel = \"local\"").unwrap();
+        crate::config::ConfigLoader::with_paths(path, None)
+            .resolve(Some("local"))
             .unwrap()
     }
 

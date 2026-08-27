@@ -114,10 +114,10 @@ fn rendered_diff(diff: &str) -> String {
             || line.starts_with("index ")
         {
             ("diff-meta", "", line, "Diff metadata")
-        } else if line.starts_with('+') {
-            ("diff-added", "+", &line[1..], "Added line")
-        } else if line.starts_with('-') {
-            ("diff-removed", "−", &line[1..], "Removed line")
+        } else if let Some(line) = line.strip_prefix('+') {
+            ("diff-added", "+", line, "Added line")
+        } else if let Some(line) = line.strip_prefix('-') {
+            ("diff-removed", "−", line, "Removed line")
         } else {
             (
                 "diff-context",
