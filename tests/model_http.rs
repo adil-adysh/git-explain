@@ -1,7 +1,9 @@
 use axum::{http::StatusCode, response::IntoResponse, routing::post, Router};
 use git_explain::config::{ExplanationConfig, GenerationConfig, ModelConfig, ReaderConfig};
 use git_explain::model::openai::OpenAiProvider;
-use git_explain::model::{ExplanationProvider, ExplanationRegion, ExplanationRequest};
+use git_explain::model::{
+    user_facing_error, ExplanationProvider, ExplanationRegion, ExplanationRequest,
+};
 use serde_json::json;
 use std::{
     convert::Infallible,
@@ -246,6 +248,27 @@ async fn reports_http_errors() {
         .to_string();
     assert!(error.contains("model response"));
     let _ = shutdown.send(());
+}
+
+#[test]
+fn categorizes_model_failures_for_the_ui() {
+    let unavailable = user_facing_error(&anyhow::anyhow!(
+        "model response (HTTP 404): model not found"
+    ));
+    assert_eq!(unavailable.code, "model_unavailable");
+    assert!(!unavailable.retryable);
+
+    let timeout = user_facing_error(&anyhow::anyhow!("model request: operation timed out"));
+    assert_eq!(timeout.code, "timeout");
+    assert!(timeout.retryable);
+
+    let auth = user_facing_error(&anyhow::anyhow!("model response (HTTP 401): unauthorized"));
+    assert_eq!(auth.code, "model_auth");
+    assert!(!auth.retryable);
+
+    let busy = user_facing_error(&anyhow::anyhow!("model response (HTTP 429): rate limit"));
+    assert_eq!(busy.code, "model_busy");
+    assert!(busy.retryable);
 }
 
 #[tokio::test]

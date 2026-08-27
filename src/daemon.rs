@@ -4,7 +4,10 @@ use crate::{
     cli::DaemonAction,
     config::{ConfigLoader, ExplanationConfig, ModelConfig, ReaderConfig},
     explain::ExplainedUnit,
-    model::{ExplanationProvider, ExplanationRequest, UnitExplanation},
+    model::{
+        user_facing_error, ExplanationProvider, ExplanationRequest, UnitExplanation,
+        UserFacingError,
+    },
     runtime,
     snapshot::{AnalysisSnapshot, SnapshotGeneration, UnitId},
     web,
@@ -106,7 +109,7 @@ impl SessionCancellation {
 enum InferenceOutcome {
     Success(UnitExplanation),
     Cancelled,
-    Failed,
+    Failed(UserFacingError),
 }
 
 struct InFlight {
@@ -739,7 +742,7 @@ async fn generate(
 ) -> Json<serde_json::Value> {
     let Some(session) = current(&state, &session_id).await else {
         return Json(
-            serde_json::json!({"ok":false,"stale":true,"error":"Repository session is no longer active."}),
+            serde_json::json!({"ok":false,"stale":true,"code":"session_stale","error":"This repository session is no longer active. Reload the page and try again.","retryable":true}),
         );
     };
     if body
@@ -747,16 +750,20 @@ async fn generate(
         .is_some_and(|generation| generation != session.snapshot.generation)
     {
         return Json(
-            serde_json::json!({"ok":false,"stale":true,"error":"Repository snapshot has changed."}),
+            serde_json::json!({"ok":false,"stale":true,"code":"snapshot_stale","error":"The repository changed while this page was open. Reload the page and try again.","retryable":true}),
         );
     }
     let unit_id = UnitId(id);
     let item = { session.items.lock().unwrap().get(&unit_id).cloned() };
     let Some(item) = item else {
-        return Json(serde_json::json!({"ok":false,"error":"Unknown code unit."}));
+        return Json(
+            serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available. Reload the page and try again.","retryable":false}),
+        );
     };
     if !crate::language::contains_meaningful_source(&item.unit.source) {
-        return Json(serde_json::json!({"ok":false,"error":"No meaningful source to explain."}));
+        return Json(
+            serde_json::json!({"ok":false,"code":"no_source","error":"This code unit has no meaningful source to explain.","retryable":false}),
+        );
     }
     let request = runtime::request_for(&item, &session.snapshot.context, deep);
     let key = ExplanationCache::key(
@@ -781,7 +788,7 @@ async fn generate(
         InferenceOutcome::Success(e) => {
             if current(&state, &session.id.0).await.is_none() {
                 return Json(
-                    serde_json::json!({"ok":false,"stale":true,"error":"Repository session is no longer active."}),
+                    serde_json::json!({"ok":false,"stale":true,"code":"session_stale","error":"This repository session is no longer active. Reload the page and try again.","retryable":true}),
                 );
             }
             if let Some(cache) = &session.cache {
@@ -799,9 +806,9 @@ async fn generate(
             }
         }
         InferenceOutcome::Cancelled => stale_session(),
-        InferenceOutcome::Failed => {
-            Json(serde_json::json!({"ok":false,"error":"Explanation unavailable."}))
-        }
+        InferenceOutcome::Failed(info) => Json(
+            serde_json::json!({"ok":false,"code":info.code,"error":info.message,"retryable":info.retryable}),
+        ),
     }
 }
 
@@ -854,7 +861,11 @@ async fn infer_with_dedup(
                     _ = session.cancellation.notify.notified() => InferenceOutcome::Cancelled,
                     result = session.provider.explain(request) => match result {
                         Ok(explanation) => InferenceOutcome::Success(explanation),
-                        Err(_) => InferenceOutcome::Failed,
+                        Err(error) => {
+                            let info = user_facing_error(&error);
+                            eprintln!("model inference failed ({}): {error:#}", info.code);
+                            InferenceOutcome::Failed(info)
+                        },
                     },
                 };
                 drop(permit);
@@ -889,7 +900,7 @@ async fn update_if_current(
 }
 fn stale_session() -> Json<serde_json::Value> {
     Json(
-        serde_json::json!({"ok":false,"stale":true,"error":"Repository session is no longer active."}),
+        serde_json::json!({"ok":false,"stale":true,"code":"session_stale","error":"This repository session is no longer active. Reload the page and try again.","retryable":true}),
     )
 }
 

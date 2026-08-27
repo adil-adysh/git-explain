@@ -361,6 +361,9 @@ fn deep_schema() -> Value {
 #[async_trait]
 impl ExplanationProvider for OpenAiProvider {
     async fn explain(&self, request: ExplanationRequest) -> Result<UnitExplanation> {
+        if self.base_url.trim().is_empty() || self.model.trim().is_empty() {
+            bail!("model configuration is incomplete: base URL and model name are required");
+        }
         if !crate::language::contains_meaningful_source(&request.source_unit) {
             bail!("refusing to explain whitespace-only source");
         }
@@ -392,15 +395,14 @@ impl OpenAiProvider {
             req = req.bearer_auth(key);
         }
         let started = Instant::now();
-        let response: Resp = req
-            .send()
-            .await
-            .context("model request")?
-            .error_for_status()
-            .context("model response")?
-            .json()
-            .await
-            .context("model JSON envelope")?;
+        let response = req.send().await.context("model request")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let body = body.trim().chars().take(300).collect::<String>();
+            bail!("model response (HTTP {status}): {body}");
+        }
+        let response: Resp = response.json().await.context("model JSON envelope")?;
         let choice = response
             .choices
             .first()

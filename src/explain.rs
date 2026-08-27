@@ -395,7 +395,7 @@ pub async fn explain_items(
                         s.name
                     );
                     UnitExplanation {
-                        overview: "Explanation unavailable.".into(),
+                        overview: crate::model::user_facing_error(&error).message.into(),
                         annotations: vec![],
                         deep: None,
                     }

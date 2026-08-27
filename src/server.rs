@@ -2,7 +2,7 @@ use crate::{
     cache::ExplanationCache,
     config::{ExplanationConfig, ModelConfig, ReaderConfig, ServerConfig},
     explain::ExplainedUnit,
-    model::{ExplanationProvider, UnitExplanation},
+    model::{user_facing_error, ExplanationProvider, UnitExplanation},
     runtime,
     snapshot::{AnalysisSnapshot, SnapshotGeneration, UnitId},
     web,
@@ -137,10 +137,14 @@ async fn generate(
     let unit_id = UnitId(id);
     let item = { state.items.lock().unwrap().get(&unit_id).cloned() };
     let Some(item) = item else {
-        return Json(serde_json::json!({"ok":false,"error":"Unknown code unit."}));
+        return Json(
+            serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available. Reload the page and try again.","retryable":false}),
+        );
     };
     if !crate::language::contains_meaningful_source(&item.unit.source) {
-        return Json(serde_json::json!({"ok":false,"error":"No meaningful source to explain."}));
+        return Json(
+            serde_json::json!({"ok":false,"code":"no_source","error":"This code unit has no meaningful source to explain.","retryable":false}),
+        );
     }
     let request = runtime::request_for(&item, &state.snapshot.context, deep);
     let key = ExplanationCache::key(&request, &state.model, &state.reader, &state.explanation);
@@ -174,7 +178,10 @@ async fn generate(
         }
         Err(error) => {
             eprintln!("unit {} explanation failed: {error:#}", unit_id);
-            Json(serde_json::json!({"ok":false,"error":"Explanation unavailable."}))
+            let info = user_facing_error(&error);
+            Json(
+                serde_json::json!({"ok":false,"code":info.code,"error":info.message,"retryable":info.retryable}),
+            )
         }
     }
 }
@@ -196,5 +203,7 @@ fn update(
     true
 }
 fn stale() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"ok":false,"stale":true,"error":"Repository snapshot has changed."}))
+    Json(
+        serde_json::json!({"ok":false,"stale":true,"code":"snapshot_stale","error":"The repository changed while this page was open. Reload the page and try again.","retryable":true}),
+    )
 }
