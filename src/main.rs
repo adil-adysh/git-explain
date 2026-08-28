@@ -509,8 +509,19 @@ async fn run() -> Result<()> {
     let loader = ConfigLoader::for_context(Some(&context))?;
     if let Some(Command::File(command)) = &cli.command {
         let application = loader.application_config(cli.profile.as_deref())?;
-        let analysis = RepositoryAnalyzer::with_git_config(&repo, application.git)
+        let mut analysis = RepositoryAnalyzer::with_git_config(&repo, application.git)
             .analyze_files(command.revision.as_deref(), &command.paths)?;
+        if let Ok(resolved) = loader.resolve(cli.profile.as_deref()) {
+            if resolved.cache.enabled {
+                let cache = cache::ExplanationCache::open(&git::git_dir(&repo)?)?;
+                analysis.hydrate(
+                    &cache,
+                    &resolved.model,
+                    &resolved.reader,
+                    &resolved.explanation,
+                );
+            }
+        }
         print!("{}", analysis.format_debug());
         return Ok(());
     }

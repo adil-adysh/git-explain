@@ -839,7 +839,7 @@ async fn generate(
         };
         runtime::request_for(file, item, &changes.context, deep)
     };
-    let key = ExplanationCache::key(
+    let key = ExplanationCache::change_key(
         &request,
         &session.model,
         &session.reader,

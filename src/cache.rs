@@ -25,6 +25,7 @@ pub struct ExplanationCache {
 struct Identity<'a> {
     schema: &'static str,
     prompt: &'static str,
+    scope: &'static str,
     provider: &'a str,
     model: &'a str,
     mode: &'static str,
@@ -64,7 +65,26 @@ impl ExplanationCache {
     pub fn path(&self) -> &Path {
         &self.path
     }
-    pub fn key(
+    pub fn change_key(
+        request: &ExplanationRequest,
+        model: &ResolvedProfile,
+        reader: &ReaderConfig,
+        explanation: &ExplanationConfig,
+    ) -> String {
+        Self::key_for_scope("change", request, model, reader, explanation)
+    }
+
+    pub fn snapshot_key(
+        request: &ExplanationRequest,
+        model: &ResolvedProfile,
+        reader: &ReaderConfig,
+        explanation: &ExplanationConfig,
+    ) -> String {
+        Self::key_for_scope("snapshot", request, model, reader, explanation)
+    }
+
+    fn key_for_scope(
+        scope: &'static str,
         request: &ExplanationRequest,
         model: &ResolvedProfile,
         reader: &ReaderConfig,
@@ -78,6 +98,7 @@ impl ExplanationCache {
         let identity = Identity {
             schema: SCHEMA,
             prompt: PROMPT,
+            scope,
             provider: &model.provider,
             model: &model.model,
             mode: if request.deep { "deep" } else { "normal" },
@@ -223,37 +244,37 @@ mod tests {
     #[test]
     fn key_changes_for_explanation_inputs_and_modes() {
         let (_, model, reader, explanation, request) = setup();
-        let base = ExplanationCache::key(&request, &model, &reader, &explanation);
+        let base = ExplanationCache::change_key(&request, &model, &reader, &explanation);
         let mut changed = request.clone();
         changed.source_unit.push(' ');
         assert_ne!(
             base,
-            ExplanationCache::key(&changed, &model, &reader, &explanation)
+            ExplanationCache::change_key(&changed, &model, &reader, &explanation)
         );
         let mut changed = request.clone();
         changed.diff.push('x');
         assert_ne!(
             base,
-            ExplanationCache::key(&changed, &model, &reader, &explanation)
+            ExplanationCache::change_key(&changed, &model, &reader, &explanation)
         );
         let mut changed = request.clone();
         changed.git_context.push('x');
         assert_ne!(
             base,
-            ExplanationCache::key(&changed, &model, &reader, &explanation)
+            ExplanationCache::change_key(&changed, &model, &reader, &explanation)
         );
         let mut deep = request;
         deep.deep = true;
         assert_ne!(
             base,
-            ExplanationCache::key(&deep, &model, &reader, &explanation)
+            ExplanationCache::change_key(&deep, &model, &reader, &explanation)
         );
     }
 
     #[test]
     fn normal_and_deep_entries_are_independent() {
         let (cache, model, reader, explanation, normal) = setup();
-        let normal_key = ExplanationCache::key(&normal, &model, &reader, &explanation);
+        let normal_key = ExplanationCache::change_key(&normal, &model, &reader, &explanation);
         cache
             .put(
                 &normal_key,
@@ -264,9 +285,18 @@ mod tests {
             .unwrap();
         let mut deep = normal;
         deep.deep = true;
-        let deep_key = ExplanationCache::key(&deep, &model, &reader, &explanation);
+        let deep_key = ExplanationCache::change_key(&deep, &model, &reader, &explanation);
         assert_ne!(normal_key, deep_key);
         assert!(cache.get(&deep_key).unwrap().is_none());
         assert_eq!(cache.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn snapshot_and_change_cache_namespaces_never_collide() {
+        let (_, model, reader, explanation, request) = setup();
+        assert_ne!(
+            ExplanationCache::snapshot_key(&request, &model, &reader, &explanation),
+            ExplanationCache::change_key(&request, &model, &reader, &explanation)
+        );
     }
 }

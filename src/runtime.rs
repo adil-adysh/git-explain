@@ -21,7 +21,7 @@ pub fn hydrate(
             }
             for deep in [false, true] {
                 let request = request_for(&metadata, change, &context, deep);
-                let key = ExplanationCache::key(&request, model, reader, explanation);
+                let key = ExplanationCache::change_key(&request, model, reader, explanation);
                 if let Ok(Some(json)) = cache.get(&key) {
                     if let Ok(result) = serde_json::from_str::<UnitExplanation>(&json) {
                         apply(change, result, deep);

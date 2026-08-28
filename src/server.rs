@@ -126,7 +126,8 @@ async fn generate(
             runtime::request_for(file, change, &changes.context, deep),
         )
     };
-    let key = ExplanationCache::key(&request, &state.model, &state.reader, &state.explanation);
+    let key =
+        ExplanationCache::change_key(&request, &state.model, &state.reader, &state.explanation);
     if !regenerate {
         if let Some(cache) = &state.cache {
             if let Ok(Some(json)) = cache.get(&key) {

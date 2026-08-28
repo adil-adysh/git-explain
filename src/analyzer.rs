@@ -39,6 +39,7 @@ impl RepositoryAnalyzer {
         Ok(FileAnalysis {
             revision: resolved_revision,
             documents,
+            explanations: Default::default(),
         })
     }
     pub fn new(repo_root: impl Into<PathBuf>, config: ResolvedConfig) -> Self {
