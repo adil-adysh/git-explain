@@ -86,6 +86,7 @@ async fn discover_context_capacity_for(
             {
                 if let Ok(value) = response.json::<Value>().await {
                     capacity.runtime_allocated = llama_cpp_configured_context(&value, model);
+                    capacity.model_max = llama_cpp_model_context(&value, model);
                 }
             }
         }
@@ -127,6 +128,25 @@ fn ollama_model_context(value: &Value) -> Option<u32> {
 }
 
 fn llama_cpp_configured_context(value: &Value, model: &str) -> Option<u32> {
+    llama_cpp_model_entry(value, model)
+        .and_then(|entry| entry.pointer("/status/args").and_then(Value::as_array))
+        .and_then(|args| {
+            args.windows(2).find_map(|pair| {
+                (pair[0].as_str() == Some("--ctx-size"))
+                    .then(|| pair[1].as_str())
+                    .flatten()
+                    .and_then(|value| value.parse::<u32>().ok())
+            })
+        })
+}
+
+fn llama_cpp_model_context(value: &Value, model: &str) -> Option<u32> {
+    llama_cpp_model_entry(value, model)
+        .and_then(|entry| entry.pointer("/meta/n_ctx_train").and_then(Value::as_u64))
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn llama_cpp_model_entry<'a>(value: &'a Value, model: &str) -> Option<&'a Value> {
     value
         .get("data")
         .and_then(Value::as_array)
@@ -139,15 +159,6 @@ fn llama_cpp_configured_context(value: &Value, model: &str) -> Option<u32> {
                         .is_some_and(|aliases| {
                             aliases.iter().any(|alias| alias.as_str() == Some(model))
                         })
-            })
-        })
-        .and_then(|entry| entry.pointer("/status/args").and_then(Value::as_array))
-        .and_then(|args| {
-            args.windows(2).find_map(|pair| {
-                (pair[0].as_str() == Some("--ctx-size"))
-                    .then(|| pair[1].as_str())
-                    .flatten()
-                    .and_then(|value| value.parse::<u32>().ok())
             })
         })
 }
@@ -902,9 +913,11 @@ mod tests {
     fn llama_cpp_router_reports_its_configured_startup_context() {
         let models = json!({"data": [{
             "id": "local",
-            "status": {"args": ["llama-server", "--ctx-size", "16384"]}
+            "status": {"args": ["llama-server", "--ctx-size", "16384"]},
+            "meta": {"n_ctx_train": 262144}
         }]});
         assert_eq!(llama_cpp_configured_context(&models, "local"), Some(16_384));
+        assert_eq!(llama_cpp_model_context(&models, "local"), Some(262_144));
     }
 
     #[test]

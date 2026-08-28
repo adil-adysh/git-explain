@@ -158,16 +158,42 @@ async fn live_llama_cpp_serves_openai_requests_with_its_startup_context() {
         .send()
         .await
         .expect("query llama.cpp OpenAI model list");
+    let status = models.status();
     assert!(
-        models.status().is_success()
+        status.is_success()
             || matches!(
-                models.status(),
+                status,
                 StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
             ),
         "llama.cpp /v1/models returned unexpected HTTP {}",
-        models.status()
+        status
     );
-    println!("llama.cpp: model-list status={}", models.status());
+    println!("llama.cpp: model-list status={status}");
+    if status.is_success() {
+        let models = models
+            .json::<serde_json::Value>()
+            .await
+            .expect("read llama.cpp model list JSON");
+        let entry = models["data"].as_array().and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry["id"].as_str() == Some(&model))
+        });
+        println!(
+            "llama.cpp: model_max={:?} runtime_configured={:?}",
+            entry.and_then(|entry| entry["meta"]["n_ctx_train"].as_u64()),
+            entry.and_then(|entry| {
+                entry["status"]["args"].as_array().and_then(|args| {
+                    args.windows(2).find_map(|pair| {
+                        (pair[0].as_str() == Some("--ctx-size"))
+                            .then(|| pair[1].as_str())
+                            .flatten()
+                            .and_then(|value| value.parse::<u64>().ok())
+                    })
+                })
+            })
+        );
+    }
     println!("llama.cpp: model={model} context_control=fixed_runtime_startup");
     small_openai_request(&client, &base_url, &model).await;
 }
