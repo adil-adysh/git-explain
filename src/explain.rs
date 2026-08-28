@@ -89,11 +89,13 @@ pub enum AnalysisMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnalysisContext {
     pub mode: AnalysisMode,
+    pub path_filters: Vec<PathBuf>,
 }
 impl AnalysisContext {
     pub fn working_tree() -> Self {
         Self {
             mode: AnalysisMode::WorkingTree,
+            path_filters: vec![],
         }
     }
     pub fn prompt_context(&self) -> String {

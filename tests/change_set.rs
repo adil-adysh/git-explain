@@ -4,7 +4,10 @@ use git_explain::{
     config::ResolvedConfig,
     snapshot::SnapshotGeneration,
 };
-use std::{path::Path, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 use tempfile::tempdir;
 
 fn git(dir: &Path, args: &[&str]) {
@@ -61,6 +64,62 @@ fn pure_rename_is_a_file_change_with_preserved_semantics() {
     assert!(html.contains("Semantic units preserved"));
     assert!(html.contains("No semantic changes require explanation."));
     assert!(!html.contains("<article data-unit-id="));
+}
+
+#[test]
+fn path_filter_matches_both_names_of_a_rename_and_distinguishes_no_match() {
+    let dir = repo();
+    std::fs::write(dir.path().join("old.rs"), "fn keep() {}\n").unwrap();
+    std::fs::write(dir.path().join("other.rs"), "fn other() {}\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    git(dir.path(), &["mv", "old.rs", "new.rs"]);
+    std::fs::write(dir.path().join("other.rs"), "fn other() { changed(); }\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "changes"]);
+    let analyzer = RepositoryAnalyzer::new(dir.path(), config(dir.path()));
+
+    for path in ["old.rs", "new.rs"] {
+        let changes = analyzer
+            .analyze_commit_with_paths("HEAD", SnapshotGeneration(1), &[PathBuf::from(path)])
+            .unwrap();
+        assert_eq!(changes.files.len(), 1);
+        assert_eq!(changes.files[0].kind, FileChangeKind::Renamed);
+    }
+
+    let changes = analyzer
+        .analyze_commit_with_paths(
+            "HEAD",
+            SnapshotGeneration(1),
+            &[PathBuf::from("missing.rs")],
+        )
+        .unwrap();
+    assert_eq!(
+        changes.empty_state().as_deref(),
+        Some("No changes matched the selected paths in the selected Git range.")
+    );
+}
+
+#[test]
+fn staged_selection_excludes_unstaged_edits() {
+    let dir = repo();
+    std::fs::write(dir.path().join("staged.rs"), "fn staged() {}\n").unwrap();
+    std::fs::write(dir.path().join("unstaged.rs"), "fn unstaged() {}\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::write(dir.path().join("staged.rs"), "fn staged() { changed(); }\n").unwrap();
+    git(dir.path(), &["add", "staged.rs"]);
+    std::fs::write(
+        dir.path().join("unstaged.rs"),
+        "fn unstaged() { changed(); }\n",
+    )
+    .unwrap();
+
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_staged(SnapshotGeneration(1), &[])
+        .unwrap();
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].display_path(), Path::new("staged.rs"));
 }
 
 #[test]

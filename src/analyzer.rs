@@ -31,6 +31,14 @@ impl RepositoryAnalyzer {
     }
 
     pub fn analyze_working_tree(&self, generation: SnapshotGeneration) -> Result<ChangeSet> {
+        self.analyze_working_tree_with_paths(generation, &[])
+    }
+
+    pub fn analyze_working_tree_with_paths(
+        &self,
+        generation: SnapshotGeneration,
+        paths: &[PathBuf],
+    ) -> Result<ChangeSet> {
         let mut files = git::working_tree_files(&self.repo_root, &self.git_config)?;
         let after = WorkingTreeSourceProvider::new(&self.repo_root);
         let before: Box<dyn SourceProvider> = if self.git_config.include_staged {
@@ -41,6 +49,7 @@ impl RepositoryAnalyzer {
         } else {
             Box::new(GitIndexSourceProvider::new(&self.repo_root))
         };
+        filter_files(&mut files, paths);
         populate_semantics(&mut files, before.as_ref(), &after);
         let head = git::head_oid(&self.repo_root).unwrap_or_default();
         Ok(ChangeSet {
@@ -48,7 +57,39 @@ impl RepositoryAnalyzer {
             identity: SnapshotIdentity::WorkingTree {
                 fingerprint: working_tree_fingerprint(&head, &self.git_config.diff_target, &files),
             },
-            context: AnalysisContext::working_tree(),
+            context: if paths.is_empty() {
+                AnalysisContext::working_tree()
+            } else {
+                AnalysisContext {
+                    mode: AnalysisMode::WorkingTree,
+                    path_filters: paths.to_vec(),
+                }
+            },
+            files,
+        })
+    }
+
+    pub fn analyze_staged(
+        &self,
+        generation: SnapshotGeneration,
+        paths: &[PathBuf],
+    ) -> Result<ChangeSet> {
+        let mut files = git::staged_files(&self.repo_root, &self.git_config)?;
+        filter_files(&mut files, paths);
+        let before =
+            GitCommitSourceProvider::new(&self.repo_root, self.git_config.diff_target.clone());
+        let after = GitIndexSourceProvider::new(&self.repo_root);
+        populate_semantics(&mut files, &before, &after);
+        let head = git::head_oid(&self.repo_root).unwrap_or_default();
+        Ok(ChangeSet {
+            generation,
+            identity: SnapshotIdentity::WorkingTree {
+                fingerprint: working_tree_fingerprint(&head, "staged", &files),
+            },
+            context: AnalysisContext {
+                mode: AnalysisMode::WorkingTree,
+                path_filters: paths.to_vec(),
+            },
             files,
         })
     }
@@ -58,8 +99,18 @@ impl RepositoryAnalyzer {
         revision: &str,
         generation: SnapshotGeneration,
     ) -> Result<ChangeSet> {
+        self.analyze_commit_with_paths(revision, generation, &[])
+    }
+
+    pub fn analyze_commit_with_paths(
+        &self,
+        revision: &str,
+        generation: SnapshotGeneration,
+        paths: &[PathBuf],
+    ) -> Result<ChangeSet> {
         let analysis = git::commit_analysis(&self.repo_root, revision)?;
         let mut files = analysis.files;
+        filter_files(&mut files, paths);
         let after = GitCommitSourceProvider::new(&self.repo_root, analysis.oid.clone());
         let before: Box<dyn SourceProvider> = match &analysis.parent_oid {
             Some(parent) => Box::new(GitCommitSourceProvider::new(&self.repo_root, parent)),
@@ -78,10 +129,32 @@ impl RepositoryAnalyzer {
                     subject: analysis.subject,
                     merge_parent_count: analysis.parent_count,
                 },
+                path_filters: paths.to_vec(),
             },
             files,
         })
     }
+}
+
+fn filter_files(files: &mut Vec<FileChange>, paths: &[PathBuf]) {
+    if paths.is_empty() {
+        return;
+    }
+    files.retain(|file| {
+        paths.iter().any(|filter| {
+            file.old_path
+                .as_ref()
+                .is_some_and(|path| path_matches(path, filter))
+                || file
+                    .new_path
+                    .as_ref()
+                    .is_some_and(|path| path_matches(path, filter))
+        })
+    });
+}
+
+fn path_matches(path: &Path, filter: &Path) -> bool {
+    path == filter || path.starts_with(filter)
 }
 
 fn populate_semantics(

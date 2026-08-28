@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -12,6 +13,18 @@ pub struct Cli {
         help = "Explain a Git commit instead of the working tree"
     )]
     pub revision: Option<String>,
+    #[arg(
+        long,
+        conflicts_with = "revision",
+        help = "Explain staged changes only"
+    )]
+    pub staged: bool,
+    #[arg(
+        last = true,
+        value_name = "PATH",
+        help = "Limit explanation to changed paths; rename paths match either old or new name"
+    )]
+    pub paths: Vec<PathBuf>,
     #[arg(
         short = 'd',
         long,
@@ -366,6 +379,19 @@ pub enum ProfileAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explanation_selection_accepts_revision_staged_and_path_forms() {
+        let revision = Cli::try_parse_from(["git-explain", "HEAD~1", "--", "src/lib.rs"]).unwrap();
+        assert_eq!(revision.revision.as_deref(), Some("HEAD~1"));
+        assert_eq!(revision.paths, vec![PathBuf::from("src/lib.rs")]);
+
+        let staged = Cli::try_parse_from(["git-explain", "--staged", "--", "src"]).unwrap();
+        assert!(staged.staged);
+        assert_eq!(staged.paths, vec![PathBuf::from("src")]);
+
+        assert!(Cli::try_parse_from(["git-explain", "HEAD", "--staged"]).is_err());
+    }
 
     #[test]
     fn model_port_is_parsed_as_a_profile_option() {

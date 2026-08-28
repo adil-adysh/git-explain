@@ -50,6 +50,9 @@ pub fn working_tree_files(root: &Path, config: &GitConfig) -> Result<Vec<FileCha
         .unwrap_or_default();
     collect_files(root, &range)
 }
+pub fn staged_files(root: &Path, config: &GitConfig) -> Result<Vec<FileChange>> {
+    collect_files(root, &["--cached", config.diff_target.as_str()])
+}
 pub fn commit_analysis(root: &Path, revision: &str) -> Result<CommitAnalysis> {
     let oid = resolve_revision(root, revision)?;
     let parents: Vec<_> = git_output(root, &["rev-list", "--parents", "-n", "1", &oid])?

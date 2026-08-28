@@ -58,6 +58,8 @@ struct RepositorySession {
     repo_root: PathBuf,
     analyzer: RepositoryAnalyzer,
     revision: Option<String>,
+    staged: bool,
+    paths: Vec<PathBuf>,
     config: crate::config::ResolvedConfig,
     change_set: Mutex<ChangeSet>,
     provider: Arc<dyn ExplanationProvider>,
@@ -68,6 +70,13 @@ struct RepositorySession {
     cancellation: Arc<SessionCancellation>,
     in_flight: Mutex<HashMap<String, Arc<InFlight>>>,
     last_used: AtomicU64,
+}
+
+#[derive(Clone)]
+struct SessionSelection {
+    revision: Option<String>,
+    staged: bool,
+    paths: Vec<PathBuf>,
 }
 
 struct DaemonState {
@@ -119,6 +128,8 @@ struct InFlight {
 struct OpenRequest {
     repo_root: String,
     revision: Option<String>,
+    staged: bool,
+    paths: Vec<PathBuf>,
     profile: Option<String>,
 }
 #[derive(Debug, Deserialize)]
@@ -139,6 +150,8 @@ pub async fn command(action: &DaemonAction) -> Result<()> {
 pub async fn open_repository(
     repo: &FsPath,
     revision: Option<&str>,
+    staged: bool,
+    paths: &[PathBuf],
     profile: Option<&str>,
     port: Option<u16>,
 ) -> Result<()> {
@@ -151,6 +164,8 @@ pub async fn open_repository(
         .json(&OpenRequest {
             repo_root: repo.to_string_lossy().into_owned(),
             revision: revision.map(str::to_owned),
+            staged,
+            paths: paths.to_vec(),
             profile: profile.map(str::to_owned),
         })
         .send()
@@ -498,7 +513,17 @@ async fn open(
         Err(error) => return error_json(StatusCode::BAD_REQUEST, error.to_string()),
     };
     let id = RepositorySessionId(new_id());
-    let session = match build_session(id, root, request.revision, config, SnapshotGeneration(1)) {
+    let session = match build_session(
+        id,
+        root,
+        SessionSelection {
+            revision: request.revision,
+            staged: request.staged,
+            paths: request.paths,
+        },
+        config,
+        SnapshotGeneration(1),
+    ) {
         Ok(session) => session,
         Err(error) => return error_json(StatusCode::BAD_REQUEST, error.to_string()),
     };
@@ -590,7 +615,11 @@ async fn refresh_current_session(state: &DaemonState) -> Result<RefreshResult> {
     let replacement = build_session_from_analyzer(
         current_session.id.clone(),
         current_session.repo_root.clone(),
-        current_session.revision.clone(),
+        SessionSelection {
+            revision: current_session.revision.clone(),
+            staged: current_session.staged,
+            paths: current_session.paths.clone(),
+        },
         current_session.config.clone(),
         generation,
         current_session.analyzer.clone(),
@@ -621,26 +650,28 @@ async fn refresh_current_session(state: &DaemonState) -> Result<RefreshResult> {
 fn build_session(
     id: RepositorySessionId,
     root: PathBuf,
-    revision: Option<String>,
+    selection: SessionSelection,
     config: crate::config::ResolvedConfig,
     generation: SnapshotGeneration,
 ) -> Result<Arc<RepositorySession>> {
     let analyzer = RepositoryAnalyzer::new(&root, config.clone());
-    build_session_from_analyzer(id, root, revision, config, generation, analyzer)
+    build_session_from_analyzer(id, root, selection, config, generation, analyzer)
 }
 
 fn build_session_from_analyzer(
     id: RepositorySessionId,
     root: PathBuf,
-    revision: Option<String>,
+    selection: SessionSelection,
     config: crate::config::ResolvedConfig,
     generation: SnapshotGeneration,
     analyzer: RepositoryAnalyzer,
 ) -> Result<Arc<RepositorySession>> {
-    let mut change_set = if let Some(revision) = revision.as_deref() {
-        analyzer.analyze_commit(revision, generation)?
+    let mut change_set = if let Some(revision) = selection.revision.as_deref() {
+        analyzer.analyze_commit_with_paths(revision, generation, &selection.paths)?
+    } else if selection.staged {
+        analyzer.analyze_staged(generation, &selection.paths)?
     } else {
-        analyzer.analyze_working_tree(generation)?
+        analyzer.analyze_working_tree_with_paths(generation, &selection.paths)?
     };
     let cache = if config.cache.enabled {
         let git_dir = crate::git::git_dir(&root)?;
@@ -676,7 +707,9 @@ fn build_session_from_analyzer(
         id,
         repo_root: root,
         analyzer,
-        revision,
+        revision: selection.revision,
+        staged: selection.staged,
+        paths: selection.paths,
         config: config.clone(),
         change_set: Mutex::new(change_set),
         provider: Arc::new(provider),
@@ -1062,7 +1095,11 @@ mod tests {
         let session = build_session(
             RepositorySessionId("stable-session".into()),
             dir.path().to_path_buf(),
-            None,
+            SessionSelection {
+                revision: None,
+                staged: false,
+                paths: vec![],
+            },
             config,
             SnapshotGeneration(1),
         )
@@ -1117,7 +1154,11 @@ mod tests {
         let session = build_session(
             RepositorySessionId("stable-session".into()),
             dir.path().to_path_buf(),
-            None,
+            SessionSelection {
+                revision: None,
+                staged: false,
+                paths: vec![],
+            },
             config,
             SnapshotGeneration(4),
         )
@@ -1159,7 +1200,11 @@ mod tests {
             let session = build_session(
                 RepositorySessionId(format!("session-{index}")),
                 dir.path().to_path_buf(),
-                None,
+                SessionSelection {
+                    revision: None,
+                    staged: false,
+                    paths: vec![],
+                },
                 config.clone(),
                 SnapshotGeneration(1),
             )
@@ -1222,6 +1267,8 @@ mod tests {
             repo_root: PathBuf::from("."),
             analyzer: RepositoryAnalyzer::new(".", config.clone()),
             revision: None,
+            staged: false,
+            paths: vec![],
             config: config.clone(),
             change_set: Mutex::new(ChangeSet {
                 generation: SnapshotGeneration(1),

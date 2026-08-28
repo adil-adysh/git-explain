@@ -80,6 +80,11 @@ impl ChangeSet {
 
     pub fn empty_state(&self) -> Option<String> {
         if self.files.is_empty() {
+            if !self.context.path_filters.is_empty() {
+                return Some(
+                    "No changes matched the selected paths in the selected Git range.".into(),
+                );
+            }
             return Some("No changes found for the selected Git range.".into());
         }
         if self.explainable_changes().next().is_some() {

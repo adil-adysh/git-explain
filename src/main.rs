@@ -501,9 +501,17 @@ async fn run() -> Result<()> {
         let application = loader.application_config(cli.profile.as_deref())?;
         let analyzer = RepositoryAnalyzer::with_git_config(&repo, application.git);
         let snapshot = if let Some(revision) = cli.revision.as_deref() {
-            analyzer.analyze_commit(revision, SnapshotGeneration(1))?
-        } else {
+            if cli.paths.is_empty() {
+                analyzer.analyze_commit(revision, SnapshotGeneration(1))?
+            } else {
+                analyzer.analyze_commit_with_paths(revision, SnapshotGeneration(1), &cli.paths)?
+            }
+        } else if cli.staged {
+            analyzer.analyze_staged(SnapshotGeneration(1), &cli.paths)?
+        } else if cli.paths.is_empty() {
             analyzer.analyze_working_tree(SnapshotGeneration(1))?
+        } else {
+            analyzer.analyze_working_tree_with_paths(SnapshotGeneration(1), &cli.paths)?
         };
         explain::print_debug(&snapshot)?;
         if let Some(message) = snapshot.empty_state().as_deref() {
@@ -533,11 +541,21 @@ async fn run() -> Result<()> {
         return Ok(());
     }
     if cli.direct {
-        return run_direct(repo, resolved, cli.revision.as_deref(), cli.port, cli.debug).await;
+        return run_direct(
+            repo,
+            resolved,
+            cli.revision.as_deref(),
+            cli.staged,
+            &cli.paths,
+            cli.port,
+        )
+        .await;
     }
     daemon::open_repository(
         &repo,
         cli.revision.as_deref(),
+        cli.staged,
+        &cli.paths,
         cli.profile.as_deref(),
         cli.port,
     )
@@ -1152,21 +1170,20 @@ async fn run_direct(
     repo: std::path::PathBuf,
     resolved: config::ResolvedConfig,
     revision: Option<&str>,
+    staged: bool,
+    paths: &[std::path::PathBuf],
     port: Option<u16>,
-    debug: bool,
 ) -> Result<()> {
     let analyzer = RepositoryAnalyzer::new(&repo, resolved.clone());
     let snapshot = if let Some(revision) = revision {
-        analyzer.analyze_commit(revision, SnapshotGeneration(1))?
+        analyzer.analyze_commit_with_paths(revision, SnapshotGeneration(1), paths)?
+    } else if staged {
+        analyzer.analyze_staged(SnapshotGeneration(1), paths)?
     } else {
-        analyzer.analyze_working_tree(SnapshotGeneration(1))?
+        analyzer.analyze_working_tree_with_paths(SnapshotGeneration(1), paths)?
     };
     if let Some(message) = snapshot.empty_state().as_deref() {
         println!("{message}");
-        return Ok(());
-    }
-    if debug {
-        explain::print_debug(&snapshot)?;
         return Ok(());
     }
     let provider = model::openai::OpenAiProvider::from_config(
