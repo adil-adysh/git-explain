@@ -198,16 +198,16 @@ async fn unloaded_ollama_model_is_warmed_before_the_explanation_payload() {
             post(|| async { axum::Json(json!({"model_info": {"test.context_length": 32768}})) }),
         )
         .route(
-            "/v1/chat/completions",
+            "/api/chat",
             post(move |Json(body): Json<serde_json::Value>| {
                 let bodies_seen = bodies_seen.clone();
                 async move {
                     bodies_seen.lock().unwrap().push(body);
                     axum::Json(json!({
-                        "choices": [{
-                            "finish_reason": "stop",
-                            "message": {"content": "{\"overview\":\"Adds values.\",\"annotations\":[]}"}
-                        }]
+                        "message": {"role":"assistant", "content": "{\"overview\":\"Adds values.\",\"annotations\":[]}"},
+                        "done_reason": "stop",
+                        "prompt_eval_count": 20,
+                        "eval_count": 10
                     }))
                 }
             }),
@@ -237,6 +237,8 @@ async fn unloaded_ollama_model_is_warmed_before_the_explanation_payload() {
         .as_str()
         .unwrap()
         .contains("SOURCE UNIT"));
+    assert!(bodies[1]["format"].is_object());
+    assert_eq!(bodies[1]["stream"], false);
     let _ = shutdown.send(());
 }
 

@@ -331,7 +331,9 @@ impl OpenAiProvider {
             ],
             temperature: generation.temperature,
             max_tokens: generation.max_tokens,
-            response_format: if self.kind.is_llama_cpp() {
+            response_format: if self.kind.is_llama_cpp()
+                || matches!(self.kind, ProviderKind::Ollama)
+            {
                 if request.deep {
                     deep_schema()
                 } else {
@@ -344,7 +346,9 @@ impl OpenAiProvider {
                 .kind
                 .is_llama_cpp()
                 .then(|| json!({"enable_thinking": generation.reasoning.unwrap_or(false)})),
-            reasoning_effort: self.kind.is_llama_cpp().then(|| {
+            reasoning_effort: (self.kind.is_llama_cpp()
+                || matches!(self.kind, ProviderKind::Ollama))
+            .then(|| {
                 if generation.reasoning.unwrap_or(false) {
                     "high".into()
                 } else {
@@ -414,7 +418,7 @@ struct Req {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_format: Option<String>,
 }
-#[derive(Serialize, Debug)]
+#[derive(Clone, Serialize, Debug)]
 struct Msg {
     role: String,
     content: String,
@@ -424,6 +428,16 @@ struct Resp {
     choices: Vec<Choice>,
     #[serde(default)]
     usage: Option<Usage>,
+}
+#[derive(Deserialize)]
+struct OllamaChatResponse {
+    message: MsgOut,
+    #[serde(default)]
+    done_reason: Option<String>,
+    #[serde(default)]
+    prompt_eval_count: Option<u32>,
+    #[serde(default)]
+    eval_count: Option<u32>,
 }
 #[derive(Deserialize)]
 struct Choice {
@@ -621,6 +635,7 @@ impl OpenAiProvider {
                         false,
                         false,
                         None,
+                        None,
                     );
                 }
                 return Err(error);
@@ -635,38 +650,8 @@ impl OpenAiProvider {
             plan.budget.total, plan.budget.output_reserve, plan.budget.safety_margin,
             plan.budget.input_budget, plan.estimated_input, request_options.requested_context,
         );
-        let mut req = self
-            .client
-            .post(format!(
-                "{}/chat/completions",
-                self.base_url.trim_end_matches('/')
-            ))
-            .json(&payload);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
         let started = Instant::now();
-        let response = req.send().await.context("model request")?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let body = body.trim().chars().take(300).collect::<String>();
-            if retry && is_context_text(&body) {
-                self.track_ollama_failure(
-                    request,
-                    &capabilities,
-                    &negotiation.requirement,
-                    retry,
-                    true,
-                    false,
-                    true,
-                    false,
-                    Some(started.elapsed().as_millis() as u64),
-                );
-            }
-            bail!("model response (HTTP {status}): {body}");
-        }
-        let response: Resp = response.json().await.context("model JSON envelope")?;
+        let response = self.send_inference(&payload).await?;
         let choice = response
             .choices
             .first()
@@ -694,6 +679,7 @@ impl OpenAiProvider {
                 false,
                 false,
                 true,
+                response.usage.as_ref(),
                 Some(started.elapsed().as_millis() as u64),
             );
             bail!("model response truncated at token limit ({usage})");
@@ -705,12 +691,31 @@ impl OpenAiProvider {
             }
             bail!("model returned empty content ({usage})");
         }
-        let explanation = self.parse_response(&content, request).with_context(|| {
+        let explanation = match self.parse_response(&content, request).with_context(|| {
             format!(
                 "invalid structured model content (finish_reason={:?}; {usage})",
                 choice.finish_reason
             )
-        })?;
+        }) {
+            Ok(explanation) => explanation,
+            Err(error) => {
+                if retry {
+                    self.track_ollama_failure(
+                        request,
+                        &capabilities,
+                        &negotiation.requirement,
+                        retry,
+                        previous_provider_overflow,
+                        false,
+                        false,
+                        false,
+                        response.usage.as_ref(),
+                        Some(started.elapsed().as_millis() as u64),
+                    );
+                }
+                return Err(error);
+            }
+        };
         self.track_ollama_success(
             request,
             retry,
@@ -756,14 +761,13 @@ impl OpenAiProvider {
     async fn warm_ollama_model(&self) -> Result<()> {
         let mut request = self
             .client
-            .post(format!(
-                "{}/chat/completions",
-                self.base_url.trim_end_matches('/')
-            ))
+            .post(format!("{}/api/chat", ollama_native_base(&self.base_url)))
             .json(&json!({
                 "model": self.model,
                 "messages": [{"role": "user", "content": "Reply with OK."}],
-                "max_tokens": 1,
+                "stream": false,
+                "think": false,
+                "options": {"num_predict": 1},
             }));
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key);
@@ -781,6 +785,87 @@ impl OpenAiProvider {
             "could not load Ollama model before context planning (HTTP {status}): {}",
             body.trim().chars().take(300).collect::<String>()
         );
+    }
+
+    async fn send_inference(&self, payload: &Req) -> Result<Resp> {
+        if matches!(self.kind, ProviderKind::Ollama) {
+            return self.send_ollama_json_request(payload).await;
+        }
+        let mut request = self
+            .client
+            .post(format!(
+                "{}/chat/completions",
+                self.base_url.trim_end_matches('/')
+            ))
+            .json(payload);
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key);
+        }
+        let response = request.send().await.context("model request")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!(
+                "model response (HTTP {status}): {}",
+                body.trim().chars().take(300).collect::<String>()
+            );
+        }
+        response.json().await.context("model JSON envelope")
+    }
+
+    async fn send_ollama_json_request(&self, payload: &Req) -> Result<Resp> {
+        let mut options = serde_json::Map::new();
+        if let Some(temperature) = payload.temperature {
+            options.insert("temperature".into(), json!(temperature));
+        }
+        if let Some(max_tokens) = payload.max_tokens {
+            options.insert("num_predict".into(), json!(max_tokens));
+        }
+        let format = payload.response_format["json_schema"]["schema"].clone();
+        let schema_instruction = format!(
+            "Return only a JSON object that conforms to this schema: {}",
+            serde_json::to_string(&format).context("serialize Ollama JSON schema")?
+        );
+        let mut messages = payload.messages.clone();
+        messages.push(Msg {
+            role: "system".into(),
+            content: schema_instruction,
+        });
+        let request_body = json!({
+            "model": payload.model,
+            "messages": messages,
+            "stream": false,
+            "format": format,
+            "think": payload.reasoning_effort.as_deref() != Some("none"),
+            "options": options,
+        });
+        let mut request = self
+            .client
+            .post(format!("{}/api/chat", ollama_native_base(&self.base_url)))
+            .json(&request_body);
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key);
+        }
+        let response = request.send().await.context("Ollama JSON model request")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!(
+                "model response (HTTP {status}): {}",
+                body.trim().chars().take(300).collect::<String>()
+            );
+        }
+        let response: OllamaChatResponse = response.json().await.context("Ollama JSON envelope")?;
+        Ok(Resp {
+            choices: vec![Choice {
+                message: response.message,
+                finish_reason: response.done_reason,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: response.prompt_eval_count,
+                completion_tokens: response.eval_count,
+            }),
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -843,6 +928,7 @@ impl OpenAiProvider {
         local_context_failure: bool,
         provider_context_overflow: bool,
         output_truncated: bool,
+        usage: Option<&Usage>,
         latency_ms: Option<u64>,
     ) {
         let Some((tracker, profile)) = &self.ollama_tracker else {
@@ -863,6 +949,14 @@ impl OpenAiProvider {
         record.ideal_required_context = requirement.minimum_required_context;
         record.final_required_context = requirement.minimum_required_context;
         record.compacted = concise_retry_used;
+        record.actual_prompt_tokens = usage.and_then(|value| value.prompt_tokens);
+        record.actual_completion_tokens = usage.and_then(|value| value.completion_tokens);
+        record.actual_total_tokens = usage.and_then(|value| {
+            value
+                .prompt_tokens
+                .zip(value.completion_tokens)
+                .map(|(prompt, completion)| prompt.saturating_add(completion))
+        });
         record.latency_ms = latency_ms;
         record.local_context_failure = local_context_failure;
         record.provider_context_overflow = previous_provider_overflow || provider_context_overflow;
@@ -873,6 +967,10 @@ impl OpenAiProvider {
             eprintln!("could not record local Ollama context history: {error:#}");
         }
     }
+}
+
+fn ollama_native_base(base_url: &str) -> &str {
+    base_url.trim_end_matches('/').trim_end_matches("/v1")
 }
 
 fn is_provider_context_error(error: &anyhow::Error) -> bool {

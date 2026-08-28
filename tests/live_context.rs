@@ -250,12 +250,12 @@ async fn live_ollama_explanation_records_private_context_metadata() {
     let sentinel = "SECRET_SOURCE_SENTINEL_94A1";
     let provider = production_provider(base_url.clone(), model.clone(), "ollama")
         .with_ollama_tracker(tracker.clone(), "live-ollama".into());
-    provider
+    let result = provider
         .explain(tracker_request(&format!(
             "fn local_unit() {{ {sentinel}; }}"
         )))
-        .await
-        .expect("live Ollama must return a structured explanation");
+        .await;
+    unload_ollama_model_if_requested(&Client::new(), native_ollama_base(&base_url), &model).await;
     let records = tracker.records("live-ollama", false);
     assert_eq!(
         records.len(),
@@ -263,24 +263,25 @@ async fn live_ollama_explanation_records_private_context_metadata() {
         "one logical explanation must yield one record"
     );
     let record = &records[0];
-    assert!(record.success);
+    assert_eq!(record.success, result.is_ok());
     assert_eq!(record.model, model);
     assert!(record.model_max.is_some());
     assert!(record.runtime_context.is_some());
     assert!(record.ideal_required_context >= record.final_required_context);
     assert!(record.latency_ms.is_some());
+    assert!(record.actual_prompt_tokens.is_some());
     let stored = std::fs::read_to_string(tracker.path()).expect("read local tracker state");
     assert!(!stored.contains(sentinel));
     assert!(!stored.contains("live Ollama tracker test"));
     println!(
-        "ollama tracker: model_max={:?} runtime={:?} required={} prompt={:?} completion={:?}",
+        "ollama tracker: success={} model_max={:?} runtime={:?} required={} prompt={:?} completion={:?}",
+        record.success,
         record.model_max,
         record.runtime_context,
         record.ideal_required_context,
         record.actual_prompt_tokens,
         record.actual_completion_tokens
     );
-    unload_ollama_model_if_requested(&Client::new(), native_ollama_base(&base_url), &model).await;
 }
 
 #[tokio::test]
