@@ -122,7 +122,7 @@ For Ollama, `git explain profile test ollama` also reads native `/api/show` meta
 
 Ollama's OpenAI-compatible `/v1/chat/completions` API cannot increase context per request. Configure Ollama itself (for example, `OLLAMA_CONTEXT_LENGTH` before `ollama serve`, or a Modelfile with `PARAMETER num_ctx <tokens>`), reload the model, and run `git explain profile test ollama` again. Larger windows use more memory; choose one that fits the model and hardware.
 
-llama.cpp is likewise controlled when its server starts, with `--ctx-size`; its OpenAI-compatible endpoint receives no invented context-size field. When a llama.cpp router exposes its configured arguments through `/v1/models`, `git explain profile test` reports that startup context as the fixed runtime bound. Generic OpenAI-compatible profiles are treated conservatively unless a dedicated adapter has verified a request-scoped context option. `git explain --debug` and `git explain profile test <name>` show which control mode applies.
+llama.cpp is likewise controlled when its server starts, with `--ctx-size`; its OpenAI-compatible endpoint receives no invented context-size field. When a llama.cpp router exposes its model data through `/v1/models`, `git explain profile test` reports both `meta.n_ctx_train` (the model maximum) and the configured startup context (the fixed runtime bound). Generic OpenAI-compatible profiles are treated conservatively unless a dedicated adapter has verified a request-scoped context option. `git explain --debug` and `git explain profile test <name>` show which control mode applies.
 
 Repository configuration at `.git/git-explain.toml` may select a logical profile name and repository-safe explanation and Git preferences:
 
