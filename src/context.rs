@@ -392,4 +392,28 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("fixed/available context"));
     }
+
+    #[test]
+    fn profile_cap_restricts_a_per_request_context_before_the_model_limit() {
+        let requirement = ContextRequirement {
+            estimated_input: 4_000,
+            output_reserve: 500,
+            protocol_overhead: 96,
+            safety_margin: 500,
+            minimum_required_context: 5_096,
+        };
+        let error = negotiate_context(
+            &ContextCapabilities {
+                capacity: ContextCapacity {
+                    model_max: Some(32_768),
+                    profile_limit: Some(4_096),
+                    ..Default::default()
+                },
+                control: ContextControl::PerRequest,
+            },
+            requirement,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("configured/model limit 4096"));
+    }
 }

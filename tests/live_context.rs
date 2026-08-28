@@ -5,9 +5,12 @@
 //! `GIT_EXPLAIN_TEST_LLAMA_CPP_URL` / `GIT_EXPLAIN_TEST_LLAMA_CPP_MODEL`.
 
 use git_explain::{
-    config::{GenerationConfig, ResolvedProfile},
+    config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile},
     context::ContextControl,
-    model::openai::discover_context_capabilities,
+    model::{
+        openai::{discover_context_capabilities, OpenAiProvider},
+        ExplanationProvider, ExplanationRegion, ExplanationRequest,
+    },
 };
 use reqwest::{Client, StatusCode};
 use serde_json::json;
@@ -40,6 +43,40 @@ fn profile(base_url: String, model: String, preset: &str) -> ResolvedProfile {
             temperature: None,
         },
     }
+}
+
+fn production_provider(base_url: String, model: String, preset: &str) -> OpenAiProvider {
+    OpenAiProvider::from_config(
+        ResolvedProfile {
+            context_window: None,
+            normal: GenerationConfig {
+                reasoning: None,
+                max_tokens: Some(96),
+                temperature: Some(0.0),
+            },
+            deep: GenerationConfig {
+                reasoning: None,
+                max_tokens: Some(96),
+                temperature: Some(0.0),
+            },
+            ..profile(base_url, model, preset)
+        },
+        ReaderConfig {
+            experience: "experienced".into(),
+            known_languages: vec![],
+            learning_languages: vec![],
+            known_frameworks: vec![],
+            learning_frameworks: vec![],
+        },
+        ExplanationConfig {
+            default_depth: "normal".into(),
+            max_annotations: 1,
+            max_annotation_words: 20,
+            explain_language_concepts: false,
+            explain_framework_concepts: false,
+            infer_intent: false,
+        },
+    )
 }
 
 async fn unload_ollama_model_if_requested(client: &Client, native_base: &str, model: &str) {
@@ -238,4 +275,32 @@ async fn live_llama_cpp_serves_openai_requests_with_its_startup_context() {
     }
     println!("llama.cpp: model={model} context_control=fixed_runtime_startup");
     small_openai_request(&client, &base_url, &model).await;
+}
+
+#[tokio::test]
+#[ignore = "requires GIT_EXPLAIN_TEST_LLAMA_CPP_URL and GIT_EXPLAIN_TEST_LLAMA_CPP_MODEL"]
+async fn live_llama_cpp_rejects_an_explanation_larger_than_its_fixed_context() {
+    let base_url = required("GIT_EXPLAIN_TEST_LLAMA_CPP_URL");
+    let model = required("GIT_EXPLAIN_TEST_LLAMA_CPP_MODEL");
+    let large_body = "let deliberately_long_identifier_for_context_budget = 1;\n".repeat(1_200);
+    let error = production_provider(base_url, model, "llama_cpp")
+        .explain(ExplanationRequest {
+            source_unit: format!("fn oversized() {{\n{large_body}}}"),
+            unit_name: "oversized".into(),
+            unit_kind: "function".into(),
+            diff: "+ oversized function".into(),
+            language: "Rust".into(),
+            git_context: "Change source: live fixed-runtime test".into(),
+            regions: vec![ExplanationRegion {
+                id: 1,
+                start_line: 1,
+                end_line: 1_200,
+                source: large_body,
+            }],
+            prior_explanation: None,
+            deep: false,
+        })
+        .await
+        .expect_err("fixed runtime must reject an oversized explanation locally");
+    assert!(format!("{error:#}").contains("fixed/available context"));
 }
