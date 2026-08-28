@@ -75,14 +75,33 @@ pub fn commit_analysis(root: &Path, revision: &str) -> Result<CommitAnalysis> {
 fn collect_files(root: &Path, range: &[&str]) -> Result<Vec<FileChange>> {
     let raw = git_bytes(
         root,
-        &args(range, &["diff", "--raw", "-z", "--no-abbrev", "-M", "-C"]),
+        &args(
+            range,
+            &[
+                "diff",
+                "--raw",
+                "-z",
+                "--no-abbrev",
+                "-M",
+                "-C",
+                "--find-copies-harder",
+            ],
+        ),
     )?;
     let mut files = parse_raw_metadata(&raw)?;
     let patch = git_output(
         root,
         &args(
             range,
-            &["diff", "--patch", "--unified=0", "--no-color", "-M", "-C"],
+            &[
+                "diff",
+                "--patch",
+                "--unified=0",
+                "--no-color",
+                "-M",
+                "-C",
+                "--find-copies-harder",
+            ],
         ),
     )?;
     let patches = parse_unified_patches(&patch)?;
@@ -91,7 +110,20 @@ fn collect_files(root: &Path, range: &[&str]) -> Result<Vec<FileChange>> {
     }
     mark_binary(
         &mut files,
-        &git_bytes(root, &args(range, &["diff", "--numstat", "-z", "-M", "-C"]))?,
+        &git_bytes(
+            root,
+            &args(
+                range,
+                &[
+                    "diff",
+                    "--numstat",
+                    "-z",
+                    "-M",
+                    "-C",
+                    "--find-copies-harder",
+                ],
+            ),
+        )?,
     )?;
     Ok(files)
 }
@@ -181,17 +213,37 @@ fn matching_patch<'a>(file: &FileChange, patches: &'a [ParsedPatch]) -> Option<&
         })
 }
 fn mark_binary(files: &mut [FileChange], raw: &[u8]) -> Result<()> {
-    let tokens: Vec<&[u8]> = raw
-        .split(|byte| *byte == 0)
-        .filter(|token| !token.is_empty())
-        .collect();
+    let tokens: Vec<&[u8]> = raw.split(|byte| *byte == 0).collect();
     let mut index = 0;
-    while index + 1 < tokens.len() {
-        let counts = std::str::from_utf8(tokens[index])?;
+    while index < tokens.len() {
+        if tokens[index].is_empty() {
+            index += 1;
+            continue;
+        }
+        let header = std::str::from_utf8(tokens[index])?;
         index += 1;
-        let path = path(&tokens[index])?;
-        index += 1;
-        if counts == "-\t-" {
+        let mut fields = header.splitn(3, '\t');
+        let added = fields.next().unwrap_or("");
+        let deleted = fields.next().unwrap_or("");
+        let inline_path = fields.next().unwrap_or("");
+        let path = if inline_path.is_empty() {
+            let _old = path(
+                tokens
+                    .get(index)
+                    .context("numstat rename missing old path")?,
+            )?;
+            index += 1;
+            let new = path(
+                tokens
+                    .get(index)
+                    .context("numstat rename missing new path")?,
+            )?;
+            index += 1;
+            new
+        } else {
+            PathBuf::from(inline_path)
+        };
+        if added == "-" && deleted == "-" {
             if let Some(file) = files.iter_mut().find(|file| {
                 file.new_path.as_ref() == Some(&path) || file.old_path.as_ref() == Some(&path)
             }) {

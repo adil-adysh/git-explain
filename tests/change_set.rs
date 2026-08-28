@@ -55,6 +55,11 @@ fn pure_rename_is_a_file_change_with_preserved_semantics() {
         .iter()
         .all(|change| change.kind == SemanticUnitChangeKind::Preserved));
     assert_eq!(changes.explainable_changes().count(), 0);
+    let html = git_explain::web::render(&changes);
+    assert!(html.contains("Change summary"));
+    assert!(html.contains("Previous path: old.rs"));
+    assert!(html.contains("Semantic units preserved"));
+    assert!(html.contains("No semantic changes require explanation."));
 }
 #[test]
 fn added_and_deleted_source_units_are_first_class() {
@@ -89,4 +94,60 @@ fn added_and_deleted_source_units_are_first_class() {
                 .semantic_changes
                 .iter()
                 .all(|change| change.kind == SemanticUnitChangeKind::Added)));
+}
+
+#[test]
+fn modification_and_line_movement_keep_semantic_identity() {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "fn keep() { let value = 1; }\nfn move_me() {}\n",
+    )
+    .unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "// inserted\n// inserted again\nfn keep() { let value = 2; }\nfn move_me() {}\n",
+    )
+    .unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "modify"]);
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    let file = &changes.files[0];
+    assert!(file.semantic_changes.iter().any(|change| change.kind
+        == SemanticUnitChangeKind::Modified
+        && change.before.as_ref().unwrap().identity == change.after.as_ref().unwrap().identity));
+    assert!(file
+        .semantic_changes
+        .iter()
+        .any(|change| change.kind == SemanticUnitChangeKind::Preserved
+            && change.after.as_ref().unwrap().identity.qualified_name == "move_me"));
+}
+
+#[test]
+fn binary_and_mode_only_changes_are_deterministic_and_not_explainable() {
+    let dir = repo();
+    std::fs::write(dir.path().join("asset.bin"), [0_u8, 1, 2, 3]).unwrap();
+    std::fs::write(dir.path().join("script.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::write(dir.path().join("asset.bin"), [0_u8, 8, 9, 10]).unwrap();
+    git(dir.path(), &["update-index", "--chmod=+x", "script.sh"]);
+    git(dir.path(), &["add", "asset.bin"]);
+    git(dir.path(), &["commit", "-qm", "metadata"]);
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    assert!(changes
+        .files
+        .iter()
+        .any(|file| file.binary && file.semantic_changes.is_empty()));
+    assert!(changes
+        .files
+        .iter()
+        .any(|file| file.mode_changed() && file.semantic_changes.is_empty()));
+    assert_eq!(changes.explainable_changes().count(), 0);
 }

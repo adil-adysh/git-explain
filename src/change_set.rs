@@ -157,7 +157,9 @@ impl FileChange {
             .any(|c| c.kind != SemanticUnitChangeKind::Preserved)
     }
     pub fn is_unsupported_source(&self) -> bool {
-        !self.binary && self.before.is_none() && self.after.is_none() && self.patch.is_some()
+        !self.binary
+            && (self.before.is_some() || self.after.is_some())
+            && crate::language::LanguageRegistry::analyzer_for_path(self.display_path()).is_none()
     }
     pub fn status_label(&self) -> &'static str {
         match (self.kind, self.source_content_changed()) {
