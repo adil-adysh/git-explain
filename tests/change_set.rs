@@ -357,6 +357,34 @@ fn type_changes_are_deterministic_and_not_semantically_parsed() {
 }
 
 #[test]
+fn mode_and_semantic_content_changes_are_both_preserved() {
+    let dir = repo();
+    std::fs::write(dir.path().join("script.rs"), "fn run() { before(); }\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::write(dir.path().join("script.rs"), "fn run() { after(); }\n").unwrap();
+    git(dir.path(), &["add", "script.rs"]);
+    git(dir.path(), &["update-index", "--chmod=+x", "script.rs"]);
+    git(dir.path(), &["commit", "-qm", "content and mode"]);
+
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    let file = &changes.files[0];
+    assert!(file.mode_changed());
+    assert!(file
+        .semantic_changes
+        .iter()
+        .any(|change| change.kind == SemanticUnitChangeKind::Modified));
+    assert_eq!(changes.explainable_changes().count(), 1);
+    assert!(changes.empty_state().is_none());
+    let debug = git_explain::explain::format_debug(&changes);
+    assert!(debug.contains("Mode: 100644 -> 100755"));
+    assert!(debug.contains("Status: Modified"));
+    assert!(debug.contains("Name: run"));
+}
+
+#[test]
 fn exact_copy_and_weird_unicode_paths_stay_file_level_metadata() {
     let dir = repo();
     std::fs::write(dir.path().join("source.rs"), "fn copied() {}\n").unwrap();
