@@ -722,14 +722,14 @@ fn render_context_recommendation(
             recommendation.state,
             ollama_context::RecommendationState::InsufficientHistory
         ) {
-            output.push_str(&format!("\n\nRecommendation:\nNot enough history yet.\n\nAt least {} recent requests are required before git-explain recommends\na stable Ollama context size.", ollama_context::MIN_SAMPLES));
+            output.push_str(&format!("\n\nRecommendation:\nNot enough history yet.\n\nAt least {} recent requests are required before git-explain recommends\na stable local backend context size.", ollama_context::MIN_SAMPLES));
             continue;
         }
         if matches!(
             recommendation.state,
             ollama_context::RecommendationState::CapacityUnknown
         ) {
-            output.push_str(&format!("\n\nRecommended workload context:\n{} tokens\n\nA safe Ollama context cannot be recommended until the model maximum is available.\nStart Ollama, load the model, then run:\ngit explain profile test {profile}", recommendation.target.unwrap_or_default()));
+            output.push_str(&format!("\n\nRecommended workload context:\n{} tokens\n\nA safe {} context cannot be recommended until the model maximum is available.\nStart the backend, load the model if needed, then run:\ngit explain profile test {profile}", recommendation.target.unwrap_or_default(), local_backend_name(model)));
             continue;
         }
         let statistics = ollama_context::OllamaContextStatistics::from_records(&records);
@@ -770,28 +770,68 @@ fn render_context_recommendation(
             ));
         }
         output.push_str(&format!("\n\nReason:\n{}", recommendation.reason));
-        if let Some(bottleneck) = recommendation_bottleneck(capacity, target) {
+        if let Some(bottleneck) = recommendation_bottleneck(model, capacity, target) {
             output.push_str(&format!("\n\n{bottleneck}"));
         }
         if capacity.profile_limit.is_some_and(|value| value < target) {
-            output.push_str(&format!("\n\nRaise git-explain's profile cap, then reload Ollama:\ngit explain profile edit {profile} --context-window {target}"));
+            output.push_str(&format!("\n\nRaise git-explain's profile cap:\ngit explain profile edit {profile} --context-window {target}"));
         }
         if capacity.runtime_allocated.is_none() {
-            output.push_str(&format!("\n\nThe recommendation is based on recorded request history.\nStart Ollama and run `git explain profile test {profile}` to compare it\nwith the current runtime allocation."));
+            output.push_str(&format!("\n\nThe recommendation is based on recorded request history.\nStart {} and run `git explain profile test {profile}` to compare it\nwith the current runtime allocation.", local_backend_name(model)));
         }
         if matches!(
             recommendation.state,
             ollama_context::RecommendationState::Increase
-        ) && !capacity.profile_limit.is_some_and(|value| value < target)
-        {
-            output.push_str(&format!("\n\nConfigure Ollama with the recommended context, reload the model, then run:\ngit explain profile test {profile}"));
+        ) {
+            output.push_str(&context_change_instruction(
+                profile,
+                model,
+                recommendation.recommended.unwrap_or(target),
+            ));
         }
     }
     output.push('\n');
     output
 }
 
-fn recommendation_bottleneck(capacity: &context::ContextCapacity, target: u32) -> Option<String> {
+fn local_backend_name(model: &config::ResolvedProfile) -> &'static str {
+    match model.preset.as_deref() {
+        Some(name) if name.eq_ignore_ascii_case("ollama") => "Ollama",
+        Some(name) if name.eq_ignore_ascii_case("llama_cpp") => "llama.cpp",
+        _ => "the local OpenAI-compatible backend",
+    }
+}
+
+fn context_change_instruction(
+    profile: &str,
+    model: &config::ResolvedProfile,
+    target: u32,
+) -> String {
+    match model::openai::context_control_for_profile(model) {
+        context::ContextControl::FixedRuntime if local_backend_name(model) == "Ollama" => format!(
+            "\n\nConfigure Ollama with the recommended context, reload the model, then run:\ngit explain profile test {profile}"
+        ),
+        context::ContextControl::FixedRuntime if local_backend_name(model) == "llama.cpp" => format!(
+            "\n\nRestart llama.cpp with `--ctx-size {target}`, then run:\ngit explain profile test {profile}"
+        ),
+        context::ContextControl::PerRequest => format!(
+            "\n\ngit-explain requests this context per inference. Verify it with:\ngit explain profile test {profile}"
+        ),
+        context::ContextControl::SessionOrModelLoad => format!(
+            "\n\nConfigure the model or session with {target} tokens, reload it, then run:\ngit explain profile test {profile}"
+        ),
+        context::ContextControl::Unknown => format!(
+            "\n\nThis local OpenAI-compatible backend has no verified context-size control. The recommendation is advisory; consult its server documentation or startup configuration, then run:\ngit explain profile test {profile}"
+        ),
+        context::ContextControl::FixedRuntime => unreachable!("known fixed runtimes have a named adapter"),
+    }
+}
+
+fn recommendation_bottleneck(
+    model: &config::ResolvedProfile,
+    capacity: &context::ContextCapacity,
+    target: u32,
+) -> Option<String> {
     if capacity.model_max.is_some_and(|value| value < target) {
         return Some(format!(
             "Model maximum:\n{} tokens\n\nThe model is already at its maximum supported context.",
@@ -801,7 +841,10 @@ fn recommendation_bottleneck(capacity: &context::ContextCapacity, target: u32) -
     if capacity.profile_limit.is_some_and(|value| value < target) {
         return Some(format!("Profile context limit:\n{} tokens\n\nThe profile context limit is currently the bottleneck.", capacity.profile_limit.unwrap()));
     }
-    capacity.runtime_allocated.filter(|value| *value < target).map(|value| format!("Current Ollama runtime:\n{value} tokens\n\nThe Ollama runtime context is currently the bottleneck."))
+    capacity.runtime_allocated.filter(|value| *value < target).map(|value| {
+        let backend = local_backend_name(model);
+        format!("Current {backend} runtime:\n{value} tokens\n\nThe {backend} runtime context is currently the bottleneck.")
+    })
 }
 
 fn print_debug_context(model: &config::ResolvedProfile) {
@@ -1209,6 +1252,22 @@ mod profile_error_tests {
         }
     }
 
+    fn llama_cpp_profile() -> config::ResolvedProfile {
+        let mut profile = ollama_profile();
+        profile.provider = "openai_compatible".into();
+        profile.preset = Some("llama_cpp".into());
+        profile.base_url = "http://127.0.0.1:8080/v1".into();
+        profile
+    }
+
+    fn generic_local_profile() -> config::ResolvedProfile {
+        let mut profile = ollama_profile();
+        profile.provider = "openai_compatible".into();
+        profile.preset = None;
+        profile.base_url = "http://localhost:8000/v1".into();
+        profile
+    }
+
     fn context_record(deep: bool, required: u32) -> ollama_context::OllamaRequestRecord {
         let mut record =
             ollama_context::OllamaRequestRecord::now("ollama".into(), "test-model".into(), deep);
@@ -1341,6 +1400,46 @@ mod profile_error_tests {
         assert!(output.contains("Recommended context:\n16384 tokens"));
         assert!(output.contains("p95 ideal required context: 12000 tokens"));
         assert!(output.contains("The Ollama runtime context is currently the bottleneck."));
+    }
+
+    #[test]
+    fn context_recommendation_gives_llama_cpp_restart_instruction() {
+        let dir = tempdir().unwrap();
+        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        for _ in 0..10 {
+            let mut record = context_record(false, 12_000);
+            record.compacted = true;
+            tracker.record(record).unwrap();
+        }
+        let capacity = context::ContextCapacity {
+            runtime_allocated: Some(8_192),
+            model_max: Some(32_768),
+            profile_limit: None,
+        };
+        let output =
+            render_context_recommendation("ollama", &llama_cpp_profile(), &capacity, &tracker);
+        assert!(output.contains("Current llama.cpp runtime:"));
+        assert!(output.contains("Restart llama.cpp with `--ctx-size 16384`"));
+        assert!(!output.contains("Configure Ollama"));
+    }
+
+    #[test]
+    fn context_recommendation_keeps_generic_controls_advisory_only() {
+        let dir = tempdir().unwrap();
+        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        for _ in 0..10 {
+            tracker.record(context_record(false, 12_000)).unwrap();
+        }
+        let capacity = context::ContextCapacity {
+            runtime_allocated: None,
+            model_max: Some(32_768),
+            profile_limit: None,
+        };
+        let output =
+            render_context_recommendation("ollama", &generic_local_profile(), &capacity, &tracker);
+        assert!(output.contains("no verified context-size control"));
+        assert!(output.contains("recommendation is advisory"));
+        assert!(!output.contains("Ollama"));
     }
 
     #[test]

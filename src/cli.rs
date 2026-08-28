@@ -42,7 +42,7 @@ pub enum Command {
     Profile(ProfileCommand),
     #[command(about = "Inspect or clear the explanation cache")]
     Cache(CacheCommand),
-    #[command(about = "Inspect local Ollama context history and recommendations")]
+    #[command(about = "Inspect local backend context history and recommendations")]
     Context(ContextCommand),
     #[command(about = "Start, inspect, refresh, or stop the local daemon")]
     Daemon(DaemonCommand),
@@ -55,8 +55,11 @@ pub struct ContextCommand {
 }
 #[derive(Clone, Debug, Subcommand)]
 pub enum ContextAction {
+    #[command(about = "Show private local workload context statistics")]
     Stats,
+    #[command(about = "Recommend a stable local backend context allocation")]
     Recommend,
+    #[command(about = "Remove local context history for the selected profile")]
     Reset {
         #[arg(long)]
         force: bool,

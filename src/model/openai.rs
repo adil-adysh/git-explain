@@ -47,9 +47,10 @@ pub fn context_control_for_profile(model: &ResolvedProfile) -> ContextControl {
 
 /// Telemetry is local-only: never persist workload metadata for remote hosts.
 pub fn is_local_profile(model: &ResolvedProfile) -> bool {
-    model.base_url.starts_with("http://127.0.0.1")
-        || model.base_url.starts_with("http://localhost")
-        || model.base_url.starts_with("http://[::1]")
+    reqwest::Url::parse(&model.base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]"))
 }
 
 fn provider_kind_for_profile(model: &ResolvedProfile) -> ProviderKind {
@@ -977,7 +978,7 @@ impl OpenAiProvider {
         record.concise_retry_used = concise_retry_used;
         record.attempts = if concise_retry_used { 2 } else { 1 };
         if let Err(error) = tracker.record(record) {
-            eprintln!("could not record local Ollama context history: {error:#}");
+            eprintln!("could not record local backend context history: {error:#}");
         }
     }
 
@@ -1046,7 +1047,7 @@ impl OpenAiProvider {
         record.concise_retry_used = concise_retry_used;
         record.attempts = if concise_retry_used { 2 } else { 1 };
         if let Err(error) = tracker.record(record) {
-            eprintln!("could not record local Ollama context history: {error:#}");
+            eprintln!("could not record local backend context history: {error:#}");
         }
     }
 }
@@ -1200,6 +1201,38 @@ mod tests {
         assert!(value.get("chat_template_kwargs").is_none());
         assert!(value.get("reasoning_effort").is_none());
         assert!(value.get("reasoning_format").is_none());
+    }
+
+    #[test]
+    fn local_context_telemetry_is_limited_to_loopback_hosts() {
+        let mut local = ResolvedProfile {
+            provider: "openai_compatible".into(),
+            preset: None,
+            base_url: "http://localhost:8080/v1".into(),
+            model: "test-model".into(),
+            api_key_env: None,
+            api_key: None,
+            context_window: None,
+            normal: GenerationConfig {
+                reasoning: None,
+                max_tokens: None,
+                temperature: None,
+            },
+            deep: GenerationConfig {
+                reasoning: None,
+                max_tokens: None,
+                temperature: None,
+            },
+        };
+        assert!(is_local_profile(&local));
+        local.base_url = "http://127.0.0.1:8080/v1".into();
+        assert!(is_local_profile(&local));
+        local.base_url = "http://[::1]:8080/v1".into();
+        assert!(is_local_profile(&local));
+        local.base_url = "http://127.0.0.1.example.test:8080/v1".into();
+        assert!(!is_local_profile(&local));
+        local.base_url = "https://api.example.test/v1".into();
+        assert!(!is_local_profile(&local));
     }
 
     #[test]
