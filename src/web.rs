@@ -151,5 +151,41 @@ fn render_change(html: &mut String, change: &SemanticUnitChange, endpoint: &str,
     };
     let id = escape(&change.id.0);
     let diff_id = format!("diff-{id}");
-    html.push_str(&format!("<article data-unit-id=\"{id}\"><h3>{}</h3><p>Status: {:?} · {} · lines {}–{}</p><h4>Overview</h4><p class=\"overview explanation\">{}</p><div class=\"actions\"><button data-generation=\"{}\" data-endpoint=\"{}{}{}\">Generate explanation</button><button data-generation=\"{}\" data-deep=\"true\" data-endpoint=\"{}{}{}\">Explain this code in depth</button><button class=\"source-toggle\">Read code as text</button><button class=\"diff-toggle\" aria-controls=\"{}\" aria-expanded=\"false\" data-target=\"{}\">Show Git diff</button></div><h4>Code and explanation</h4><pre class=\"source-code\"><code>{}</code></pre><textarea class=\"source-text\" readonly hidden aria-label=\"Source code for {}\">{}</textarea><section class=\"deep-section explanation\" hidden><h4>Detailed explanation</h4><p class=\"deep\"></p></section><section id=\"{}\" hidden><h4>Git diff</h4><pre><code>{}</code></pre></section></article>", escape(&unit.identity.qualified_name), change.kind, escape(&unit.language), unit.location.start_line, unit.location.end_line, escape(overview), generation, endpoint, id, "/explain", generation, endpoint, id, "/deep", diff_id, diff_id, escape(&unit.source), escape(&unit.identity.qualified_name), escape(&unit.source), diff_id, escape(&change.diff)));
+    html.push_str(&format!("<article data-unit-id=\"{id}\"><h3>{}</h3><p>Status: {:?} · {} · lines {}–{}</p><h4>Overview</h4><p class=\"overview explanation\">{}</p><div class=\"actions\"><button data-generation=\"{}\" data-endpoint=\"{}{}{}\">Generate explanation</button><button data-generation=\"{}\" data-deep=\"true\" data-endpoint=\"{}{}{}\">Explain this code in depth</button><button class=\"source-toggle\">Read code as text</button><button class=\"diff-toggle\" aria-controls=\"{}\" aria-expanded=\"false\" data-target=\"{}\">Show Git diff</button></div><h4>Code and explanation</h4><div class=\"source-code\">{}</div><textarea class=\"source-text\" readonly hidden aria-label=\"Source code for {}\">{}</textarea><section class=\"deep-section explanation\" hidden><h4>Detailed explanation</h4><p class=\"deep\"></p></section><section id=\"{}\" hidden><h4>Git diff</h4><pre><code>{}</code></pre></section></article>", escape(&unit.identity.qualified_name), change.kind, escape(&unit.language), unit.location.start_line, unit.location.end_line, escape(overview), generation, endpoint, id, "/explain", generation, endpoint, id, "/deep", diff_id, diff_id, rendered_source(&unit.source, &change.explanation.annotations), escape(&unit.identity.qualified_name), escape(&unit.source), diff_id, escape(&change.diff)));
+}
+
+fn rendered_source(source: &str, annotations: &[crate::model::Annotation]) -> String {
+    let lines: Vec<_> = source.lines().collect();
+    let mut html = String::new();
+    let mut cursor = 0;
+    let mut annotations = annotations.to_vec();
+    annotations.sort_by_key(|annotation| annotation.start_line);
+    for annotation in annotations {
+        let start = annotation.start_line.saturating_sub(1).min(lines.len());
+        let end = annotation
+            .end_line
+            .max(annotation.start_line)
+            .min(lines.len());
+        if start > cursor {
+            html.push_str(&format!(
+                "<pre><code>{}</code></pre>",
+                escape(&lines[cursor..start].join("\n"))
+            ));
+        }
+        if end > start {
+            html.push_str(&format!("<pre><code>{}</code></pre><section class=\"explanation\"><h4>{}</h4><p>{}</p></section>", escape(&lines[start..end].join("\n")), escape(&annotation.kind), escape(&annotation.text)));
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < lines.len() {
+        html.push_str(&format!(
+            "<pre><code>{}</code></pre>",
+            escape(&lines[cursor..].join("\n"))
+        ));
+    }
+    if html.is_empty() {
+        format!("<pre><code>{}</code></pre>", escape(source))
+    } else {
+        html
+    }
 }
