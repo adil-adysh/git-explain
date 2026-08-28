@@ -45,6 +45,13 @@ pub fn context_control_for_profile(model: &ResolvedProfile) -> ContextControl {
     provider_kind_for_profile(model).context_control()
 }
 
+/// Telemetry is local-only: never persist workload metadata for remote hosts.
+pub fn is_local_profile(model: &ResolvedProfile) -> bool {
+    model.base_url.starts_with("http://127.0.0.1")
+        || model.base_url.starts_with("http://localhost")
+        || model.base_url.starts_with("http://[::1]")
+}
+
 fn provider_kind_for_profile(model: &ResolvedProfile) -> ProviderKind {
     ProviderKind::from_preset(model.preset.as_deref())
 }
@@ -267,6 +274,12 @@ impl OpenAiProvider {
     pub fn with_ollama_tracker(mut self, tracker: OllamaRequestTracker, profile: String) -> Self {
         self.ollama_tracker = Some((tracker, profile));
         self
+    }
+
+    /// Record private local context telemetry for any local backend. The old
+    /// Ollama-named builder remains for compatibility with existing callers.
+    pub fn with_context_tracker(self, tracker: OllamaRequestTracker, profile: String) -> Self {
+        self.with_ollama_tracker(tracker, profile)
     }
 
     fn build_request_with_retry(&self, request: &ExplanationRequest, retry: bool) -> Req {
@@ -917,9 +930,6 @@ impl OpenAiProvider {
         let Some((tracker, profile)) = &self.ollama_tracker else {
             return;
         };
-        if !matches!(self.kind, ProviderKind::Ollama) {
-            return;
-        }
         let mut record =
             OllamaRequestRecord::now(profile.clone(), self.model.clone(), request.deep);
         let generation = if request.deep {
@@ -989,9 +999,6 @@ impl OpenAiProvider {
         let Some((tracker, profile)) = &self.ollama_tracker else {
             return;
         };
-        if !matches!(self.kind, ProviderKind::Ollama) {
-            return;
-        }
         let mut record =
             OllamaRequestRecord::now(profile.clone(), self.model.clone(), request.deep);
         let generation = if request.deep {

@@ -47,8 +47,8 @@ async fn run() -> Result<()> {
     if let Some(Command::Context(command)) = &cli.command {
         let loader = ConfigLoader::for_context(None)?;
         let resolved = loader.resolve(cli.profile.as_deref())?;
-        if resolved.model.preset.as_deref() != Some("ollama") {
-            anyhow::bail!("Context history is currently available only for an Ollama profile.");
+        if !model::openai::is_local_profile(&resolved.model) {
+            anyhow::bail!("Context history is available only for a local loopback model profile.");
         }
         let tracker = ollama_context::OllamaRequestTracker::for_user_config(&loader.paths.user);
         match &command.action {
@@ -566,7 +566,8 @@ fn render_context_stats(
     let deep = tracker.records(profile, &workload_key_for(&model.model, &model.deep), true);
     let total = normal.len() + deep.len();
     let mut output = format!(
-        "Context statistics\n\nProfile: {profile}\nPreset: Ollama\nModel: {}\n\nCurrent Ollama context:\n{}\n\nRequests tracked:\n{total}",
+        "Context statistics\n\nProfile: {profile}\nPreset: {}\nModel: {}\n\nCurrent local backend context:\n{}\n\nRequests tracked:\n{total}",
+        model.preset.as_deref().map(display_preset_name).unwrap_or("Custom local"),
         model.model,
         format_context_value(capacity.runtime_allocated),
     );
@@ -702,7 +703,7 @@ fn render_context_recommendation(
     let deep = tracker.records(profile, &workload_key_for(&model.model, &model.deep), true);
     let total = normal.len() + deep.len();
     let mut output = format!(
-        "Context recommendation\n\nProfile: {profile}\n\nCurrent Ollama context:\n{}",
+        "Context recommendation\n\nProfile: {profile}\n\nCurrent local backend context:\n{}",
         format_context_value(capacity.runtime_allocated)
     );
     if total == 0 {
@@ -1150,8 +1151,8 @@ async fn run_direct(
         resolved.reader.clone(),
         resolved.explanation.clone(),
     );
-    let provider = if resolved.model.preset.as_deref() == Some("ollama") {
-        provider.with_ollama_tracker(
+    let provider = if model::openai::is_local_profile(&resolved.model) {
+        provider.with_context_tracker(
             ollama_context::OllamaRequestTracker::for_user_config(
                 &config::default_user_config_path()?,
             ),
@@ -1382,7 +1383,7 @@ mod profile_error_tests {
             &Default::default(),
             &tracker,
         );
-        assert!(output.contains("Current Ollama context:\nUnavailable"));
+        assert!(output.contains("Current local backend context:\nUnavailable"));
         assert!(output.contains("The recommendation is based on recorded request history."));
     }
 }

@@ -53,6 +53,10 @@ pub struct OllamaRequestRecord {
     pub attempts: u8,
 }
 
+/// Backend-neutral name for local context telemetry. Kept as an alias so
+/// existing unreleased history remains readable without migration.
+pub type LocalContextRequestRecord = OllamaRequestRecord;
+
 impl OllamaRequestRecord {
     pub fn now(profile: String, model: String, deep: bool) -> Self {
         Self {
@@ -113,6 +117,9 @@ struct History {
 pub struct OllamaRequestTracker {
     path: PathBuf,
 }
+
+/// Backend-neutral local telemetry tracker.
+pub type LocalContextTracker = OllamaRequestTracker;
 
 impl OllamaRequestTracker {
     pub fn for_user_config(config_path: &Path) -> Self {
