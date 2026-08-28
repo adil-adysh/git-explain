@@ -115,3 +115,42 @@ fn file_mode_expands_directories_in_the_selected_commit_tree() {
     assert!(stdout.contains("two"));
     assert!(stdout.contains("Files: 2"));
 }
+
+#[test]
+fn file_mode_expands_working_tree_directories_and_accepts_mixed_selectors() {
+    let directory = tempdir().unwrap();
+    git(directory.path(), &["init", "-q"]);
+    std::fs::create_dir_all(directory.path().join("src/nested")).unwrap();
+    std::fs::write(directory.path().join("src/one.rs"), "fn one() {}\n").unwrap();
+    std::fs::write(
+        directory.path().join("src/nested/two.py"),
+        "def two():\n    pass\n",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("standalone.rs"),
+        "fn standalone() {}\n",
+    )
+    .unwrap();
+    std::fs::write(directory.path().join("ignored.rs"), "fn ignored() {}\n").unwrap();
+    let config = directory.path().join("user-config.toml");
+    std::fs::write(&config, "").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_git-explain"))
+        .args(["--debug", "file", "--", "src", "standalone.rs"])
+        .env("GIT_EXPLAIN_USER_CONFIG", config)
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("one"));
+    assert!(stdout.contains("two"));
+    assert!(stdout.contains("standalone"));
+    assert!(!stdout.contains("ignored"));
+    assert!(stdout.contains("Files: 3"));
+}
