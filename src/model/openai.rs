@@ -447,6 +447,12 @@ impl ExplanationProvider for OpenAiProvider {
         }
         match self.explain_once(&request, false).await {
             Ok(result) => Ok(result),
+            Err(error) if is_provider_context_error(&error) => {
+                eprintln!(
+                    "provider reported context overflow; retrying once with a concise request"
+                );
+                self.explain_once(&request, true).await
+            }
             Err(error) if is_retryable_structured_error(&error) => {
                 eprintln!("structured model output invalid; retrying once with a concise request");
                 self.explain_once(&request, true).await
@@ -586,6 +592,15 @@ impl OpenAiProvider {
         }
         capacity
     }
+}
+
+fn is_provider_context_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}").to_ascii_lowercase();
+    !text.contains("context budget exceeded")
+        && (text.contains("context length")
+            || text.contains("maximum context")
+            || text.contains("prompt is too long")
+            || text.contains("request too large"))
 }
 
 fn is_retryable_structured_error(error: &anyhow::Error) -> bool {
@@ -789,5 +804,15 @@ mod tests {
             profile_limit: Some(32768),
         };
         assert_eq!(capacity.effective().tokens, 4096);
+    }
+
+    #[test]
+    fn provider_context_errors_are_distinct_from_local_preflight_errors() {
+        assert!(is_provider_context_error(&anyhow::anyhow!(
+            "model response (HTTP 400): maximum context length exceeded"
+        )));
+        assert!(!is_provider_context_error(&anyhow::anyhow!(
+            "context budget exceeded before inference"
+        )));
     }
 }
