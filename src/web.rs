@@ -70,7 +70,7 @@ pub fn render_for_session_at_generation(
     for (index, file) in change_set.files.iter().enumerate() {
         render_file(&mut html, file, index + 1, &endpoint, generation);
     }
-    html.push_str(r#"<script>const status=document.querySelector('#status');function announce(v){status.textContent=v}async function explain(button){let original=button.textContent;button.disabled=true;button.textContent='Generating…';try{let r=await fetch(button.dataset.endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({generation:Number(button.dataset.generation)})}),v=await r.json();if(!v.ok)throw Error(v.error);let article=button.closest('article');if(button.dataset.deep==='true'){article.querySelector('.deep').textContent=v.deep||v.overview;article.querySelector('.deep-section').hidden=false}else article.querySelector('.overview').textContent=v.overview||'Explanation unavailable.';announce('Explanation ready.')}catch(e){button.closest('article').querySelector('.overview').textContent=e.message;announce(e.message)}finally{button.disabled=false;button.textContent=original}}document.querySelectorAll('[data-endpoint]').forEach(b=>b.onclick=()=>explain(b));document.querySelectorAll('.source-toggle').forEach(b=>b.onclick=()=>{let a=b.closest('article'),code=a.querySelector('.source-code'),text=a.querySelector('.source-text'),open=text.hidden;text.hidden=!open;code.hidden=open;b.textContent=open?'Show rendered code':'Read code as text';announce(open?'Text code view available.':'Rendered code view available.')});document.querySelectorAll('.diff-toggle').forEach(b=>b.onclick=()=>{let target=document.getElementById(b.dataset.target),open=target.hidden;target.hidden=!open;b.setAttribute('aria-expanded',String(open));b.textContent=open?'Hide Git diff':'Show Git diff'});document.querySelector('#toggle-explanations').onclick=e=>{let hide=e.target.textContent.startsWith('Hide');document.querySelectorAll('.explanation').forEach(x=>x.hidden=hide);e.target.textContent=hide?'Show explanations':'Hide explanations';announce(hide?'Explanations hidden.':'Explanations shown.')};</script>"#);
+    html.push_str(r#"<script>const status=document.querySelector('#status');function announce(v){status.textContent=v}function escapeHtml(v){return v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function renderAnnotations(article,annotations){const lines=article.querySelector('.source-text').value.split('\n'),target=article.querySelector('.source-code');let cursor=0,html='';(annotations||[]).slice().sort((a,b)=>a.start_line-b.start_line).forEach(a=>{const start=Math.max(cursor,Math.min(lines.length,a.start_line-1)),end=Math.max(start,Math.min(lines.length,a.end_line));if(start>cursor)html+='<pre><code>'+escapeHtml(lines.slice(cursor,start).join('\n'))+'</code></pre>';if(end>start)html+='<pre><code>'+escapeHtml(lines.slice(start,end).join('\n'))+'</code></pre><section class="explanation"><h4>'+escapeHtml(a.kind)+'</h4><p>'+escapeHtml(a.text)+'</p></section>';cursor=end});if(cursor<lines.length)html+='<pre><code>'+escapeHtml(lines.slice(cursor).join('\n'))+'</code></pre>';target.innerHTML=html}async function explain(button){let original=button.textContent;button.disabled=true;button.textContent='Generating…';try{let r=await fetch(button.dataset.endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({generation:Number(button.dataset.generation)})}),v=await r.json();if(!v.ok)throw Error(v.error);let article=button.closest('article');if(button.dataset.deep==='true'){article.querySelector('.deep').textContent=v.deep||v.overview;article.querySelector('.deep-section').hidden=false}else{article.querySelector('.overview').textContent=v.overview||'Explanation unavailable.';renderAnnotations(article,v.annotations)}announce('Explanation ready.')}catch(e){button.closest('article').querySelector('.overview').textContent=e.message;announce(e.message)}finally{button.disabled=false;button.textContent=original}}document.querySelectorAll('[data-endpoint]').forEach(b=>b.onclick=()=>explain(b));document.querySelectorAll('.source-toggle').forEach(b=>b.onclick=()=>{let a=b.closest('article'),code=a.querySelector('.source-code'),text=a.querySelector('.source-text'),open=text.hidden;text.hidden=!open;code.hidden=open;b.textContent=open?'Show rendered code':'Read code as text';announce(open?'Text code view available.':'Rendered code view available.')});document.querySelectorAll('.diff-toggle').forEach(b=>b.onclick=()=>{let target=document.getElementById(b.dataset.target),open=target.hidden;target.hidden=!open;b.setAttribute('aria-expanded',String(open));b.textContent=open?'Hide Git diff':'Show Git diff'});document.querySelector('#toggle-explanations').onclick=e=>{let hide=e.target.textContent.startsWith('Hide');document.querySelectorAll('.explanation').forEach(x=>x.hidden=hide);e.target.textContent=hide?'Show explanations':'Hide explanations';announce(hide?'Explanations hidden.':'Explanations shown.')};</script>"#);
     if !session_id.is_empty() {
         html.push_str(&format!(r#"<script>(function(){{const generation={generation},session={session_id:?};setInterval(async()=>{{try{{const value=await (await fetch('/api/sessions/'+session+'/snapshot')).json();if(value.ok&&Number(value.generation)>generation){{status.innerHTML='A newer repository snapshot is available. <button type="button">Reload updated snapshot</button>';status.querySelector('button').onclick=()=>location.reload()}}}}catch(_){{}}}},5000)}})();</script>"#));
     }
@@ -187,5 +187,26 @@ fn rendered_source(source: &str, annotations: &[crate::model::Annotation]) -> St
         format!("<pre><code>{}</code></pre>", escape(source))
     } else {
         html
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn annotations_render_between_source_regions() {
+        let html = rendered_source(
+            "first\nsecond\nthird",
+            &[crate::model::Annotation {
+                start_line: 2,
+                end_line: 2,
+                kind: "Behavior".into(),
+                text: "Explains second".into(),
+            }],
+        );
+        assert!(html.contains("first"));
+        assert!(html.contains("second"));
+        assert!(html.contains("Explains second"));
+        assert!(html.contains("third"));
     }
 }

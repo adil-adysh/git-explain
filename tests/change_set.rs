@@ -60,6 +60,7 @@ fn pure_rename_is_a_file_change_with_preserved_semantics() {
     assert!(html.contains("Previous path: old.rs"));
     assert!(html.contains("Semantic units preserved"));
     assert!(html.contains("No semantic changes require explanation."));
+    assert!(!html.contains("<article data-unit-id="));
 }
 
 #[test]
@@ -94,6 +95,13 @@ fn rename_plus_edit_preserves_other_units() {
         .iter()
         .any(|change| change.kind == SemanticUnitChangeKind::Preserved));
     assert_eq!(changes.explainable_changes().count(), 1);
+    let html = git_explain::web::render_for_session_at_generation(&changes, "session", 1);
+    assert!(html.contains("Previous path: old.rs"));
+    assert!(html.contains("<article data-unit-id="));
+    assert!(html.contains("Explain this code in depth"));
+    assert!(html.contains("Read code as text"));
+    assert!(html.contains("Show Git diff"));
+    assert!(html.contains("Reload updated snapshot"));
 }
 #[test]
 fn added_and_deleted_source_units_are_first_class() {
