@@ -6,6 +6,7 @@ use crate::{
         ContextBudget, ContextCapabilities, ContextCapacity, ContextControl, ContextNegotiation,
         PromptPlan,
     },
+    ollama_context::{OllamaRequestRecord, OllamaRequestTracker},
 };
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -223,6 +224,7 @@ pub struct OpenAiProvider {
     reader: ReaderConfig,
     explanation: ExplanationConfig,
     context_window: Option<u32>,
+    ollama_tracker: Option<(OllamaRequestTracker, String)>,
 }
 
 impl OpenAiProvider {
@@ -258,7 +260,13 @@ impl OpenAiProvider {
             reader,
             explanation,
             context_window: model.context_window,
+            ollama_tracker: None,
         }
+    }
+
+    pub fn with_ollama_tracker(mut self, tracker: OllamaRequestTracker, profile: String) -> Self {
+        self.ollama_tracker = Some((tracker, profile));
+        self
     }
 
     fn build_request_with_retry(&self, request: &ExplanationRequest, retry: bool) -> Req {
@@ -654,12 +662,22 @@ impl OpenAiProvider {
             }
             bail!("model returned empty content ({usage})");
         }
-        self.parse_response(&content, request).with_context(|| {
+        let explanation = self.parse_response(&content, request).with_context(|| {
             format!(
                 "invalid structured model content (finish_reason={:?}; {usage})",
                 choice.finish_reason
             )
-        })
+        })?;
+        self.track_ollama_success(
+            request,
+            retry,
+            &capabilities,
+            &negotiation,
+            plan.estimated_input,
+            response.usage.as_ref(),
+            started.elapsed().as_millis() as u64,
+        );
+        Ok(explanation)
     }
 
     async fn discover_context_capabilities(&self) -> Result<ContextCapabilities> {
@@ -719,6 +737,46 @@ impl OpenAiProvider {
             "could not load Ollama model before context planning (HTTP {status}): {}",
             body.trim().chars().take(300).collect::<String>()
         );
+    }
+
+    fn track_ollama_success(
+        &self,
+        request: &ExplanationRequest,
+        concise_retry_used: bool,
+        capabilities: &ContextCapabilities,
+        negotiation: &ContextNegotiation,
+        estimated_input: u32,
+        usage: Option<&Usage>,
+        latency_ms: u64,
+    ) {
+        let Some((tracker, profile)) = &self.ollama_tracker else {
+            return;
+        };
+        if !matches!(self.kind, ProviderKind::Ollama) {
+            return;
+        }
+        let mut record =
+            OllamaRequestRecord::now(profile.clone(), self.model.clone(), request.deep);
+        record.model_max = capabilities.capacity.model_max;
+        record.runtime_context = capabilities.capacity.runtime_allocated;
+        record.profile_limit = self.context_window;
+        record.effective_context = negotiation.available_context;
+        record.estimated_input = estimated_input;
+        record.output_reserve = negotiation.requirement.output_reserve;
+        record.safety_margin =
+            negotiation.requirement.protocol_overhead + negotiation.requirement.safety_margin;
+        record.ideal_required_context = negotiation.requirement.minimum_required_context;
+        record.final_required_context = negotiation.requirement.minimum_required_context;
+        record.compacted = concise_retry_used;
+        record.actual_prompt_tokens = usage.and_then(|value| value.prompt_tokens);
+        record.actual_completion_tokens = usage.and_then(|value| value.completion_tokens);
+        record.latency_ms = Some(latency_ms);
+        record.success = true;
+        record.concise_retry_used = concise_retry_used;
+        record.attempts = if concise_retry_used { 2 } else { 1 };
+        if let Err(error) = tracker.record(record) {
+            eprintln!("could not record local Ollama context history: {error:#}");
+        }
     }
 }
 

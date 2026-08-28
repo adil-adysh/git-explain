@@ -648,6 +648,16 @@ fn build_session_from_analyzer(
         config.reader.clone(),
         config.explanation.clone(),
     );
+    let provider = if config.model.preset.as_deref() == Some("ollama") {
+        provider.with_ollama_tracker(
+            git_explain::ollama_context::OllamaRequestTracker::for_user_config(
+                &crate::config::default_user_config_path()?,
+            ),
+            config.profile.clone(),
+        )
+    } else {
+        provider
+    };
     let mut items: HashMap<UnitId, ExplainedUnit> = snapshot
         .units
         .iter()

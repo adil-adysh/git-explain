@@ -889,6 +889,16 @@ async fn run_direct(
         resolved.reader.clone(),
         resolved.explanation.clone(),
     );
+    let provider = if resolved.model.preset.as_deref() == Some("ollama") {
+        provider.with_ollama_tracker(
+            ollama_context::OllamaRequestTracker::for_user_config(
+                &config::default_user_config_path()?,
+            ),
+            resolved.profile.clone(),
+        )
+    } else {
+        provider
+    };
     let mut server = resolved.server;
     if let Some(port) = port {
         server.port = port;
