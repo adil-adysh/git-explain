@@ -502,6 +502,28 @@ fn unsupported_and_unitless_source_changes_have_distinct_empty_states() {
 }
 
 #[test]
+fn added_unsupported_file_is_not_mislabeled_as_a_mode_change() {
+    let dir = repo();
+    std::fs::write(dir.path().join("base.rs"), "fn base() {}\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::write(dir.path().join("notes.txt"), "new notes\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "add notes"]);
+
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    let file = &changes.files[0];
+    assert_eq!(file.kind, FileChangeKind::Added);
+    assert!(!file.mode_changed());
+    assert_eq!(
+        changes.empty_state().as_deref(),
+        Some("Source files changed, but their languages are not currently supported.")
+    );
+}
+
+#[test]
 fn json_is_nested_by_file_and_semantic_change() {
     let dir = repo();
     std::fs::write(dir.path().join("old.rs"), "fn keep() {}\n").unwrap();

@@ -200,7 +200,10 @@ impl FileChange {
             .expect("file change must have a path")
     }
     pub fn mode_changed(&self) -> bool {
-        self.old_mode != self.new_mode
+        matches!(
+            (self.old_mode.as_deref(), self.new_mode.as_deref()),
+            (Some(old), Some(new)) if old != "000000" && new != "000000" && old != new
+        )
     }
     pub fn source_content_changed(&self) -> bool {
         match (&self.before, &self.after) {
