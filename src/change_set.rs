@@ -94,11 +94,29 @@ impl ChangeSet {
         if summary.files_renamed > 0 && summary.units_preserved > 0 {
             return Some(format!("{} file{} renamed without source-content changes. No semantic changes require explanation.", summary.files_renamed, plural(summary.files_renamed)));
         }
+        if summary.files_copied > 0 && summary.units_preserved > 0 {
+            return Some(format!(
+                "{} file{} copied without source-content changes. No semantic changes require explanation.",
+                summary.files_copied,
+                plural(summary.files_copied)
+            ));
+        }
         if summary.files_binary > 0 {
             return Some(format!(
-                "{} file{} changed, but no explainable source-content changes were found.",
-                self.files.len(),
-                plural(self.files.len())
+                "{} binary file{} changed. Binary content has no semantic source explanation.",
+                summary.files_binary,
+                plural(summary.files_binary)
+            ));
+        }
+        if summary.files_mode_changed > 0 {
+            return Some(format!(
+                "The mode changed for {} file{}. No semantic changes require explanation.",
+                summary.files_mode_changed,
+                if summary.files_mode_changed == 1 {
+                    ""
+                } else {
+                    "s"
+                }
             ));
         }
         if self.files.iter().any(|file| file.is_unsupported_source()) {

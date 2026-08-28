@@ -161,6 +161,11 @@ fn rename_plus_edit_preserves_other_units() {
     assert!(html.contains("Read code as text"));
     assert!(html.contains("Show Git diff"));
     assert!(html.contains("Reload updated snapshot"));
+    let debug = git_explain::explain::format_debug(&changes);
+    assert!(debug.contains("Status: Renamed and modified"));
+    assert!(debug.contains("Name: changed"));
+    assert!(debug.contains("Lines: 1-1"));
+    assert!(debug.contains("fn changed() { let value = 2; }"));
 }
 #[test]
 fn added_and_deleted_source_units_are_first_class() {
@@ -251,6 +256,10 @@ fn binary_and_mode_only_changes_are_deterministic_and_not_explainable() {
         .iter()
         .any(|file| file.mode_changed() && file.semantic_changes.is_empty()));
     assert_eq!(changes.explainable_changes().count(), 0);
+    assert!(changes
+        .empty_state()
+        .unwrap()
+        .contains("Binary content has no semantic source explanation"));
 }
 
 #[test]
@@ -278,6 +287,7 @@ fn exact_copy_and_weird_unicode_paths_stay_file_level_metadata() {
         .semantic_changes
         .iter()
         .all(|change| change.kind == SemanticUnitChangeKind::Preserved));
+    assert!(changes.empty_state().is_none());
     assert!(changes
         .files
         .iter()

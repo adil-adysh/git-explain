@@ -109,40 +109,106 @@ impl AnalysisContext {
 }
 
 pub fn print_debug(change_set: &ChangeSet) -> Result<()> {
-    println!("Git analysis\n\nFiles:\n{}", change_set.files.len());
-    for file in &change_set.files {
-        print_file_debug(file);
-    }
-    let summary = change_set.summary();
-    println!("\nSemantic analysis:\n  Preserved: {}\n  Added: {}\n  Modified: {}\n  Deleted: {}\n\nModel requests:\n  {}", summary.units_preserved, summary.units_added, summary.units_modified, summary.units_deleted, change_set.explainable_changes().count());
+    print!("{}", format_debug(change_set));
     Ok(())
 }
-fn print_file_debug(file: &FileChange) {
-    println!(
-        "\n{}\n  Kind: {}",
+
+pub fn format_debug(change_set: &ChangeSet) -> String {
+    use std::fmt::Write;
+
+    let mut output = String::new();
+    writeln!(output, "Git analysis").unwrap();
+    match &change_set.context.mode {
+        AnalysisMode::WorkingTree => {
+            writeln!(output, "\nSelected Git range: working tree").unwrap()
+        }
+        AnalysisMode::Commit {
+            oid,
+            parent_oid,
+            subject,
+            merge_parent_count,
+        } => {
+            writeln!(output, "\nSelected Git range: commit").unwrap();
+            writeln!(output, "Commit: {oid}").unwrap();
+            writeln!(
+                output,
+                "Compared with: {}",
+                parent_oid.as_deref().unwrap_or("<empty tree>")
+            )
+            .unwrap();
+            writeln!(output, "Subject: {subject}").unwrap();
+            if *merge_parent_count > 1 {
+                writeln!(output, "Merge policy: first parent").unwrap();
+            }
+        }
+    }
+    if !change_set.context.path_filters.is_empty() {
+        writeln!(output, "\nSelected paths:").unwrap();
+        for path in &change_set.context.path_filters {
+            writeln!(output, "  {}", path.display()).unwrap();
+        }
+    }
+    writeln!(output, "\nFiles: {}", change_set.files.len()).unwrap();
+    for file in &change_set.files {
+        format_file_debug(&mut output, file);
+    }
+    let summary = change_set.summary();
+    write!(output, "\nSemantic analysis:\n  Preserved: {}\n  Added: {}\n  Modified: {}\n  Deleted: {}\n\nModel requests: {}\n", summary.units_preserved, summary.units_added, summary.units_modified, summary.units_deleted, change_set.explainable_changes().count()).unwrap();
+    output
+}
+fn format_file_debug(output: &mut String, file: &FileChange) {
+    use std::fmt::Write;
+
+    writeln!(
+        output,
+        "\nFile: {}\n  Status: {}",
         file.display_path().display(),
-        file.status_label().to_lowercase()
-    );
+        file.status_label()
+    )
+    .unwrap();
     if let Some(path) = &file.old_path {
         if Some(path) != file.new_path.as_ref() {
-            println!("  Old path: {}", path.display());
+            writeln!(output, "  Previous path: {}", path.display()).unwrap();
         }
     }
     if let Some(similarity) = file.similarity {
-        println!("  Similarity: {similarity}%");
+        writeln!(output, "  Similarity: {similarity}%").unwrap();
     }
     if file.binary {
-        println!("  Content: binary");
+        writeln!(output, "  Content: Binary").unwrap();
     }
     if file.mode_changed() {
-        println!(
+        writeln!(
+            output,
             "  Mode: {} -> {}",
             file.old_mode.as_deref().unwrap_or("<none>"),
             file.new_mode.as_deref().unwrap_or("<none>")
-        );
+        )
+        .unwrap();
     }
-    println!(
+    writeln!(
+        output,
         "  Textual hunks: {}",
         file.patch.as_ref().map_or(0, |patch| patch.ranges.len())
-    );
+    )
+    .unwrap();
+    for change in file
+        .semantic_changes
+        .iter()
+        .filter(|change| change.kind.explainable())
+    {
+        let unit = change.active_unit();
+        writeln!(
+            output,
+            "\n  Semantic change\n    Status: {:?}\n    Kind: {:?}\n    Name: {}\n    Lines: {}-{}\n    ID: {}\n\n{}",
+            change.kind,
+            unit.identity.kind,
+            unit.identity.qualified_name,
+            unit.location.start_line,
+            unit.location.end_line,
+            change.id,
+            unit.source
+        )
+        .unwrap();
+    }
 }
