@@ -182,3 +182,23 @@ fn exact_copy_and_weird_unicode_paths_stay_file_level_metadata() {
         .iter()
         .any(|file| file.new_path.as_deref() == Some(Path::new("sp ace-λ.rs"))));
 }
+
+#[test]
+fn json_is_nested_by_file_and_semantic_change() {
+    let dir = repo();
+    std::fs::write(dir.path().join("old.rs"), "fn keep() {}\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    git(dir.path(), &["mv", "old.rs", "new.rs"]);
+    git(dir.path(), &["commit", "-qm", "rename"]);
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    let value = changes.json();
+    let file = &value["files"][0];
+    assert_eq!(file["kind"], "renamed");
+    assert_eq!(file["old_path"], "old.rs");
+    assert_eq!(file["new_path"], "new.rs");
+    assert!(file["semantic_changes"].is_array());
+    assert!(value.get("units").is_none());
+}
