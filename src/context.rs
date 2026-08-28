@@ -217,26 +217,6 @@ impl ContextBudget {
             ),
         }
     }
-
-    pub fn for_generation(
-        capacity: &ContextCapacity,
-        generation: &GenerationConfig,
-        deep: bool,
-    ) -> Self {
-        let total = capacity.effective().tokens;
-        let output_reserve = generation.max_tokens.unwrap_or(if deep {
-            DEEP_OUTPUT_RESERVE
-        } else {
-            NORMAL_OUTPUT_RESERVE
-        });
-        let safety_margin = MIN_SAFETY_MARGIN.max(total / 12);
-        Self {
-            total,
-            output_reserve,
-            safety_margin,
-            input_budget: total.saturating_sub(output_reserve.saturating_add(safety_margin)),
-        }
-    }
 }
 
 pub trait TokenEstimator: Send + Sync {
@@ -306,19 +286,47 @@ mod tests {
     }
 
     #[test]
-    fn budgets_reserve_more_for_deep_requests_without_underflow() {
+    fn canonical_requirement_reserves_more_for_deep_requests() {
         let capacity = ContextCapacity {
             profile_limit: Some(4_096),
             ..Default::default()
         };
-        let normal = ContextBudget::for_generation(&capacity, &generation(Some(500)), false);
-        let deep = ContextBudget::for_generation(&capacity, &generation(Some(2_500)), true);
-        assert_eq!(normal.input_budget, 3_212);
-        assert_eq!(deep.input_budget, 1_212);
-        assert_eq!(
-            ContextBudget::for_generation(&capacity, &generation(Some(9_999)), false).input_budget,
-            0
-        );
+        let caps = ContextCapabilities {
+            capacity,
+            control: ContextControl::FixedRuntime,
+        };
+        let normal = negotiate_context(
+            &caps,
+            calculate_context_requirement(
+                "",
+                &generation(Some(500)),
+                false,
+                &ConservativeTokenEstimator,
+            ),
+        )
+        .unwrap();
+        let deep = negotiate_context(
+            &caps,
+            calculate_context_requirement(
+                "",
+                &generation(Some(2_500)),
+                true,
+                &ConservativeTokenEstimator,
+            ),
+        )
+        .unwrap();
+        assert_eq!(ContextBudget::from_negotiation(&normal).input_budget, 3_116);
+        assert_eq!(ContextBudget::from_negotiation(&deep).input_budget, 1_116);
+        assert!(negotiate_context(
+            &caps,
+            calculate_context_requirement(
+                "",
+                &generation(Some(9_999)),
+                false,
+                &ConservativeTokenEstimator
+            ),
+        )
+        .is_err());
     }
 
     #[test]

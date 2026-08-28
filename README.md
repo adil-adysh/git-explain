@@ -109,7 +109,7 @@ Generation fields are optional. An omitted field is omitted from the HTTP reques
 
 ## Context management
 
-Before each explanation, git-explain budgets the prompt against the smallest known context capacity, reserves output tokens for the selected Normal or Deep mode, and adds a safety margin for chat-template and structured-output overhead. It uses a deterministic conservative estimator for generic OpenAI-compatible endpoints. If the minimum focused prompt cannot fit, git-explain stops before inference with the available and required budgets instead of sending an oversized request.
+Before each explanation, git-explain serializes the full prospective inference payload (system and user messages, roles, schema, template options, source, diff, and metadata) and estimates its input tokens. It then calculates `required = estimated input + configured max response tokens + 96 protocol tokens + max(384, 1/12 of the pre-margin total)`. It uses a deterministic conservative estimator for generic OpenAI-compatible endpoints. If the first focused prompt cannot fit, it makes one concise re-plan; if that also cannot fit, it stops before inference with the available and required budgets instead of sending an oversized request.
 
 `context_window` is an optional profile cap for git-explain's own budgeting; it never changes a model server's allocation. Set or clear it with:
 

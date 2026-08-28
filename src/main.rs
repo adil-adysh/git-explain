@@ -507,14 +507,40 @@ fn print_debug_context(model: &config::ResolvedProfile) {
         ("Normal", &model.normal, false),
         ("Deep", &model.deep, true),
     ] {
-        let budget = context::ContextBudget::for_generation(&capacity, generation, deep);
+        let requirement = context::calculate_context_requirement(
+            "",
+            generation,
+            deep,
+            &context::ConservativeTokenEstimator,
+        );
+        let negotiation = context::negotiate_context(
+            &context::ContextCapabilities {
+                capacity: capacity.clone(),
+                control,
+            },
+            requirement,
+        );
+        let (budget, required) = match negotiation {
+            Ok(negotiation) => (
+                context::ContextBudget::from_negotiation(&negotiation),
+                negotiation.requirement.minimum_required_context,
+            ),
+            Err(error) => {
+                println!(
+                    "\nContext planning ({label}, no network discovery)\n  Control: {}\n  Result: {error}",
+                    control.description(),
+                );
+                continue;
+            }
+        };
         println!(
-            "\nContext planning ({label}, no network discovery)\n  Control: {}\n  Requested context: none (not supported by this transport)\n  Capacity: {} tokens ({:?})\n  Output reserve: {} tokens\n  Safety margin: {} tokens\n  Available input: {} tokens",
+            "\nContext planning ({label}, no network discovery)\n  Control: {}\n  Requested context: none (not supported by this transport)\n  Estimated input: diagnostic baseline only\n  Output reserve: {} tokens\n  Safety/headroom: {} tokens\n  Minimum required context: {} tokens\n  Capacity: {} tokens ({:?})\n  Available input: {} tokens",
             control.description(),
-            budget.total,
-            capacity.effective().source,
             budget.output_reserve,
             budget.safety_margin,
+            required,
+            budget.total,
+            capacity.effective().source,
             budget.input_budget,
         );
     }

@@ -510,6 +510,10 @@ impl ExplanationProvider for OpenAiProvider {
         }
         match self.explain_once(&request, false).await {
             Ok(result) => Ok(result),
+            Err(error) if is_local_context_error(&error) => {
+                eprintln!("context requirement cannot fit; retrying once with a concise request");
+                self.explain_once(&request, true).await
+            }
             Err(error) if is_provider_context_error(&error) => {
                 eprintln!(
                     "provider reported context overflow; retrying once with a concise request"
@@ -536,8 +540,13 @@ impl OpenAiProvider {
         } else {
             &self.normal
         };
+        // Estimate the complete serialized inference payload rather than just
+        // source/user text: this includes the system message, JSON schema,
+        // reasoning/template options, roles, and message framing.
+        let serialized_payload =
+            serde_json::to_string(&payload).context("serialize model request")?;
         let requirement = calculate_context_requirement(
-            &payload.messages[1].content,
+            &serialized_payload,
             generation,
             request.deep,
             &ConservativeTokenEstimator,
@@ -546,11 +555,7 @@ impl OpenAiProvider {
         let negotiation = negotiate_context(&capabilities, requirement)?;
         let request_options = InferenceRequestOptions::for_negotiation(&negotiation);
         let budget = ContextBudget::from_negotiation(&negotiation);
-        let plan = PromptPlan::check(
-            &payload.messages[1].content,
-            budget,
-            &ConservativeTokenEstimator,
-        )?;
+        let plan = PromptPlan::check(&serialized_payload, budget, &ConservativeTokenEstimator)?;
         eprintln!(
             "context plan: control={} total={} output_reserve={} safety_margin={} input_budget={} estimated_input={} requested_context={:?}",
             negotiation.control.description(),
@@ -636,6 +641,11 @@ fn is_provider_context_error(error: &anyhow::Error) -> bool {
             || text.contains("request too large"))
 }
 
+fn is_local_context_error(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains("context requirement ")
+        || format!("{error:#}").contains("context budget exceeded before inference")
+}
+
 fn is_retryable_structured_error(error: &anyhow::Error) -> bool {
     let text = format!("{error:#}");
     text.contains("malformed explanation JSON")
@@ -649,7 +659,10 @@ fn is_retryable_structured_error(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile};
+    use crate::{
+        config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile},
+        context::TokenEstimator,
+    };
 
     fn provider(name: &str) -> OpenAiProvider {
         OpenAiProvider::from_config(
@@ -761,6 +774,17 @@ mod tests {
         assert!(value.get("reasoning_effort").is_none());
         assert!(value.get("reasoning_format").is_none());
     }
+
+    #[test]
+    fn context_estimate_includes_system_message_and_serialized_schema() {
+        let payload = provider("llama_cpp").build_request(&request(false));
+        let serialized = serde_json::to_string(&payload).unwrap();
+        let estimator = ConservativeTokenEstimator;
+        assert!(
+            estimator.estimate(&serialized) > estimator.estimate(&payload.messages[1].content),
+            "the full request must cost more than user content alone"
+        );
+    }
     #[test]
     fn unspecified_generation_settings_are_not_sent() {
         let mut provider = provider("openai_compatible");
@@ -846,6 +870,9 @@ mod tests {
         )));
         assert!(!is_provider_context_error(&anyhow::anyhow!(
             "context budget exceeded before inference"
+        )));
+        assert!(is_local_context_error(&anyhow::anyhow!(
+            "context requirement 8192 tokens exceeds fixed/available context 4096 tokens"
         )));
     }
 }
