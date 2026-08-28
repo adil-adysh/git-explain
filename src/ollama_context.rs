@@ -12,6 +12,11 @@ use std::{
 
 pub const HISTORY_LIMIT: usize = 100;
 pub const MIN_SAMPLES: usize = 10;
+/// Minimum observations before a displayed percentile is useful to people.
+pub const P50_MIN_SAMPLES: usize = 3;
+pub const P90_MIN_SAMPLES: usize = 10;
+pub const P95_MIN_SAMPLES: usize = 20;
+pub const P99_MIN_SAMPLES: usize = 50;
 const TIERS: &[u32] = &[4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -97,7 +102,6 @@ impl OllamaRequestTracker {
             path: parent.join("state").join("ollama-context-history.json"),
         }
     }
-    #[cfg(test)]
     pub fn at(path: PathBuf) -> Self {
         Self { path }
     }
@@ -159,25 +163,42 @@ impl OllamaRequestTracker {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct DistributionStats<T> {
+    pub samples: usize,
+    pub p50: Option<T>,
+    pub p90: Option<T>,
+    pub p95: Option<T>,
+    pub p99: Option<T>,
+    pub max: Option<T>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct OllamaContextStatistics {
     pub count: usize,
-    pub required_p50: Option<u32>,
-    pub required_p90: Option<u32>,
-    pub required_p95: Option<u32>,
-    pub required_p99: Option<u32>,
-    pub required_max: Option<u32>,
-    pub estimated_p50: Option<u32>,
-    pub estimated_p95: Option<u32>,
-    pub completion_p50: Option<u32>,
-    pub completion_p95: Option<u32>,
-    pub estimator_error_p50: Option<i64>,
-    pub estimator_error_p95: Option<i64>,
+    pub required: DistributionStats<u32>,
+    /// The p95 used by the advisory policy once `MIN_SAMPLES` is met. It is
+    /// deliberately separate from the more conservative display threshold.
+    pub policy_required_p95: Option<u32>,
+    pub completion: DistributionStats<u32>,
+    pub estimator_error: DistributionStats<i64>,
     pub maximum_underestimation: Option<i64>,
     pub compactions: usize,
     pub hard_failures: usize,
     pub overflows: usize,
     pub truncations: usize,
     pub average_latency_ms: Option<u64>,
+    pub latency: DistributionStats<u64>,
+    // Compatibility aliases for internal callers while presentation migrates to
+    // `DistributionStats`. New rendering must use the distributions above.
+    pub required_p50: Option<u32>,
+    pub required_p90: Option<u32>,
+    pub required_p95: Option<u32>,
+    pub required_p99: Option<u32>,
+    pub required_max: Option<u32>,
+    pub completion_p50: Option<u32>,
+    pub completion_p95: Option<u32>,
+    pub estimator_error_p50: Option<i64>,
+    pub estimator_error_p95: Option<i64>,
     pub latency_p50_ms: Option<u64>,
     pub latency_p95_ms: Option<u64>,
 }
@@ -186,10 +207,6 @@ impl OllamaContextStatistics {
         let mut required = records
             .iter()
             .map(|r| r.ideal_required_context)
-            .collect::<Vec<_>>();
-        let mut estimated = records
-            .iter()
-            .map(|r| r.estimated_input)
             .collect::<Vec<_>>();
         let mut completions = records
             .iter()
@@ -203,7 +220,6 @@ impl OllamaContextStatistics {
             })
             .collect::<Vec<_>>();
         required.sort_unstable();
-        estimated.sort_unstable();
         completions.sort_unstable();
         estimator_errors.sort_unstable();
         let mut latencies = records
@@ -211,21 +227,18 @@ impl OllamaContextStatistics {
             .filter_map(|r| r.latency_ms)
             .collect::<Vec<_>>();
         latencies.sort_unstable();
+        let required_stats = distribution(&required);
+        let completion_stats = distribution(&completions);
+        let estimator_error_stats = distribution(&estimator_errors);
+        let latency_stats = distribution(&latencies);
         Self {
             count: records.len(),
-            required_p50: percentile(&required, 50),
-            required_p90: percentile(&required, 90),
-            required_p95: percentile(&required, 95),
-            required_p99: (records.len() >= 20)
-                .then(|| percentile(&required, 99))
+            required: required_stats.clone(),
+            policy_required_p95: (records.len() >= MIN_SAMPLES)
+                .then(|| percentile(&required, 95))
                 .flatten(),
-            required_max: required.last().copied(),
-            estimated_p50: percentile(&estimated, 50),
-            estimated_p95: percentile(&estimated, 95),
-            completion_p50: percentile(&completions, 50),
-            completion_p95: percentile(&completions, 95),
-            estimator_error_p50: percentile_i64(&estimator_errors, 50),
-            estimator_error_p95: percentile_i64(&estimator_errors, 95),
+            completion: completion_stats.clone(),
+            estimator_error: estimator_error_stats.clone(),
             maximum_underestimation: estimator_errors.last().copied().filter(|value| *value > 0),
             compactions: records.iter().filter(|r| r.compacted).count(),
             hard_failures: records.iter().filter(|r| r.local_context_failure).count(),
@@ -236,11 +249,62 @@ impl OllamaContextStatistics {
             truncations: records.iter().filter(|r| r.output_truncated).count(),
             average_latency_ms: (!latencies.is_empty())
                 .then(|| latencies.iter().sum::<u64>() / latencies.len() as u64),
-            latency_p50_ms: percentile_u64(&latencies, 50),
-            latency_p95_ms: percentile_u64(&latencies, 95),
+            latency: latency_stats.clone(),
+            required_p50: required_stats.p50,
+            required_p90: required_stats.p90,
+            required_p95: required_stats.p95,
+            required_p99: required_stats.p99,
+            required_max: required_stats.max,
+            completion_p50: completion_stats.p50,
+            completion_p95: completion_stats.p95,
+            estimator_error_p50: estimator_error_stats.p50,
+            estimator_error_p95: estimator_error_stats.p95,
+            latency_p50_ms: latency_stats.p50,
+            latency_p95_ms: latency_stats.p95,
         }
     }
 }
+trait PercentileValue: Copy {
+    fn percentile(values: &[Self], percent: usize) -> Option<Self>;
+}
+
+impl PercentileValue for u32 {
+    fn percentile(values: &[Self], percent: usize) -> Option<Self> {
+        percentile(values, percent)
+    }
+}
+
+impl PercentileValue for i64 {
+    fn percentile(values: &[Self], percent: usize) -> Option<Self> {
+        percentile_i64(values, percent)
+    }
+}
+
+impl PercentileValue for u64 {
+    fn percentile(values: &[Self], percent: usize) -> Option<Self> {
+        percentile_u64(values, percent)
+    }
+}
+
+fn distribution<T: PercentileValue>(values: &[T]) -> DistributionStats<T> {
+    DistributionStats {
+        samples: values.len(),
+        p50: (values.len() >= P50_MIN_SAMPLES)
+            .then(|| T::percentile(values, 50))
+            .flatten(),
+        p90: (values.len() >= P90_MIN_SAMPLES)
+            .then(|| T::percentile(values, 90))
+            .flatten(),
+        p95: (values.len() >= P95_MIN_SAMPLES)
+            .then(|| T::percentile(values, 95))
+            .flatten(),
+        p99: (values.len() >= P99_MIN_SAMPLES)
+            .then(|| T::percentile(values, 99))
+            .flatten(),
+        max: values.last().copied(),
+    }
+}
+
 fn percentile(values: &[u32], percent: usize) -> Option<u32> {
     (!values.is_empty()).then(|| values[(values.len() * percent).div_ceil(100).saturating_sub(1)])
 }
@@ -278,7 +342,7 @@ pub fn recommend(
     if statistics.count < MIN_SAMPLES {
         return OllamaRecommendation { state: RecommendationState::InsufficientHistory, current, recommended: current, target: None, reason: format!("At least {MIN_SAMPLES} recent requests are required before a stable recommendation.") };
     }
-    let p95 = statistics.required_p95.unwrap_or_default();
+    let p95 = statistics.policy_required_p95.unwrap_or_default();
     let target = p95.saturating_add(p95 / 5);
     let ceiling = model_max.unwrap_or(u32::MAX);
     let tier = TIERS
@@ -395,9 +459,35 @@ mod tests {
             .map(|n| record("p", false, n * 100))
             .collect::<Vec<_>>();
         let s = OllamaContextStatistics::from_records(&records);
-        assert_eq!(s.required_p50, Some(1000));
-        assert_eq!(s.required_p90, Some(1800));
-        assert_eq!(s.required_p95, Some(1900));
+        assert_eq!(s.required.p50, Some(1000));
+        assert_eq!(s.required.p90, Some(1800));
+        assert_eq!(s.required.p95, Some(1900));
+    }
+
+    #[test]
+    fn displayed_percentiles_follow_central_sample_thresholds() {
+        for (count, p50, p90, p95, p99) in [
+            (0, false, false, false, false),
+            (1, false, false, false, false),
+            (2, false, false, false, false),
+            (3, true, false, false, false),
+            (9, true, false, false, false),
+            (10, true, true, false, false),
+            (19, true, true, false, false),
+            (20, true, true, true, false),
+            (49, true, true, true, false),
+            (50, true, true, true, true),
+        ] {
+            let records = (1..=count)
+                .map(|n| record("p", false, n as u32))
+                .collect::<Vec<_>>();
+            let distribution = OllamaContextStatistics::from_records(&records).required;
+            assert_eq!(distribution.p50.is_some(), p50, "count={count}");
+            assert_eq!(distribution.p90.is_some(), p90, "count={count}");
+            assert_eq!(distribution.p95.is_some(), p95, "count={count}");
+            assert_eq!(distribution.p99.is_some(), p99, "count={count}");
+            assert_eq!(distribution.max.is_some(), count > 0, "count={count}");
+        }
     }
     #[test]
     fn recommendation_uses_ideal_requirement() {

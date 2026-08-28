@@ -54,44 +54,22 @@ async fn run() -> Result<()> {
         match &command.action {
             ContextAction::Stats => {
                 let caps = model::openai::discover_context_capabilities(&resolved.model).await;
-                print_context_stats(&resolved.profile, &resolved.model, &caps.capacity, &tracker)
+                print!(
+                    "{}",
+                    render_context_stats(
+                        &resolved.profile,
+                        &resolved.model,
+                        &caps.capacity,
+                        &tracker,
+                    )
+                )
             }
             ContextAction::Recommend => {
                 let caps = model::openai::discover_context_capabilities(&resolved.model).await;
-                println!(
-                    "Context recommendation\n\nProfile: {}\nCurrent Ollama context: {}",
-                    resolved.profile,
-                    caps.capacity
-                        .runtime_allocated
-                        .map_or_else(|| "not loaded".into(), |v| format!("{v} tokens"))
+                print!(
+                    "{}",
+                    render_context_recommendation(&resolved.profile, &caps.capacity, &tracker,)
                 );
-                for (label, deep) in [("Normal", false), ("Deep", true)] {
-                    let records = tracker.records(&resolved.profile, deep);
-                    let recommendation = ollama_context::recommend(
-                        &records,
-                        caps.capacity.runtime_allocated,
-                        caps.capacity.model_max,
-                    );
-                    println!(
-                        "\n{label} requests ({})\nRecommended context: {}\n{}",
-                        records.len(),
-                        recommendation
-                            .recommended
-                            .map_or_else(|| "not available".into(), |v| format!("{v} tokens")),
-                        recommendation.reason
-                    );
-                    if let Some(target) = recommendation.target {
-                        if let Some(bottleneck) = context_bottleneck(&caps.capacity, target) {
-                            println!("Current limiting layer: {bottleneck}");
-                        }
-                    }
-                    if matches!(
-                        recommendation.state,
-                        ollama_context::RecommendationState::Increase
-                    ) {
-                        println!("Configure Ollama with the recommended context, reload the model, then run: git explain profile test {}", resolved.profile);
-                    }
-                }
             }
             ContextAction::Reset { force } => {
                 if !force {
@@ -560,6 +538,135 @@ async fn run() -> Result<()> {
     .await
 }
 
+fn render_context_stats(
+    profile: &str,
+    model: &config::ResolvedProfile,
+    capacity: &context::ContextCapacity,
+    tracker: &ollama_context::OllamaRequestTracker,
+) -> String {
+    let normal = tracker.records(profile, false);
+    let deep = tracker.records(profile, true);
+    let total = normal.len() + deep.len();
+    let mut output = format!(
+        "Context statistics\n\nProfile: {profile}\nPreset: Ollama\nModel: {}\n\nCurrent Ollama context:\n{}\n\nRequests tracked:\n{total}",
+        model.model,
+        format_context_value(capacity.runtime_allocated),
+    );
+    if total == 0 {
+        output.push_str("\n\nNo context history has been collected yet.\n\ngit-explain records local numeric metrics after model requests, including:\n  required context\n  token usage when available\n  compaction\n  context failures\n  latency\n\nNo source code, prompts, diffs, or model responses are stored.\n\nRun git-explain normally to begin collecting context statistics.\n");
+        return output;
+    }
+    for (label, records) in [("Normal", normal), ("Deep", deep)] {
+        output.push_str("\n\n");
+        if records.is_empty() {
+            output.push_str(&format!("{label}:\n  No requests tracked."));
+        } else {
+            output.push_str(&render_mode_stats(
+                label,
+                &ollama_context::OllamaContextStatistics::from_records(&records),
+            ));
+        }
+    }
+    output.push('\n');
+    output
+}
+
+fn render_mode_stats(label: &str, stats: &ollama_context::OllamaContextStatistics) -> String {
+    let mut output = format!("{label}: {} requests\n\nRequired context:", stats.count);
+    append_distribution(&mut output, &stats.required, |value| {
+        format!("{value} tokens")
+    });
+    if stats.count < ollama_context::P50_MIN_SAMPLES {
+        output.push_str(
+            "\n\nMore percentile detail will appear as additional requests are collected.",
+        );
+    }
+    if stats.estimator_error.samples > 0 {
+        output.push_str("\n\nPrompt estimation (actual minus estimate):");
+        append_distribution(&mut output, &stats.estimator_error, format_signed_tokens);
+        if let Some(value) = stats.maximum_underestimation {
+            output.push_str(&format!("\n  maximum underestimation: {value} tokens"));
+        }
+    }
+    if stats.completion.samples > 0 {
+        output.push_str("\n\nCompletion tokens:");
+        append_distribution(&mut output, &stats.completion, |value| {
+            format!("{value} tokens")
+        });
+    }
+    if stats.compactions > 0 {
+        output.push_str(&format!(
+            "\n\nCompaction:\n  {} requests ({})",
+            stats.compactions,
+            rate(stats.compactions, stats.count)
+        ));
+    }
+    output.push_str("\n\nProblems:");
+    if stats.hard_failures == 0 && stats.overflows == 0 && stats.truncations == 0 {
+        output.push_str("\n  None");
+    } else {
+        if stats.hard_failures > 0 {
+            output.push_str(&format!(
+                "\n  Hard context failures: {} ({})",
+                stats.hard_failures,
+                rate(stats.hard_failures, stats.count)
+            ));
+        }
+        if stats.overflows > 0 {
+            output.push_str(&format!(
+                "\n  Provider context overflows: {}",
+                stats.overflows
+            ));
+        }
+        if stats.truncations > 0 {
+            output.push_str(&format!("\n  Output truncations: {}", stats.truncations));
+        }
+    }
+    if stats.latency.samples > 0 {
+        output.push_str(&format!(
+            "\n\nLatency:\n  average: {}",
+            format_latency(stats.average_latency_ms.unwrap_or_default())
+        ));
+        append_distribution(&mut output, &stats.latency, format_latency);
+    }
+    output
+}
+
+fn append_distribution<T>(
+    output: &mut String,
+    distribution: &ollama_context::DistributionStats<T>,
+    format_value: impl Fn(T) -> String,
+) where
+    T: Copy,
+{
+    if let Some(value) = distribution.p50 {
+        output.push_str(&format!("\n  p50: {}", format_value(value)));
+    }
+    if let Some(value) = distribution.p90 {
+        output.push_str(&format!("\n  p90: {}", format_value(value)));
+    }
+    if let Some(value) = distribution.p95 {
+        output.push_str(&format!("\n  p95: {}", format_value(value)));
+    }
+    if let Some(value) = distribution.p99 {
+        output.push_str(&format!("\n  p99: {}", format_value(value)));
+    }
+    if let Some(value) = distribution.max {
+        output.push_str(&format!("\n  max: {}", format_value(value)));
+    }
+}
+
+fn format_context_value(value: Option<u32>) -> String {
+    value.map_or_else(|| "Unavailable".into(), |value| format!("{value} tokens"))
+}
+fn format_latency(value: u64) -> String {
+    format!("{:.1} seconds", value as f64 / 1000.0)
+}
+fn rate(count: usize, total: usize) -> String {
+    format!("{:.1}%", count as f64 * 100.0 / total as f64)
+}
+
+#[allow(dead_code)]
 fn print_context_stats(
     profile: &str,
     model: &config::ResolvedProfile,
@@ -585,6 +692,7 @@ fn format_signed_tokens(value: i64) -> String {
     format!("{value:+} tokens")
 }
 
+#[allow(dead_code)]
 fn context_bottleneck(capacity: &context::ContextCapacity, target: u32) -> Option<String> {
     let effective = capacity.effective();
     (effective.tokens < target).then(|| match effective.source {
@@ -599,6 +707,105 @@ fn context_bottleneck(capacity: &context::ContextCapacity, target: u32) -> Optio
         }
         context::ContextSource::ConservativeFallback => "unknown runtime capacity".into(),
     })
+}
+
+fn render_context_recommendation(
+    profile: &str,
+    capacity: &context::ContextCapacity,
+    tracker: &ollama_context::OllamaRequestTracker,
+) -> String {
+    let normal = tracker.records(profile, false);
+    let deep = tracker.records(profile, true);
+    let total = normal.len() + deep.len();
+    let mut output = format!(
+        "Context recommendation\n\nProfile: {profile}\n\nCurrent Ollama context:\n{}",
+        format_context_value(capacity.runtime_allocated)
+    );
+    if total == 0 {
+        output.push_str("\n\nNo context history has been collected yet.\n\nRun git-explain normally to begin collecting request statistics.\n");
+        return output;
+    }
+    output.push_str(&format!("\n\nRequests tracked: {total}"));
+    for (label, records) in [("Normal", normal), ("Deep", deep)] {
+        if records.is_empty() {
+            continue;
+        }
+        let recommendation =
+            ollama_context::recommend(&records, capacity.runtime_allocated, capacity.model_max);
+        output.push_str(&format!("\n\n{label}: {} requests", records.len()));
+        if matches!(
+            recommendation.state,
+            ollama_context::RecommendationState::InsufficientHistory
+        ) {
+            output.push_str(&format!("\n\nRecommendation:\nNot enough history yet.\n\nAt least {} recent requests are required before git-explain recommends\na stable Ollama context size.", ollama_context::MIN_SAMPLES));
+            continue;
+        }
+        let statistics = ollama_context::OllamaContextStatistics::from_records(&records);
+        let target = recommendation.target.unwrap_or_default();
+        if let Some(value) = recommendation.recommended {
+            output.push_str(&format!("\n\nRecommended context:\n{value} tokens"));
+        }
+        if recommendation
+            .recommended
+            .is_some_and(|value| value < target)
+        {
+            output.push_str(&format!(
+                "\n\nRecommended workload context:\n{target} tokens"
+            ));
+        }
+        output.push_str(&format!(
+            "\n\nRecent workload:\n  Requests: {}\n  p95 ideal required context: {} tokens",
+            statistics.count,
+            statistics.policy_required_p95.unwrap_or_default()
+        ));
+        if statistics.compactions > 0 {
+            output.push_str(&format!(
+                "\n  Compaction: {} requests ({})",
+                statistics.compactions,
+                rate(statistics.compactions, statistics.count)
+            ));
+        }
+        if statistics.hard_failures > 0 {
+            output.push_str(&format!(
+                "\n  Hard context failures: {}",
+                statistics.hard_failures
+            ));
+        }
+        if statistics.overflows > 0 {
+            output.push_str(&format!(
+                "\n  Provider context overflows: {}",
+                statistics.overflows
+            ));
+        }
+        output.push_str(&format!("\n\nReason:\n{}", recommendation.reason));
+        if let Some(bottleneck) = recommendation_bottleneck(capacity, target) {
+            output.push_str(&format!("\n\n{bottleneck}"));
+        }
+        if capacity.runtime_allocated.is_none() {
+            output.push_str(&format!("\n\nThe recommendation is based on recorded request history.\nStart Ollama and run `git explain profile test {profile}` to compare it\nwith the current runtime allocation."));
+        }
+        if matches!(
+            recommendation.state,
+            ollama_context::RecommendationState::Increase
+        ) {
+            output.push_str(&format!("\n\nConfigure Ollama with the recommended context, reload the model, then run:\ngit explain profile test {profile}"));
+        }
+    }
+    output.push('\n');
+    output
+}
+
+fn recommendation_bottleneck(capacity: &context::ContextCapacity, target: u32) -> Option<String> {
+    if capacity.model_max.is_some_and(|value| value < target) {
+        return Some(format!(
+            "Model maximum:\n{} tokens\n\nThe model is already at its maximum supported context.",
+            capacity.model_max.unwrap()
+        ));
+    }
+    if capacity.profile_limit.is_some_and(|value| value < target) {
+        return Some(format!("Profile context limit:\n{} tokens\n\nThe profile context limit is currently the bottleneck.", capacity.profile_limit.unwrap()));
+    }
+    capacity.runtime_allocated.filter(|value| *value < target).map(|value| format!("Current Ollama runtime:\n{value} tokens\n\nThe Ollama runtime context is currently the bottleneck."))
 }
 
 fn print_debug_context(model: &config::ResolvedProfile) {
@@ -982,6 +1189,37 @@ async fn run_direct(
 #[cfg(test)]
 mod profile_error_tests {
     use super::*;
+    use tempfile::tempdir;
+
+    fn ollama_profile() -> config::ResolvedProfile {
+        config::ResolvedProfile {
+            provider: "ollama".into(),
+            preset: Some("ollama".into()),
+            base_url: "http://127.0.0.1:11434/v1".into(),
+            model: "test-model".into(),
+            api_key_env: None,
+            api_key: None,
+            context_window: None,
+            normal: config::GenerationConfig {
+                reasoning: None,
+                max_tokens: None,
+                temperature: None,
+            },
+            deep: config::GenerationConfig {
+                reasoning: None,
+                max_tokens: None,
+                temperature: None,
+            },
+        }
+    }
+
+    fn context_record(deep: bool, required: u32) -> ollama_context::OllamaRequestRecord {
+        let mut record =
+            ollama_context::OllamaRequestRecord::now("ollama".into(), "test-model".into(), deep);
+        record.ideal_required_context = required;
+        record.final_required_context = required;
+        record
+    }
 
     #[test]
     fn unknown_explicit_profile_suggests_the_single_prefix_match() {
@@ -998,5 +1236,136 @@ mod profile_error_tests {
         );
         assert!(!message.contains("Did you mean"));
         assert!(message.contains("git explain profile list"));
+    }
+
+    #[test]
+    fn context_stats_zero_history_is_concise_and_private() {
+        let dir = tempdir().unwrap();
+        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let output =
+            render_context_stats("ollama", &ollama_profile(), &Default::default(), &tracker);
+        assert!(output.contains("No context history has been collected yet."));
+        assert!(output.contains("No source code, prompts, diffs, or model responses are stored."));
+        assert!(!output.contains("Normal:"));
+        assert!(!output.contains("p50:"));
+        assert!(!output.contains("unavailable"));
+        assert!(!output.contains("\x1b["));
+    }
+
+    #[test]
+    fn context_stats_collapses_an_empty_mode_and_absent_metrics() {
+        let dir = tempdir().unwrap();
+        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        for required in [4_000, 5_000, 6_000] {
+            tracker.record(context_record(false, required)).unwrap();
+        }
+        let output =
+            render_context_stats("ollama", &ollama_profile(), &Default::default(), &tracker);
+        assert!(output.contains("Normal: 3 requests"));
+        assert!(output.contains("p50: 5000 tokens"));
+        assert!(output.contains("Deep:\n  No requests tracked."));
+        assert!(!output.contains("Prompt estimation"));
+        assert!(!output.contains("Completion tokens"));
+        assert!(!output.contains("Latency:"));
+        assert!(!output.contains("0.0%"));
+    }
+
+    #[test]
+    fn context_stats_shows_only_observed_optional_metrics_and_problems() {
+        let dir = tempdir().unwrap();
+        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        for n in 0..20 {
+            let mut record = context_record(false, 4_000 + n * 100);
+            if n < 5 {
+                record.actual_prompt_tokens = Some(400 + n);
+            }
+            if n < 3 {
+                record.actual_completion_tokens = Some(200 + n);
+                record.latency_ms = Some(1_000 + n as u64);
+            }
+            if n == 0 {
+                record.compacted = true;
+                record.provider_context_overflow = true;
+            }
+            tracker.record(record).unwrap();
+        }
+        let output =
+            render_context_stats("ollama", &ollama_profile(), &Default::default(), &tracker);
+        assert!(output.contains("p95: 5800 tokens"));
+        assert!(output.contains("Prompt estimation (actual minus estimate):"));
+        assert!(output.contains("Completion tokens:"));
+        assert!(output.contains("Latency:"));
+        assert!(output.contains("Compaction:\n  1 requests (5.0%)"));
+        assert!(output.contains("Provider context overflows: 1"));
+        assert!(!output.contains("Output truncations: 0"));
+    }
+
+    #[test]
+    fn context_recommendation_distinguishes_zero_and_sparse_history() {
+        let dir = tempdir().unwrap();
+        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let empty = render_context_recommendation("ollama", &Default::default(), &tracker);
+        assert!(empty.contains("No context history has been collected yet."));
+        for _ in 0..6 {
+            tracker.record(context_record(false, 5_000)).unwrap();
+        }
+        let sparse = render_context_recommendation("ollama", &Default::default(), &tracker);
+        assert!(sparse.contains("Not enough history yet."));
+        assert!(sparse.contains("At least 10 recent requests"));
+        assert!(!sparse.contains("p95 ideal required context"));
+    }
+
+    #[test]
+    fn context_recommendation_reports_runtime_bottleneck() {
+        let dir = tempdir().unwrap();
+        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        for _ in 0..10 {
+            tracker.record(context_record(false, 12_000)).unwrap();
+        }
+        let capacity = context::ContextCapacity {
+            runtime_allocated: Some(8_192),
+            model_max: Some(32_768),
+            profile_limit: None,
+        };
+        let output = render_context_recommendation("ollama", &capacity, &tracker);
+        assert!(output.contains("Recommended context:\n16384 tokens"));
+        assert!(output.contains("p95 ideal required context: 12000 tokens"));
+        assert!(output.contains("The Ollama runtime context is currently the bottleneck."));
+    }
+
+    #[test]
+    fn context_recommendation_reports_model_and_profile_bottlenecks() {
+        let dir = tempdir().unwrap();
+        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        for _ in 0..10 {
+            tracker.record(context_record(false, 30_000)).unwrap();
+        }
+        let model_limited = context::ContextCapacity {
+            runtime_allocated: Some(32_768),
+            model_max: Some(32_768),
+            profile_limit: None,
+        };
+        let model_output = render_context_recommendation("ollama", &model_limited, &tracker);
+        assert!(model_output.contains("Recommended workload context:"));
+        assert!(model_output.contains("The model is already at its maximum supported context."));
+        let profile_limited = context::ContextCapacity {
+            runtime_allocated: Some(65_536),
+            model_max: Some(65_536),
+            profile_limit: Some(8_192),
+        };
+        let profile_output = render_context_recommendation("ollama", &profile_limited, &tracker);
+        assert!(profile_output.contains("The profile context limit is currently the bottleneck."));
+    }
+
+    #[test]
+    fn context_recommendation_keeps_history_available_when_ollama_is_offline() {
+        let dir = tempdir().unwrap();
+        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        for _ in 0..10 {
+            tracker.record(context_record(false, 12_000)).unwrap();
+        }
+        let output = render_context_recommendation("ollama", &Default::default(), &tracker);
+        assert!(output.contains("Current Ollama context:\nUnavailable"));
+        assert!(output.contains("The recommendation is based on recorded request history."));
     }
 }
