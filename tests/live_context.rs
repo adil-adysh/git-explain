@@ -11,9 +11,11 @@ use git_explain::{
         openai::{discover_context_capabilities, OpenAiProvider},
         ExplanationProvider, ExplanationRegion, ExplanationRequest,
     },
+    ollama_context::OllamaRequestTracker,
 };
 use reqwest::{Client, StatusCode};
 use serde_json::json;
+use tempfile::tempdir;
 
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} must be set for this live test"))
@@ -149,6 +151,25 @@ async fn small_openai_request(client: &Client, base_url: &str, model: &str) -> s
     body
 }
 
+fn tracker_request(source: &str) -> ExplanationRequest {
+    ExplanationRequest {
+        source_unit: source.into(),
+        unit_name: "local_unit".into(),
+        unit_kind: "function".into(),
+        diff: "+ local change".into(),
+        language: "Rust".into(),
+        git_context: "Change source: live Ollama tracker test".into(),
+        regions: vec![ExplanationRegion {
+            id: 1,
+            start_line: 1,
+            end_line: 1,
+            source: "value + 1".into(),
+        }],
+        prior_explanation: None,
+        deep: false,
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires GIT_EXPLAIN_TEST_OLLAMA_URL and GIT_EXPLAIN_TEST_OLLAMA_MODEL"]
 async fn live_ollama_reports_native_context_and_serves_openai_requests() {
@@ -217,6 +238,49 @@ async fn live_ollama_reports_native_context_and_serves_openai_requests() {
         );
     }
     unload_ollama_model_if_requested(&client, native, &model).await;
+}
+
+#[tokio::test]
+#[ignore = "requires GIT_EXPLAIN_TEST_OLLAMA_URL and GIT_EXPLAIN_TEST_OLLAMA_MODEL"]
+async fn live_ollama_explanation_records_private_context_metadata() {
+    let base_url = required("GIT_EXPLAIN_TEST_OLLAMA_URL");
+    let model = required("GIT_EXPLAIN_TEST_OLLAMA_MODEL");
+    let dir = tempdir().expect("create tracker state directory");
+    let tracker = OllamaRequestTracker::for_user_config(&dir.path().join("config.toml"));
+    let sentinel = "SECRET_SOURCE_SENTINEL_94A1";
+    let provider = production_provider(base_url.clone(), model.clone(), "ollama")
+        .with_ollama_tracker(tracker.clone(), "live-ollama".into());
+    provider
+        .explain(tracker_request(&format!(
+            "fn local_unit() {{ {sentinel}; }}"
+        )))
+        .await
+        .expect("live Ollama must return a structured explanation");
+    let records = tracker.records("live-ollama", false);
+    assert_eq!(
+        records.len(),
+        1,
+        "one logical explanation must yield one record"
+    );
+    let record = &records[0];
+    assert!(record.success);
+    assert_eq!(record.model, model);
+    assert!(record.model_max.is_some());
+    assert!(record.runtime_context.is_some());
+    assert!(record.ideal_required_context >= record.final_required_context);
+    assert!(record.latency_ms.is_some());
+    let stored = std::fs::read_to_string(tracker.path()).expect("read local tracker state");
+    assert!(!stored.contains(sentinel));
+    assert!(!stored.contains("live Ollama tracker test"));
+    println!(
+        "ollama tracker: model_max={:?} runtime={:?} required={} prompt={:?} completion={:?}",
+        record.model_max,
+        record.runtime_context,
+        record.ideal_required_context,
+        record.actual_prompt_tokens,
+        record.actual_completion_tokens
+    );
+    unload_ollama_model_if_requested(&Client::new(), native_ollama_base(&base_url), &model).await;
 }
 
 #[tokio::test]
