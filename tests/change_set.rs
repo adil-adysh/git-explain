@@ -350,6 +350,60 @@ fn exact_copy_and_weird_unicode_paths_stay_file_level_metadata() {
 }
 
 #[test]
+fn exact_copy_only_has_a_deterministic_empty_state() {
+    let dir = repo();
+    std::fs::write(dir.path().join("source.rs"), "fn copied() {}\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::copy(dir.path().join("source.rs"), dir.path().join("copy.rs")).unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "copy"]);
+
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].kind, FileChangeKind::Copied);
+    assert_eq!(changes.explainable_changes().count(), 0);
+    assert_eq!(
+        changes.empty_state().as_deref(),
+        Some(
+            "1 file was copied without source-content changes. No semantic changes require explanation."
+        )
+    );
+}
+
+#[test]
+fn unsupported_and_unitless_source_changes_have_distinct_empty_states() {
+    let dir = repo();
+    std::fs::write(dir.path().join("notes.txt"), "before\n").unwrap();
+    std::fs::write(dir.path().join("constants.rs"), "\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+
+    std::fs::write(dir.path().join("notes.txt"), "after\n").unwrap();
+    git(dir.path(), &["commit", "-qam", "unsupported"]);
+    let analyzer = RepositoryAnalyzer::new(dir.path(), config(dir.path()));
+    let unsupported = analyzer
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    assert_eq!(
+        unsupported.empty_state().as_deref(),
+        Some("Source files changed, but their languages are not currently supported.")
+    );
+
+    std::fs::write(dir.path().join("constants.rs"), "\n\n").unwrap();
+    git(dir.path(), &["commit", "-qam", "unitless"]);
+    let unitless = analyzer
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    assert_eq!(
+        unitless.empty_state().as_deref(),
+        Some("Source content changed, but no explainable semantic units were found.")
+    );
+}
+
+#[test]
 fn json_is_nested_by_file_and_semantic_change() {
     let dir = repo();
     std::fs::write(dir.path().join("old.rs"), "fn keep() {}\n").unwrap();
