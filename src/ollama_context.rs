@@ -32,6 +32,7 @@ pub struct OllamaRequestRecord {
     pub compacted: bool,
     pub actual_prompt_tokens: Option<u32>,
     pub actual_completion_tokens: Option<u32>,
+    pub actual_total_tokens: Option<u32>,
     pub latency_ms: Option<u64>,
     pub success: bool,
     pub local_context_failure: bool,
@@ -63,6 +64,7 @@ impl OllamaRequestRecord {
             compacted: false,
             actual_prompt_tokens: None,
             actual_completion_tokens: None,
+            actual_total_tokens: None,
             latency_ms: None,
             success: false,
             local_context_failure: false,
@@ -158,14 +160,22 @@ pub struct OllamaContextStatistics {
     pub required_p50: Option<u32>,
     pub required_p90: Option<u32>,
     pub required_p95: Option<u32>,
+    pub required_p99: Option<u32>,
     pub required_max: Option<u32>,
     pub estimated_p50: Option<u32>,
     pub estimated_p95: Option<u32>,
+    pub completion_p50: Option<u32>,
+    pub completion_p95: Option<u32>,
+    pub estimator_error_p50: Option<i64>,
+    pub estimator_error_p95: Option<i64>,
+    pub maximum_underestimation: Option<i64>,
     pub compactions: usize,
     pub hard_failures: usize,
     pub overflows: usize,
     pub truncations: usize,
     pub average_latency_ms: Option<u64>,
+    pub latency_p50_ms: Option<u64>,
+    pub latency_p95_ms: Option<u64>,
 }
 impl OllamaContextStatistics {
     pub fn from_records(records: &[OllamaRequestRecord]) -> Self {
@@ -177,20 +187,42 @@ impl OllamaContextStatistics {
             .iter()
             .map(|r| r.estimated_input)
             .collect::<Vec<_>>();
+        let mut completions = records
+            .iter()
+            .filter_map(|r| r.actual_completion_tokens)
+            .collect::<Vec<_>>();
+        let mut estimator_errors = records
+            .iter()
+            .filter_map(|r| {
+                r.actual_prompt_tokens
+                    .map(|actual| i64::from(actual) - i64::from(r.estimated_input))
+            })
+            .collect::<Vec<_>>();
         required.sort_unstable();
         estimated.sort_unstable();
-        let latencies = records
+        completions.sort_unstable();
+        estimator_errors.sort_unstable();
+        let mut latencies = records
             .iter()
             .filter_map(|r| r.latency_ms)
             .collect::<Vec<_>>();
+        latencies.sort_unstable();
         Self {
             count: records.len(),
             required_p50: percentile(&required, 50),
             required_p90: percentile(&required, 90),
             required_p95: percentile(&required, 95),
+            required_p99: (records.len() >= 20)
+                .then(|| percentile(&required, 99))
+                .flatten(),
             required_max: required.last().copied(),
             estimated_p50: percentile(&estimated, 50),
             estimated_p95: percentile(&estimated, 95),
+            completion_p50: percentile(&completions, 50),
+            completion_p95: percentile(&completions, 95),
+            estimator_error_p50: percentile_i64(&estimator_errors, 50),
+            estimator_error_p95: percentile_i64(&estimator_errors, 95),
+            maximum_underestimation: estimator_errors.last().copied().filter(|value| *value > 0),
             compactions: records.iter().filter(|r| r.compacted).count(),
             hard_failures: records.iter().filter(|r| r.local_context_failure).count(),
             overflows: records
@@ -200,10 +232,20 @@ impl OllamaContextStatistics {
             truncations: records.iter().filter(|r| r.output_truncated).count(),
             average_latency_ms: (!latencies.is_empty())
                 .then(|| latencies.iter().sum::<u64>() / latencies.len() as u64),
+            latency_p50_ms: percentile_u64(&latencies, 50),
+            latency_p95_ms: percentile_u64(&latencies, 95),
         }
     }
 }
 fn percentile(values: &[u32], percent: usize) -> Option<u32> {
+    (!values.is_empty()).then(|| values[(values.len() * percent).div_ceil(100).saturating_sub(1)])
+}
+
+fn percentile_i64(values: &[i64], percent: usize) -> Option<i64> {
+    (!values.is_empty()).then(|| values[(values.len() * percent).div_ceil(100).saturating_sub(1)])
+}
+
+fn percentile_u64(values: &[u64], percent: usize) -> Option<u64> {
     (!values.is_empty()).then(|| values[(values.len() * percent).div_ceil(100).saturating_sub(1)])
 }
 
@@ -240,17 +282,27 @@ pub fn recommend(
         .copied()
         .find(|tier| *tier >= target && *tier <= ceiling)
         .or_else(|| (target <= ceiling).then_some(ceiling));
-    let recommended = tier.or(model_max);
+    let failure_tier = (statistics.hard_failures > 0 || statistics.overflows > 0)
+        .then(|| current.and_then(|now| next_tier(now, ceiling)))
+        .flatten();
+    let recommended = match (tier.or(model_max), failure_tier) {
+        (Some(baseline), Some(pressure)) => Some(baseline.max(pressure)),
+        (baseline, pressure) => baseline.or(pressure),
+    };
     let pressure = statistics.hard_failures > 0
         || statistics.overflows > 0
         || current.is_some_and(|value| p95.saturating_mul(10) >= value.saturating_mul(8))
         || statistics.compactions.saturating_mul(10) >= statistics.count;
     let state = match (current, recommended) {
         (_, None) => RecommendationState::AtModelMaximum,
+        (Some(now), Some(maximum)) if model_max == Some(now) && target > maximum => {
+            RecommendationState::AtModelMaximum
+        }
         (Some(now), Some(next)) if next > now && pressure => RecommendationState::Increase,
         (Some(now), Some(next))
             if next < now
                 && statistics.hard_failures == 0
+                && statistics.count >= MIN_SAMPLES * 2
                 && statistics.compactions.saturating_mul(20) <= statistics.count =>
         {
             RecommendationState::PotentialDecrease
@@ -266,6 +318,14 @@ pub fn recommend(
         target: Some(target),
         reason,
     }
+}
+
+fn next_tier(current: u32, ceiling: u32) -> Option<u32> {
+    TIERS
+        .iter()
+        .copied()
+        .find(|tier| *tier > current && *tier <= ceiling)
+        .or_else(|| (ceiling > current).then_some(ceiling))
 }
 
 #[cfg(test)]
@@ -288,9 +348,40 @@ mod tests {
             t.record(r).unwrap();
         }
         assert_eq!(t.records("p", false).len(), 100);
-        assert!(!std::fs::read_to_string(t.path())
-            .unwrap()
-            .contains("SECRET_SOURCE_SENTINEL_94A1"));
+        let stored = std::fs::read_to_string(t.path()).unwrap();
+        assert!(!stored.contains("SECRET_SOURCE_SENTINEL_94A1"));
+        let history = serde_json::from_str::<serde_json::Value>(&stored).unwrap();
+        let record = history["records"].as_array().unwrap()[0]
+            .as_object()
+            .unwrap();
+        let expected = [
+            "timestamp_ms",
+            "profile",
+            "model",
+            "deep",
+            "model_max",
+            "runtime_context",
+            "profile_limit",
+            "effective_context",
+            "estimated_input",
+            "output_reserve",
+            "safety_margin",
+            "ideal_required_context",
+            "final_required_context",
+            "compacted",
+            "actual_prompt_tokens",
+            "actual_completion_tokens",
+            "actual_total_tokens",
+            "latency_ms",
+            "success",
+            "local_context_failure",
+            "provider_context_overflow",
+            "output_truncated",
+            "concise_retry_used",
+            "attempts",
+        ];
+        assert_eq!(record.len(), expected.len());
+        assert!(expected.iter().all(|field| record.contains_key(*field)));
     }
     #[test]
     fn percentiles_are_deterministic() {
@@ -315,5 +406,76 @@ mod tests {
         let r = recommend(&records, Some(8192), Some(32768));
         assert_eq!(r.recommended, Some(16384));
         assert_eq!(r.state, RecommendationState::Increase);
+    }
+    #[test]
+    fn recommendation_reports_model_maximum() {
+        let records = (0..10)
+            .map(|_| record("p", false, 20_000))
+            .collect::<Vec<_>>();
+        let r = recommend(&records, Some(16_384), Some(16_384));
+        assert_eq!(r.state, RecommendationState::AtModelMaximum);
+        assert_eq!(r.recommended, Some(16_384));
+    }
+
+    #[test]
+    fn recommendation_requires_meaningful_history() {
+        let records = (0..9).map(|_| record("p", false, 4096)).collect::<Vec<_>>();
+        assert_eq!(
+            recommend(&records, Some(8192), Some(32768)).state,
+            RecommendationState::InsufficientHistory
+        );
+    }
+
+    #[test]
+    fn pressure_from_compaction_or_failures_increases_context() {
+        let compacted = (0..10)
+            .map(|_| {
+                let mut value = record("p", false, 7000);
+                value.compacted = true;
+                value
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            recommend(&compacted, Some(8192), Some(32768)).state,
+            RecommendationState::Increase
+        );
+        let failures = (0..10)
+            .map(|_| {
+                let mut value = record("p", false, 4000);
+                value.local_context_failure = true;
+                value
+            })
+            .collect::<Vec<_>>();
+        let recommendation = recommend(&failures, Some(8192), Some(32768));
+        assert_eq!(recommendation.state, RecommendationState::Increase);
+        assert_eq!(recommendation.recommended, Some(16384));
+    }
+
+    #[test]
+    fn decrease_requires_long_stable_history() {
+        let short = (0..10)
+            .map(|_| record("p", false, 4000))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            recommend(&short, Some(32768), Some(65536)).state,
+            RecommendationState::KeepCurrent
+        );
+        let long = (0..20)
+            .map(|_| record("p", false, 4000))
+            .collect::<Vec<_>>();
+        let recommendation = recommend(&long, Some(32768), Some(65536));
+        assert_eq!(recommendation.state, RecommendationState::PotentialDecrease);
+        assert_eq!(recommendation.recommended, Some(8192));
+    }
+
+    #[test]
+    fn reset_only_removes_requested_profile() {
+        let dir = tempdir().unwrap();
+        let tracker = OllamaRequestTracker::at(dir.path().join("history.json"));
+        tracker.record(record("one", false, 4096)).unwrap();
+        tracker.record(record("two", false, 4096)).unwrap();
+        assert_eq!(tracker.reset("one").unwrap(), 1);
+        assert!(tracker.records("one", false).is_empty());
+        assert_eq!(tracker.records("two", false).len(), 1);
     }
 }

@@ -122,6 +122,16 @@ For Ollama, `git explain profile test ollama` also reads native `/api/show` meta
 
 Ollama's OpenAI-compatible `/v1/chat/completions` API cannot increase context per request. If the selected model is not loaded yet, git-explain first sends a source-free one-token warm-up request, then reads `/api/ps` again before it sends an explanation. Configure Ollama itself (for example, `OLLAMA_CONTEXT_LENGTH` before `ollama serve`, or a Modelfile with `PARAMETER num_ctx <tokens>`), reload the model, and run `git explain profile test ollama` again. Larger windows use more memory; choose one that fits the model and hardware.
 
+For Ollama profiles, git-explain keeps a bounded local history of context-planning metadata (100 records for each profile and normal/deep mode). It records capacities, estimates, actual token usage when Ollama returns it, outcomes, and latency—but never source, diffs, prompts, or model responses. It never changes Ollama's context configuration automatically. Use it to inspect demand and get an advisory recommendation:
+
+```text
+git explain context stats --profile ollama
+git explain context recommend --profile ollama
+git explain context reset --profile ollama --force
+```
+
+Recommendations need at least 10 recent requests and use the observed p95 ideal requirement plus 20% headroom, rounded to a conservative context tier and capped at the model maximum. A decrease is deliberately reported only as a potential decrease after a longer stable history; change Ollama's configuration yourself, reload the model, and verify it with `git explain profile test ollama`.
+
 llama.cpp is likewise controlled when its server starts, with `--ctx-size`; its OpenAI-compatible endpoint receives no invented context-size field. When a llama.cpp router exposes its model data through `/v1/models`, `git explain profile test` reports both `meta.n_ctx_train` (the model maximum) and the configured startup context (the fixed runtime bound). Generic OpenAI-compatible profiles are treated conservatively unless a dedicated adapter has verified a request-scoped context option. `git explain --debug` and `git explain profile test <name>` show which control mode applies.
 
 Repository configuration at `.git/git-explain.toml` may select a logical profile name and repository-safe explanation and Git preferences:

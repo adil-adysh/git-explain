@@ -593,6 +593,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_ollama_context_commands() {
+        let stats = Cli::try_parse_from(["git-explain", "context", "stats"]).unwrap();
+        assert!(matches!(
+            stats.command,
+            Some(Command::Context(ContextCommand {
+                action: ContextAction::Stats
+            }))
+        ));
+        let reset = Cli::try_parse_from(["git-explain", "context", "reset", "--force"]).unwrap();
+        assert!(matches!(
+            reset.command,
+            Some(Command::Context(ContextCommand {
+                action: ContextAction::Reset { force: true }
+            }))
+        ));
+    }
+
+    #[test]
     fn port_options_remain_long_only() {
         assert!(Cli::try_parse_from(["git-explain", "-p", "9000"]).is_err());
         assert!(Cli::try_parse_from([

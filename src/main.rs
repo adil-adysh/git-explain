@@ -57,13 +57,29 @@ async fn run() -> Result<()> {
             }
             ContextAction::Recommend => {
                 let caps = model::openai::discover_context_capabilities(&resolved.model).await;
-                let records = tracker.records(&resolved.profile, false);
-                let recommendation = ollama_context::recommend(
-                    &records,
-                    caps.capacity.runtime_allocated,
-                    caps.capacity.model_max,
+                println!(
+                    "Context recommendation\n\nProfile: {}\nCurrent Ollama context: {}",
+                    resolved.profile,
+                    caps.capacity
+                        .runtime_allocated
+                        .map_or_else(|| "not loaded".into(), |v| format!("{v} tokens"))
                 );
-                println!("Context recommendation\n\nProfile: {}\nCurrent Ollama context: {}\nRecommended context: {}\n\n{}", resolved.profile, caps.capacity.runtime_allocated.map_or_else(|| "not loaded".into(), |v| format!("{v} tokens")), recommendation.recommended.map_or_else(|| "not available".into(), |v| format!("{v} tokens")), recommendation.reason);
+                for (label, deep) in [("Normal", false), ("Deep", true)] {
+                    let records = tracker.records(&resolved.profile, deep);
+                    let recommendation = ollama_context::recommend(
+                        &records,
+                        caps.capacity.runtime_allocated,
+                        caps.capacity.model_max,
+                    );
+                    println!(
+                        "\n{label} requests ({})\nRecommended context: {}\n{}",
+                        records.len(),
+                        recommendation
+                            .recommended
+                            .map_or_else(|| "not available".into(), |v| format!("{v} tokens")),
+                        recommendation.reason
+                    );
+                }
             }
             ContextAction::Reset { force } => {
                 if !force {
@@ -537,9 +553,20 @@ fn print_context_stats(
     model: &config::ResolvedProfile,
     tracker: &ollama_context::OllamaRequestTracker,
 ) {
-    let records = tracker.records(profile, false);
-    let stats = ollama_context::OllamaContextStatistics::from_records(&records);
-    println!("Context statistics\n\nProfile: {profile}\nPreset: Ollama\nModel: {}\n\nRequests tracked: {}\n\nRequired context:\n  p50: {}\n  p90: {}\n  p95: {}\n  max: {}\n\nCompaction: {} requests\nHard context failures: {}\nProvider context overflows: {}\nOutput truncations: {}\nAverage latency: {}", model.model, stats.count, stats.required_p50.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p90.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p95.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_max.map_or_else(|| "none".into(), |v| format!("{v} tokens")), stats.compactions, stats.hard_failures, stats.overflows, stats.truncations, stats.average_latency_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")));
+    println!(
+        "Context statistics\n\nProfile: {profile}\nPreset: Ollama\nModel: {}",
+        model.model
+    );
+    for (label, deep) in [("Normal", false), ("Deep", true)] {
+        let records = tracker.records(profile, deep);
+        let stats = ollama_context::OllamaContextStatistics::from_records(&records);
+        let rate = |count| format!("{:.1}%", count as f64 * 100.0 / stats.count.max(1) as f64);
+        println!("\n{label} requests tracked: {}\n\nRequired context:\n  p50: {}\n  p90: {}\n  p95: {}\n  p99: {}\n  max: {}\n\nPrompt estimation (actual minus estimate):\n  p50 error: {}\n  p95 error: {}\n  maximum underestimation: {}\n\nCompletion tokens:\n  p50: {}\n  p95: {}\n\nCompaction: {} requests ({})\nHard context failures: {} ({})\nProvider context overflows: {}\nOutput truncations: {}\n\nLatency:\n  average: {}\n  p50: {}\n  p95: {}", stats.count, stats.required_p50.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p90.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p95.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p99.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_max.map_or_else(|| "none".into(), |v| format!("{v} tokens")), stats.estimator_error_p50.map_or_else(|| "unavailable".into(), format_signed_tokens), stats.estimator_error_p95.map_or_else(|| "unavailable".into(), format_signed_tokens), stats.maximum_underestimation.map_or_else(|| "none".into(), |v| format!("{v} tokens")), stats.completion_p50.map_or_else(|| "unavailable".into(), |v| format!("{v} tokens")), stats.completion_p95.map_or_else(|| "unavailable".into(), |v| format!("{v} tokens")), stats.compactions, rate(stats.compactions), stats.hard_failures, rate(stats.hard_failures), stats.overflows, stats.truncations, stats.average_latency_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")), stats.latency_p50_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")), stats.latency_p95_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")));
+    }
+}
+
+fn format_signed_tokens(value: i64) -> String {
+    format!("{value:+} tokens")
 }
 
 fn print_debug_context(model: &config::ResolvedProfile) {

@@ -562,21 +562,21 @@ impl ExplanationProvider for OpenAiProvider {
         if !crate::language::contains_meaningful_source(&request.source_unit) {
             bail!("refusing to explain whitespace-only source");
         }
-        match self.explain_once(&request, false).await {
+        match self.explain_once(&request, false, false).await {
             Ok(result) => Ok(result),
             Err(error) if is_local_context_error(&error) => {
                 eprintln!("context requirement cannot fit; retrying once with a concise request");
-                self.explain_once(&request, true).await
+                self.explain_once(&request, true, false).await
             }
             Err(error) if is_provider_context_error(&error) => {
                 eprintln!(
                     "provider reported context overflow; retrying once with a concise request"
                 );
-                self.explain_once(&request, true).await
+                self.explain_once(&request, true, true).await
             }
             Err(error) if is_retryable_structured_error(&error) => {
                 eprintln!("structured model output invalid; retrying once with a concise request");
-                self.explain_once(&request, true).await
+                self.explain_once(&request, true, false).await
             }
             Err(error) => Err(error),
         }
@@ -587,6 +587,7 @@ impl OpenAiProvider {
         &self,
         request: &ExplanationRequest,
         retry: bool,
+        previous_provider_overflow: bool,
     ) -> Result<UnitExplanation> {
         let payload = self.build_request_with_retry(request, retry);
         let generation = if request.deep {
@@ -606,7 +607,25 @@ impl OpenAiProvider {
             &ConservativeTokenEstimator,
         );
         let capabilities = self.discover_context_capabilities().await?;
-        let negotiation = negotiate_context(&capabilities, requirement)?;
+        let negotiation = match negotiate_context(&capabilities, requirement.clone()) {
+            Ok(negotiation) => negotiation,
+            Err(error) => {
+                if retry {
+                    self.track_ollama_failure(
+                        request,
+                        &capabilities,
+                        &requirement,
+                        retry,
+                        previous_provider_overflow,
+                        true,
+                        false,
+                        false,
+                        None,
+                    );
+                }
+                return Err(error);
+            }
+        };
         let request_options = InferenceRequestOptions::for_negotiation(&negotiation);
         let budget = ContextBudget::from_negotiation(&negotiation);
         let plan = PromptPlan::check(&serialized_payload, budget, &ConservativeTokenEstimator)?;
@@ -632,6 +651,19 @@ impl OpenAiProvider {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let body = body.trim().chars().take(300).collect::<String>();
+            if retry && is_context_text(&body) {
+                self.track_ollama_failure(
+                    request,
+                    &capabilities,
+                    &negotiation.requirement,
+                    retry,
+                    true,
+                    false,
+                    true,
+                    false,
+                    Some(started.elapsed().as_millis() as u64),
+                );
+            }
             bail!("model response (HTTP {status}): {body}");
         }
         let response: Resp = response.json().await.context("model JSON envelope")?;
@@ -653,6 +685,17 @@ impl OpenAiProvider {
             usage
         );
         if choice.finish_reason.as_deref() == Some("length") {
+            self.track_ollama_failure(
+                request,
+                &capabilities,
+                &negotiation.requirement,
+                retry,
+                previous_provider_overflow,
+                false,
+                false,
+                true,
+                Some(started.elapsed().as_millis() as u64),
+            );
             bail!("model response truncated at token limit ({usage})");
         }
         let content = choice.message.content.clone().unwrap_or_default();
@@ -671,6 +714,7 @@ impl OpenAiProvider {
         self.track_ollama_success(
             request,
             retry,
+            previous_provider_overflow,
             &capabilities,
             &negotiation,
             plan.estimated_input,
@@ -743,6 +787,7 @@ impl OpenAiProvider {
         &self,
         request: &ExplanationRequest,
         concise_retry_used: bool,
+        provider_overflow_seen: bool,
         capabilities: &ContextCapabilities,
         negotiation: &ContextNegotiation,
         estimated_input: u32,
@@ -770,8 +815,57 @@ impl OpenAiProvider {
         record.compacted = concise_retry_used;
         record.actual_prompt_tokens = usage.and_then(|value| value.prompt_tokens);
         record.actual_completion_tokens = usage.and_then(|value| value.completion_tokens);
+        record.actual_total_tokens = usage.and_then(|value| {
+            value
+                .prompt_tokens
+                .zip(value.completion_tokens)
+                .map(|(prompt, completion)| prompt.saturating_add(completion))
+        });
         record.latency_ms = Some(latency_ms);
         record.success = true;
+        record.provider_context_overflow = provider_overflow_seen;
+        record.concise_retry_used = concise_retry_used;
+        record.attempts = if concise_retry_used { 2 } else { 1 };
+        if let Err(error) = tracker.record(record) {
+            eprintln!("could not record local Ollama context history: {error:#}");
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn track_ollama_failure(
+        &self,
+        request: &ExplanationRequest,
+        capabilities: &ContextCapabilities,
+        requirement: &crate::context::ContextRequirement,
+        concise_retry_used: bool,
+        previous_provider_overflow: bool,
+        local_context_failure: bool,
+        provider_context_overflow: bool,
+        output_truncated: bool,
+        latency_ms: Option<u64>,
+    ) {
+        let Some((tracker, profile)) = &self.ollama_tracker else {
+            return;
+        };
+        if !matches!(self.kind, ProviderKind::Ollama) {
+            return;
+        }
+        let mut record =
+            OllamaRequestRecord::now(profile.clone(), self.model.clone(), request.deep);
+        record.model_max = capabilities.capacity.model_max;
+        record.runtime_context = capabilities.capacity.runtime_allocated;
+        record.profile_limit = self.context_window;
+        record.effective_context = capabilities.capacity.effective().tokens;
+        record.estimated_input = requirement.estimated_input;
+        record.output_reserve = requirement.output_reserve;
+        record.safety_margin = requirement.protocol_overhead + requirement.safety_margin;
+        record.ideal_required_context = requirement.minimum_required_context;
+        record.final_required_context = requirement.minimum_required_context;
+        record.compacted = concise_retry_used;
+        record.latency_ms = latency_ms;
+        record.local_context_failure = local_context_failure;
+        record.provider_context_overflow = previous_provider_overflow || provider_context_overflow;
+        record.output_truncated = output_truncated;
         record.concise_retry_used = concise_retry_used;
         record.attempts = if concise_retry_used { 2 } else { 1 };
         if let Err(error) = tracker.record(record) {
@@ -782,11 +876,15 @@ impl OpenAiProvider {
 
 fn is_provider_context_error(error: &anyhow::Error) -> bool {
     let text = format!("{error:#}").to_ascii_lowercase();
-    !text.contains("context budget exceeded")
-        && (text.contains("context length")
-            || text.contains("maximum context")
-            || text.contains("prompt is too long")
-            || text.contains("request too large"))
+    !text.contains("context budget exceeded") && is_context_text(&text)
+}
+
+fn is_context_text(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("context length")
+        || text.contains("maximum context")
+        || text.contains("prompt is too long")
+        || text.contains("request too large")
 }
 
 fn is_local_context_error(error: &anyhow::Error) -> bool {
