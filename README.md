@@ -125,9 +125,9 @@ Ollama's OpenAI-compatible `/v1/chat/completions` API cannot increase context pe
 For Ollama profiles, git-explain keeps a bounded local history of context-planning metadata (100 records for each profile and normal/deep mode). It records capacities, estimates, actual token usage when Ollama returns it, outcomes, and latency—but never source, diffs, prompts, or model responses. It never changes Ollama's context configuration automatically. Use it to inspect demand and get an advisory recommendation:
 
 ```text
-git explain context stats --profile ollama
-git explain context recommend --profile ollama
-git explain context reset --profile ollama --force
+git explain --profile ollama context stats
+git explain --profile ollama context recommend
+git explain --profile ollama context reset --force
 ```
 
 Recommendations need at least 10 recent requests and use the observed p95 ideal requirement plus 20% headroom, rounded to a conservative context tier and capped at the model maximum. A decrease is deliberately reported only as a potential decrease after a longer stable history; change Ollama's configuration yourself, reload the model, and verify it with `git explain profile test ollama`. Context is not resized per request because changing it can require runner and KV-cache reallocation; each request is still budgeted independently while the history recommends one stable server setting.

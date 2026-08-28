@@ -594,7 +594,9 @@ mod tests {
 
     #[test]
     fn parses_ollama_context_commands() {
-        let stats = Cli::try_parse_from(["git-explain", "context", "stats"]).unwrap();
+        let stats = Cli::try_parse_from(["git-explain", "--profile", "ollama", "context", "stats"])
+            .unwrap();
+        assert_eq!(stats.profile.as_deref(), Some("ollama"));
         assert!(matches!(
             stats.command,
             Some(Command::Context(ContextCommand {
