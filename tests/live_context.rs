@@ -304,3 +304,34 @@ async fn live_llama_cpp_rejects_an_explanation_larger_than_its_fixed_context() {
         .expect_err("fixed runtime must reject an oversized explanation locally");
     assert!(format!("{error:#}").contains("fixed/available context"));
 }
+
+#[tokio::test]
+#[ignore = "requires GIT_EXPLAIN_TEST_LLAMA_CPP_URL and GIT_EXPLAIN_TEST_LLAMA_CPP_MODEL"]
+async fn live_llama_cpp_runs_a_small_git_explain_request() {
+    let base_url = required("GIT_EXPLAIN_TEST_LLAMA_CPP_URL");
+    let model = required("GIT_EXPLAIN_TEST_LLAMA_CPP_MODEL");
+    let explanation = production_provider(base_url, model, "llama_cpp")
+        .explain(ExplanationRequest {
+            source_unit: "fn add_one(value: i32) -> i32 { value + 1 }".into(),
+            unit_name: "add_one".into(),
+            unit_kind: "function".into(),
+            diff: "+ value + 1".into(),
+            language: "Rust".into(),
+            git_context: "Change source: live provider test".into(),
+            regions: vec![ExplanationRegion {
+                id: 1,
+                start_line: 1,
+                end_line: 1,
+                source: "value + 1".into(),
+            }],
+            prior_explanation: None,
+            deep: false,
+        })
+        .await
+        .expect("small git-explain request must produce structured output");
+    assert!(!explanation.overview.trim().is_empty());
+    println!(
+        "git-explain llama.cpp result: overview={:?}",
+        explanation.overview
+    );
+}
