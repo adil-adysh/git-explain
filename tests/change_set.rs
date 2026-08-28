@@ -67,7 +67,7 @@ fn rename_plus_edit_preserves_other_units() {
     let dir = repo();
     std::fs::write(
         dir.path().join("old.rs"),
-        "fn changed() { let value = 1; }\nfn kept() {}\n",
+        "fn changed() { let value = 1; }\nfn kept_one() {}\nfn kept_two() {}\nfn kept_three() {}\n",
     )
     .unwrap();
     git(dir.path(), &["add", "."]);
@@ -75,7 +75,7 @@ fn rename_plus_edit_preserves_other_units() {
     git(dir.path(), &["mv", "old.rs", "new.rs"]);
     std::fs::write(
         dir.path().join("new.rs"),
-        "fn changed() { let value = 2; }\nfn kept() {}\n",
+        "fn changed() { let value = 2; }\nfn kept_one() {}\nfn kept_two() {}\nfn kept_three() {}\n",
     )
     .unwrap();
     git(dir.path(), &["add", "."]);
