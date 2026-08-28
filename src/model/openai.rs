@@ -6,7 +6,7 @@ use crate::{
         ContextBudget, ContextCapabilities, ContextCapacity, ContextControl, ContextNegotiation,
         PromptPlan,
     },
-    ollama_context::{workload_key, OllamaRequestRecord, OllamaRequestTracker},
+    local_context::{workload_key, LocalContextRecord, LocalContextTracker},
 };
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
-/// Discover Ollama-only capacity information without changing its inference API.
-/// Failures are deliberately non-fatal: generic compatible endpoints need not
-/// expose these native diagnostic routes.
+/// Discover backend-specific capacity information without changing inference
+/// transport. Failures are deliberately non-fatal: compatible endpoints need
+/// not expose diagnostic routes.
 pub async fn discover_context_capacity(model: &ResolvedProfile) -> ContextCapacity {
     discover_context_capabilities(model).await.capacity
 }
@@ -27,14 +27,14 @@ pub async fn discover_context_capacity(model: &ResolvedProfile) -> ContextCapaci
 /// add non-standard fields to its OpenAI-compatible inference requests.
 pub async fn discover_context_capabilities(model: &ResolvedProfile) -> ContextCapabilities {
     let kind = provider_kind_for_profile(model);
-    let capacity = discover_context_capacity_for(
-        &Client::new(),
-        kind,
-        &model.base_url,
-        &model.model,
-        model.context_window,
-    )
-    .await;
+    let capacity = kind
+        .discover_context_capacity(
+            &Client::new(),
+            &model.base_url,
+            &model.model,
+            model.context_window,
+        )
+        .await;
     ContextCapabilities {
         capacity,
         control: kind.context_control(),
@@ -43,6 +43,22 @@ pub async fn discover_context_capabilities(model: &ResolvedProfile) -> ContextCa
 
 pub fn context_control_for_profile(model: &ResolvedProfile) -> ContextControl {
     provider_kind_for_profile(model).context_control()
+}
+
+pub fn context_backend_key_for_profile(model: &ResolvedProfile) -> &'static str {
+    provider_kind_for_profile(model).telemetry_key()
+}
+
+pub fn context_backend_name_for_profile(model: &ResolvedProfile) -> &'static str {
+    provider_kind_for_profile(model).display_name()
+}
+
+pub fn context_remediation_instruction_for_profile(
+    model: &ResolvedProfile,
+    profile: &str,
+    target: u32,
+) -> String {
+    provider_kind_for_profile(model).remediation_instruction(profile, target)
 }
 
 /// Telemetry is local-only: never persist workload metadata for remote hosts.
@@ -57,51 +73,53 @@ fn provider_kind_for_profile(model: &ResolvedProfile) -> ProviderKind {
     ProviderKind::from_preset(model.preset.as_deref())
 }
 
-async fn discover_context_capacity_for(
-    client: &Client,
-    kind: ProviderKind,
-    base_url: &str,
-    model: &str,
-    profile_limit: Option<u32>,
-) -> ContextCapacity {
-    let mut capacity = ContextCapacity {
-        profile_limit,
-        ..ContextCapacity::default()
-    };
-    match kind {
-        ProviderKind::Ollama => {
-            let base = base_url.trim_end_matches('/').trim_end_matches("/v1");
-            if let Ok(response) = client.get(format!("{base}/api/ps")).send().await {
-                if let Ok(value) = response.json::<Value>().await {
-                    capacity.runtime_allocated = ollama_runtime_context(&value, model);
+impl ProviderKind {
+    async fn discover_context_capacity(
+        self,
+        client: &Client,
+        base_url: &str,
+        model: &str,
+        profile_limit: Option<u32>,
+    ) -> ContextCapacity {
+        let mut capacity = ContextCapacity {
+            profile_limit,
+            ..ContextCapacity::default()
+        };
+        match self {
+            ProviderKind::Ollama => {
+                let base = base_url.trim_end_matches('/').trim_end_matches("/v1");
+                if let Ok(response) = client.get(format!("{base}/api/ps")).send().await {
+                    if let Ok(value) = response.json::<Value>().await {
+                        capacity.runtime_allocated = ollama_runtime_context(&value, model);
+                    }
+                }
+                if let Ok(response) = client
+                    .post(format!("{base}/api/show"))
+                    .json(&json!({"model": model}))
+                    .send()
+                    .await
+                {
+                    if let Ok(value) = response.json::<Value>().await {
+                        capacity.model_max = ollama_model_context(&value);
+                    }
                 }
             }
-            if let Ok(response) = client
-                .post(format!("{base}/api/show"))
-                .json(&json!({"model": model}))
-                .send()
-                .await
-            {
-                if let Ok(value) = response.json::<Value>().await {
-                    capacity.model_max = ollama_model_context(&value);
+            ProviderKind::LlamaCpp => {
+                if let Ok(response) = client
+                    .get(format!("{}/models", base_url.trim_end_matches('/')))
+                    .send()
+                    .await
+                {
+                    if let Ok(value) = response.json::<Value>().await {
+                        capacity.runtime_allocated = llama_cpp_configured_context(&value, model);
+                        capacity.model_max = llama_cpp_model_context(&value, model);
+                    }
                 }
             }
+            ProviderKind::OpenAiCompatible => {}
         }
-        ProviderKind::LlamaCpp => {
-            if let Ok(response) = client
-                .get(format!("{}/models", base_url.trim_end_matches('/')))
-                .send()
-                .await
-            {
-                if let Ok(value) = response.json::<Value>().await {
-                    capacity.runtime_allocated = llama_cpp_configured_context(&value, model);
-                    capacity.model_max = llama_cpp_model_context(&value, model);
-                }
-            }
-        }
-        ProviderKind::OpenAiCompatible => {}
+        capacity
     }
-    capacity
 }
 
 fn ollama_runtime_context(value: &Value, model: &str) -> Option<u32> {
@@ -200,6 +218,33 @@ impl ProviderKind {
             Self::OpenAiCompatible => ContextControl::Unknown,
         }
     }
+    pub const fn telemetry_key(self) -> &'static str {
+        match self {
+            Self::LlamaCpp => "llama_cpp",
+            Self::Ollama => "ollama",
+            Self::OpenAiCompatible => "openai_compatible",
+        }
+    }
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::LlamaCpp => "llama.cpp",
+            Self::Ollama => "Ollama",
+            Self::OpenAiCompatible => "the local OpenAI-compatible backend",
+        }
+    }
+    fn remediation_instruction(self, profile: &str, target: u32) -> String {
+        match self {
+            Self::Ollama => format!(
+                "\n\nConfigure Ollama with the recommended context, reload the model, then run:\ngit explain profile test {profile}"
+            ),
+            Self::LlamaCpp => format!(
+                "\n\nRestart llama.cpp with `--ctx-size {target}`, then run:\ngit explain profile test {profile}"
+            ),
+            Self::OpenAiCompatible => format!(
+                "\n\nThis local OpenAI-compatible backend has no verified context-size control. The recommendation is advisory; consult its server documentation or startup configuration, then run:\ngit explain profile test {profile}"
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -232,7 +277,7 @@ pub struct OpenAiProvider {
     reader: ReaderConfig,
     explanation: ExplanationConfig,
     context_window: Option<u32>,
-    ollama_tracker: Option<(OllamaRequestTracker, String)>,
+    context_tracker: Option<(LocalContextTracker, String)>,
 }
 
 impl OpenAiProvider {
@@ -268,19 +313,14 @@ impl OpenAiProvider {
             reader,
             explanation,
             context_window: model.context_window,
-            ollama_tracker: None,
+            context_tracker: None,
         }
     }
 
-    pub fn with_ollama_tracker(mut self, tracker: OllamaRequestTracker, profile: String) -> Self {
-        self.ollama_tracker = Some((tracker, profile));
+    /// Record private local context telemetry for this provider.
+    pub fn with_context_tracker(mut self, tracker: LocalContextTracker, profile: String) -> Self {
+        self.context_tracker = Some((tracker, profile));
         self
-    }
-
-    /// Record private local context telemetry for any local backend. The old
-    /// Ollama-named builder remains for compatibility with existing callers.
-    pub fn with_context_tracker(self, tracker: OllamaRequestTracker, profile: String) -> Self {
-        self.with_ollama_tracker(tracker, profile)
     }
 
     fn build_request_with_retry(&self, request: &ExplanationRequest, retry: bool) -> Req {
@@ -655,7 +695,7 @@ impl OpenAiProvider {
             Ok(negotiation) => negotiation,
             Err(error) => {
                 if retry {
-                    self.track_ollama_failure(
+                    self.track_context_failure(
                         request,
                         &capabilities,
                         &requirement,
@@ -701,7 +741,7 @@ impl OpenAiProvider {
             usage
         );
         if choice.finish_reason.as_deref() == Some("length") {
-            self.track_ollama_failure(
+            self.track_context_failure(
                 request,
                 &capabilities,
                 &negotiation.requirement,
@@ -732,7 +772,7 @@ impl OpenAiProvider {
             Ok(explanation) => explanation,
             Err(error) => {
                 if retry {
-                    self.track_ollama_failure(
+                    self.track_context_failure(
                         request,
                         &capabilities,
                         &negotiation.requirement,
@@ -749,7 +789,7 @@ impl OpenAiProvider {
                 return Err(error);
             }
         };
-        self.track_ollama_success(
+        self.track_context_success(
             request,
             retry,
             previous_provider_overflow,
@@ -764,27 +804,29 @@ impl OpenAiProvider {
     }
 
     async fn discover_context_capabilities(&self) -> Result<ContextCapabilities> {
-        let mut capacity = discover_context_capacity_for(
-            &self.client,
-            self.kind,
-            &self.base_url,
-            &self.model,
-            self.context_window,
-        )
-        .await;
-        if matches!(self.kind, ProviderKind::Ollama) && capacity.runtime_allocated.is_none() {
-            // Ollama's /api/ps only reports a loaded model. Establish the
-            // runtime allocation with a source-free request before budgeting
-            // an explanation against a fixed OpenAI-compatible transport.
-            self.warm_ollama_model().await?;
-            capacity = discover_context_capacity_for(
+        let mut capacity = self
+            .kind
+            .discover_context_capacity(
                 &self.client,
-                self.kind,
                 &self.base_url,
                 &self.model,
                 self.context_window,
             )
             .await;
+        if matches!(self.kind, ProviderKind::Ollama) && capacity.runtime_allocated.is_none() {
+            // Ollama's /api/ps only reports a loaded model. Establish the
+            // runtime allocation with a source-free request before budgeting
+            // an explanation against a fixed OpenAI-compatible transport.
+            self.warm_ollama_model().await?;
+            capacity = self
+                .kind
+                .discover_context_capacity(
+                    &self.client,
+                    &self.base_url,
+                    &self.model,
+                    self.context_window,
+                )
+                .await;
         }
         Ok(ContextCapabilities {
             capacity,
@@ -916,7 +958,7 @@ impl OpenAiProvider {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn track_ollama_success(
+    fn track_context_success(
         &self,
         request: &ExplanationRequest,
         concise_retry_used: bool,
@@ -924,66 +966,30 @@ impl OpenAiProvider {
         capabilities: &ContextCapabilities,
         negotiation: &ContextNegotiation,
         ideal_required_context: u32,
-        estimated_input: u32,
+        _estimated_input: u32,
         usage: Option<&Usage>,
         latency_ms: u64,
     ) {
-        let Some((tracker, profile)) = &self.ollama_tracker else {
+        let Some(mut record) = self.new_context_record(
+            request,
+            capabilities,
+            &negotiation.requirement,
+            ideal_required_context,
+            negotiation.available_context,
+            usage,
+        ) else {
             return;
         };
-        let mut record =
-            OllamaRequestRecord::now(profile.clone(), self.model.clone(), request.deep);
-        let generation = if request.deep {
-            &self.deep
-        } else {
-            &self.normal
-        };
-        record.workload_key = workload_key(
-            &self.model,
-            generation.reasoning,
-            generation.max_tokens,
-            generation.temperature,
-        );
-        record.model_max = capabilities.capacity.model_max;
-        record.runtime_context = capabilities.capacity.runtime_allocated;
-        record.profile_limit = self.context_window;
-        record.effective_context = negotiation.available_context;
-        record.estimated_input = estimated_input;
-        record.output_reserve = negotiation.requirement.output_reserve;
-        record.safety_margin =
-            negotiation.requirement.protocol_overhead + negotiation.requirement.safety_margin;
-        record.ideal_required_context = ideal_required_context;
-        record.final_required_context = negotiation.requirement.minimum_required_context;
-        record.compacted = concise_retry_used;
-        record.actual_prompt_tokens = usage.and_then(|value| value.prompt_tokens);
-        record.actual_completion_tokens = usage.and_then(|value| value.completion_tokens);
-        record.actual_total_tokens = usage.and_then(|value| {
-            value
-                .prompt_tokens
-                .zip(value.completion_tokens)
-                .map(|(prompt, completion)| prompt.saturating_add(completion))
-        });
-        record.generation_duration_ms = usage.and_then(|value| value.generation_duration_ms);
-        record.generation_tokens_per_second = usage.and_then(|value| {
-            value
-                .completion_tokens
-                .zip(value.generation_duration_ms)
-                .and_then(|(tokens, ms)| {
-                    (ms > 0).then(|| u64::from(tokens).saturating_mul(1_000) / ms)
-                })
-        });
         record.latency_ms = Some(latency_ms);
         record.success = true;
         record.provider_context_overflow = provider_overflow_seen;
         record.concise_retry_used = concise_retry_used;
         record.attempts = if concise_retry_used { 2 } else { 1 };
-        if let Err(error) = tracker.record(record) {
-            eprintln!("could not record local backend context history: {error:#}");
-        }
+        self.persist_context_record(record);
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn track_ollama_failure(
+    fn track_context_failure(
         &self,
         request: &ExplanationRequest,
         capabilities: &ContextCapabilities,
@@ -997,16 +1003,46 @@ impl OpenAiProvider {
         usage: Option<&Usage>,
         latency_ms: Option<u64>,
     ) {
-        let Some((tracker, profile)) = &self.ollama_tracker else {
+        let Some(mut record) = self.new_context_record(
+            request,
+            capabilities,
+            requirement,
+            ideal_required_context,
+            capabilities.capacity.effective().tokens,
+            usage,
+        ) else {
             return;
         };
-        let mut record =
-            OllamaRequestRecord::now(profile.clone(), self.model.clone(), request.deep);
+        record.latency_ms = latency_ms;
+        record.local_context_failure = local_context_failure;
+        record.provider_context_overflow = previous_provider_overflow || provider_context_overflow;
+        record.output_truncated = output_truncated;
+        record.concise_retry_used = concise_retry_used;
+        record.attempts = if concise_retry_used { 2 } else { 1 };
+        self.persist_context_record(record);
+    }
+
+    fn new_context_record(
+        &self,
+        request: &ExplanationRequest,
+        capabilities: &ContextCapabilities,
+        requirement: &crate::context::ContextRequirement,
+        ideal_required_context: u32,
+        effective_context: u32,
+        usage: Option<&Usage>,
+    ) -> Option<LocalContextRecord> {
+        let (_, profile) = self.context_tracker.as_ref()?;
         let generation = if request.deep {
             &self.deep
         } else {
             &self.normal
         };
+        let mut record = LocalContextRecord::now(
+            profile.clone(),
+            self.kind.telemetry_key().into(),
+            self.model.clone(),
+            request.deep,
+        );
         record.workload_key = workload_key(
             &self.model,
             generation.reasoning,
@@ -1016,13 +1052,12 @@ impl OpenAiProvider {
         record.model_max = capabilities.capacity.model_max;
         record.runtime_context = capabilities.capacity.runtime_allocated;
         record.profile_limit = self.context_window;
-        record.effective_context = capabilities.capacity.effective().tokens;
+        record.effective_context = effective_context;
         record.estimated_input = requirement.estimated_input;
         record.output_reserve = requirement.output_reserve;
         record.safety_margin = requirement.protocol_overhead + requirement.safety_margin;
         record.ideal_required_context = ideal_required_context;
         record.final_required_context = requirement.minimum_required_context;
-        record.compacted = concise_retry_used;
         record.actual_prompt_tokens = usage.and_then(|value| value.prompt_tokens);
         record.actual_completion_tokens = usage.and_then(|value| value.completion_tokens);
         record.actual_total_tokens = usage.and_then(|value| {
@@ -1040,12 +1075,13 @@ impl OpenAiProvider {
                     (ms > 0).then(|| u64::from(tokens).saturating_mul(1_000) / ms)
                 })
         });
-        record.latency_ms = latency_ms;
-        record.local_context_failure = local_context_failure;
-        record.provider_context_overflow = previous_provider_overflow || provider_context_overflow;
-        record.output_truncated = output_truncated;
-        record.concise_retry_used = concise_retry_used;
-        record.attempts = if concise_retry_used { 2 } else { 1 };
+        Some(record)
+    }
+
+    fn persist_context_record(&self, record: LocalContextRecord) {
+        let Some((tracker, _)) = &self.context_tracker else {
+            return;
+        };
         if let Err(error) = tracker.record(record) {
             eprintln!("could not record local backend context history: {error:#}");
         }
@@ -1201,6 +1237,25 @@ mod tests {
         assert!(value.get("chat_template_kwargs").is_none());
         assert!(value.get("reasoning_effort").is_none());
         assert!(value.get("reasoning_format").is_none());
+    }
+
+    #[test]
+    fn context_adapter_owns_backend_identity_and_remediation() {
+        assert_eq!(ProviderKind::Ollama.telemetry_key(), "ollama");
+        assert_eq!(ProviderKind::LlamaCpp.display_name(), "llama.cpp");
+        assert_eq!(
+            ProviderKind::OpenAiCompatible.context_control(),
+            ContextControl::Unknown
+        );
+        assert!(ProviderKind::Ollama
+            .remediation_instruction("local", 16_384)
+            .contains("Configure Ollama"));
+        assert!(ProviderKind::LlamaCpp
+            .remediation_instruction("local", 16_384)
+            .contains("--ctx-size 16384"));
+        assert!(ProviderKind::OpenAiCompatible
+            .remediation_instruction("local", 16_384)
+            .contains("advisory"));
     }
 
     #[test]

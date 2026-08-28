@@ -1,4 +1,4 @@
-//! Local, metadata-only Ollama workload history and advisory context policy.
+//! Local, metadata-only backend workload history and advisory context policy.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -22,9 +22,10 @@ pub const P99_MIN_SAMPLES: usize = 50;
 const TIERS: &[u32] = &[4_096, 8_192, 16_384, 32_768, 65_536, 131_072];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OllamaRequestRecord {
+pub struct LocalContextRecord {
     pub timestamp_ms: u64,
     pub profile: String,
+    pub backend: String,
     pub model: String,
     #[serde(default)]
     pub workload_key: String,
@@ -53,18 +54,15 @@ pub struct OllamaRequestRecord {
     pub attempts: u8,
 }
 
-/// Backend-neutral name for local context telemetry. Kept as an alias so
-/// existing unreleased history remains readable without migration.
-pub type LocalContextRequestRecord = OllamaRequestRecord;
-
-impl OllamaRequestRecord {
-    pub fn now(profile: String, model: String, deep: bool) -> Self {
+impl LocalContextRecord {
+    pub fn now(profile: String, backend: String, model: String, deep: bool) -> Self {
         Self {
             timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
             profile,
+            backend,
             model,
             workload_key: String::new(),
             deep,
@@ -110,22 +108,20 @@ pub fn workload_key(
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct History {
-    records: Vec<OllamaRequestRecord>,
+    records: Vec<LocalContextRecord>,
 }
 
 #[derive(Clone, Debug)]
-pub struct OllamaRequestTracker {
+pub struct LocalContextTracker {
     path: PathBuf,
 }
 
-/// Backend-neutral local telemetry tracker.
-pub type LocalContextTracker = OllamaRequestTracker;
-
-impl OllamaRequestTracker {
+impl LocalContextTracker {
     pub fn for_user_config(config_path: &Path) -> Self {
         let parent = config_path.parent().unwrap_or_else(|| Path::new("."));
+        let state = parent.join("state");
         Self {
-            path: parent.join("state").join("ollama-context-history.json"),
+            path: state.join("local-context-history.json"),
         }
     }
     pub fn at(path: PathBuf) -> Self {
@@ -137,29 +133,33 @@ impl OllamaRequestTracker {
     pub fn records(
         &self,
         profile: &str,
+        backend: &str,
         workload_key: &str,
         deep: bool,
-    ) -> Vec<OllamaRequestRecord> {
+    ) -> Vec<LocalContextRecord> {
         let oldest = now_ms().saturating_sub(RECENT_HISTORY_MS);
         self.load()
             .records
             .into_iter()
             .filter(|r| {
                 r.profile == profile
+                    && r.backend == backend
                     && r.workload_key == workload_key
                     && r.deep == deep
                     && r.timestamp_ms >= oldest
             })
             .collect()
     }
-    pub fn record(&self, record: OllamaRequestRecord) -> Result<()> {
+    pub fn record(&self, record: LocalContextRecord) -> Result<()> {
         let mut history = self.load();
         history.records.push(record);
-        let mut groups: HashMap<(String, String, bool), Vec<OllamaRequestRecord>> = HashMap::new();
+        let mut groups: HashMap<(String, String, String, bool), Vec<LocalContextRecord>> =
+            HashMap::new();
         for record in history.records {
             groups
                 .entry((
                     record.profile.clone(),
+                    record.backend.clone(),
                     record.workload_key.clone(),
                     record.deep,
                 ))
@@ -221,7 +221,7 @@ pub struct DistributionStats<T> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct OllamaContextStatistics {
+pub struct LocalContextStatistics {
     pub count: usize,
     pub required: DistributionStats<u32>,
     /// The p95 used by the advisory policy once `MIN_SAMPLES` is met. It is
@@ -237,8 +237,8 @@ pub struct OllamaContextStatistics {
     pub average_latency_ms: Option<u64>,
     pub latency: DistributionStats<u64>,
 }
-impl OllamaContextStatistics {
-    pub fn from_records(records: &[OllamaRequestRecord]) -> Self {
+impl LocalContextStatistics {
+    pub fn from_records(records: &[LocalContextRecord]) -> Self {
         let mut required = records
             .iter()
             .map(|r| r.ideal_required_context)
@@ -351,7 +351,7 @@ pub enum RecommendationState {
     AtModelMaximum,
 }
 #[derive(Clone, Debug)]
-pub struct OllamaRecommendation {
+pub struct ContextRecommendation {
     pub state: RecommendationState,
     pub current: Option<u32>,
     pub recommended: Option<u32>,
@@ -359,18 +359,18 @@ pub struct OllamaRecommendation {
     pub reason: String,
 }
 pub fn recommend(
-    records: &[OllamaRequestRecord],
+    records: &[LocalContextRecord],
     current: Option<u32>,
     model_max: Option<u32>,
-) -> OllamaRecommendation {
-    let statistics = OllamaContextStatistics::from_records(records);
+) -> ContextRecommendation {
+    let statistics = LocalContextStatistics::from_records(records);
     if statistics.count < MIN_SAMPLES {
-        return OllamaRecommendation { state: RecommendationState::InsufficientHistory, current, recommended: current, target: None, reason: format!("At least {MIN_SAMPLES} recent requests are required before a stable recommendation.") };
+        return ContextRecommendation { state: RecommendationState::InsufficientHistory, current, recommended: current, target: None, reason: format!("At least {MIN_SAMPLES} recent requests are required before a stable recommendation.") };
     }
     let p95 = statistics.policy_required_p95.unwrap_or_default();
     let target = p95.saturating_add(p95 / 5);
     if model_max.is_none() && target > *TIERS.last().unwrap_or(&0) {
-        return OllamaRecommendation {
+        return ContextRecommendation {
             state: RecommendationState::CapacityUnknown,
             current,
             recommended: None,
@@ -413,7 +413,7 @@ pub fn recommend(
         (None, Some(_)) => RecommendationState::Increase,
     };
     let reason = format!("p95 ideal required context is {p95} tokens; target with 20% headroom is {target} tokens. {} compactions and {} hard failures were recorded.", statistics.compactions, statistics.hard_failures);
-    OllamaRecommendation {
+    ContextRecommendation {
         state,
         current,
         recommended,
@@ -434,8 +434,8 @@ fn next_tier(current: u32, ceiling: u32) -> Option<u32> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    fn record(profile: &str, deep: bool, required: u32) -> OllamaRequestRecord {
-        let mut r = OllamaRequestRecord::now(profile.into(), "model".into(), deep);
+    fn record(profile: &str, deep: bool, required: u32) -> LocalContextRecord {
+        let mut r = LocalContextRecord::now(profile.into(), "ollama".into(), "model".into(), deep);
         r.workload_key = "test".into();
         r.ideal_required_context = required;
         r.final_required_context = required;
@@ -444,13 +444,13 @@ mod tests {
     #[test]
     fn persists_bounds_and_never_stores_source() {
         let dir = tempdir().unwrap();
-        let t = OllamaRequestTracker::at(dir.path().join("history.json"));
+        let t = LocalContextTracker::at(dir.path().join("history.json"));
         for i in 0..101 {
             let mut r = record("p", false, 4096);
             r.timestamp_ms = now_ms().saturating_add(i);
             t.record(r).unwrap();
         }
-        assert_eq!(t.records("p", "test", false).len(), 100);
+        assert_eq!(t.records("p", "ollama", "test", false).len(), 100);
         let stored = std::fs::read_to_string(t.path()).unwrap();
         assert!(!stored.contains("SECRET_SOURCE_SENTINEL_94A1"));
         let history = serde_json::from_str::<serde_json::Value>(&stored).unwrap();
@@ -460,6 +460,7 @@ mod tests {
         let expected = [
             "timestamp_ms",
             "profile",
+            "backend",
             "model",
             "workload_key",
             "deep",
@@ -494,7 +495,7 @@ mod tests {
         let records = (1..=20)
             .map(|n| record("p", false, n * 100))
             .collect::<Vec<_>>();
-        let s = OllamaContextStatistics::from_records(&records);
+        let s = LocalContextStatistics::from_records(&records);
         assert_eq!(s.required.p50, Some(1000));
         assert_eq!(s.required.p90, Some(1800));
         assert_eq!(s.required.p95, Some(1900));
@@ -517,7 +518,7 @@ mod tests {
             let records = (1..=count)
                 .map(|n| record("p", false, n as u32))
                 .collect::<Vec<_>>();
-            let distribution = OllamaContextStatistics::from_records(&records).required;
+            let distribution = LocalContextStatistics::from_records(&records).required;
             assert_eq!(distribution.p50.is_some(), p50, "count={count}");
             assert_eq!(distribution.p90.is_some(), p90, "count={count}");
             assert_eq!(distribution.p95.is_some(), p95, "count={count}");
@@ -603,18 +604,42 @@ mod tests {
     #[test]
     fn reset_only_removes_requested_profile() {
         let dir = tempdir().unwrap();
-        let tracker = OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = LocalContextTracker::at(dir.path().join("history.json"));
         tracker.record(record("one", false, 4096)).unwrap();
         tracker.record(record("two", false, 4096)).unwrap();
         assert_eq!(tracker.reset("one").unwrap(), 1);
-        assert!(tracker.records("one", "test", false).is_empty());
-        assert_eq!(tracker.records("two", "test", false).len(), 1);
+        assert!(tracker.records("one", "ollama", "test", false).is_empty());
+        assert_eq!(tracker.records("two", "ollama", "test", false).len(), 1);
+    }
+
+    #[test]
+    fn history_is_scoped_to_backend_identity() {
+        let dir = tempdir().unwrap();
+        let tracker = LocalContextTracker::at(dir.path().join("history.json"));
+        let mut ollama = record("shared", false, 4_096);
+        ollama.workload_key = "same-workload".into();
+        let mut llama = ollama.clone();
+        llama.backend = "llama_cpp".into();
+        tracker.record(ollama).unwrap();
+        tracker.record(llama).unwrap();
+        assert_eq!(
+            tracker
+                .records("shared", "ollama", "same-workload", false)
+                .len(),
+            1
+        );
+        assert_eq!(
+            tracker
+                .records("shared", "llama_cpp", "same-workload", false)
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn history_is_scoped_to_workload_identity_and_recent_samples() {
         let dir = tempdir().unwrap();
-        let tracker = OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = LocalContextTracker::at(dir.path().join("history.json"));
         let mut current = record("profile", false, 4096);
         current.workload_key = "model=current".into();
         current.timestamp_ms = now_ms();
@@ -627,7 +652,7 @@ mod tests {
         old.workload_key = "model=current".into();
         old.timestamp_ms = now_ms().saturating_sub(RECENT_HISTORY_MS + 1);
         tracker.record(old).unwrap();
-        let records = tracker.records("profile", "model=current", false);
+        let records = tracker.records("profile", "ollama", "model=current", false);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].ideal_required_context, 4096);
     }

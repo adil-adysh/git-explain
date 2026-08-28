@@ -650,7 +650,7 @@ fn build_session_from_analyzer(
     );
     let provider = if crate::model::openai::is_local_profile(&config.model) {
         provider.with_context_tracker(
-            git_explain::ollama_context::OllamaRequestTracker::for_user_config(
+            git_explain::local_context::LocalContextTracker::for_user_config(
                 &crate::config::default_user_config_path()?,
             ),
             config.profile.clone(),

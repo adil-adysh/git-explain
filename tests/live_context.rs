@@ -7,11 +7,13 @@
 use git_explain::{
     config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile},
     context::ContextControl,
+    local_context::{
+        recommend, workload_key, LocalContextStatistics, LocalContextTracker, MIN_SAMPLES,
+    },
     model::{
         openai::{discover_context_capabilities, OpenAiProvider},
         ExplanationProvider, ExplanationRegion, ExplanationRequest,
     },
-    ollama_context::{recommend, workload_key, OllamaRequestTracker, MIN_SAMPLES},
 };
 use reqwest::{Client, StatusCode};
 use serde_json::json;
@@ -246,10 +248,10 @@ async fn live_ollama_explanation_records_private_context_metadata() {
     let base_url = required("GIT_EXPLAIN_TEST_OLLAMA_URL");
     let model = required("GIT_EXPLAIN_TEST_OLLAMA_MODEL");
     let dir = tempdir().expect("create tracker state directory");
-    let tracker = OllamaRequestTracker::for_user_config(&dir.path().join("config.toml"));
+    let tracker = LocalContextTracker::for_user_config(&dir.path().join("config.toml"));
     let sentinel = "SECRET_SOURCE_SENTINEL_94A1";
     let provider = production_provider(base_url.clone(), model.clone(), "ollama")
-        .with_ollama_tracker(tracker.clone(), "live-ollama".into());
+        .with_context_tracker(tracker.clone(), "live-ollama".into());
     let result = provider
         .explain(tracker_request(&format!(
             "fn local_unit() {{ {sentinel}; }}"
@@ -257,7 +259,7 @@ async fn live_ollama_explanation_records_private_context_metadata() {
         .await;
     unload_ollama_model_if_requested(&Client::new(), native_ollama_base(&base_url), &model).await;
     let identity = workload_key(&model, None, Some(96), Some(0.0));
-    let records = tracker.records("live-ollama", &identity, false);
+    let records = tracker.records("live-ollama", "ollama", &identity, false);
     assert_eq!(
         records.len(),
         1,
@@ -294,9 +296,9 @@ async fn live_ollama_context_recommendation_uses_real_recent_workload() {
     let base_url = required("GIT_EXPLAIN_TEST_OLLAMA_URL");
     let model = required("GIT_EXPLAIN_TEST_OLLAMA_MODEL");
     let dir = tempdir().expect("create tracker state directory");
-    let tracker = OllamaRequestTracker::for_user_config(&dir.path().join("config.toml"));
+    let tracker = LocalContextTracker::for_user_config(&dir.path().join("config.toml"));
     let provider = production_provider(base_url.clone(), model.clone(), "ollama")
-        .with_ollama_tracker(tracker.clone(), "live-policy".into());
+        .with_context_tracker(tracker.clone(), "live-policy".into());
     let sources = [
         "fn size_small(value: i32) -> i32 { value + 1 }".to_string(),
         format!("fn size_medium() {{\n{}\n}}", "let value = 1;\n".repeat(16)),
@@ -308,7 +310,7 @@ async fn live_ollama_context_recommendation_uses_real_recent_workload() {
     let capabilities =
         discover_context_capabilities(&profile(base_url.clone(), model.clone(), "ollama")).await;
     let identity = workload_key(&model, None, Some(96), Some(0.0));
-    let records = tracker.records("live-policy", &identity, false);
+    let records = tracker.records("live-policy", "ollama", &identity, false);
     unload_ollama_model_if_requested(&Client::new(), native_ollama_base(&base_url), &model).await;
     assert_eq!(records.len(), MIN_SAMPLES);
     assert!(records
@@ -321,7 +323,7 @@ async fn live_ollama_context_recommendation_uses_real_recent_workload() {
     );
     assert!(recommendation.recommended.is_some());
     assert!(recommendation.target.is_some());
-    let statistics = git_explain::ollama_context::OllamaContextStatistics::from_records(&records);
+    let statistics = LocalContextStatistics::from_records(&records);
     println!("ollama policy: model_max={:?} runtime={:?} requests={} required_p50={} required_p95={} recommended={:?}", capabilities.capacity.model_max, capabilities.capacity.runtime_allocated, records.len(), statistics.required.p50.unwrap_or_default(), statistics.required.p95.unwrap_or_default(), recommendation.recommended);
 }
 

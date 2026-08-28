@@ -27,7 +27,7 @@ use config::{
     profile_names, remove_profile, use_profile, use_repository_profile, ConfigLoader, ConfigUpdate,
     ListUpdate, ProfileDraft, ProfileNotFound, ProfileUpdate,
 };
-use git_explain::ollama_context;
+use git_explain::local_context;
 use snapshot::SnapshotGeneration;
 use std::io::{self, IsTerminal};
 
@@ -50,7 +50,7 @@ async fn run() -> Result<()> {
         if !model::openai::is_local_profile(&resolved.model) {
             anyhow::bail!("Context history is available only for a local loopback model profile.");
         }
-        let tracker = ollama_context::OllamaRequestTracker::for_user_config(&loader.paths.user);
+        let tracker = local_context::LocalContextTracker::for_user_config(&loader.paths.user);
         match &command.action {
             ContextAction::Stats => {
                 let caps = model::openai::discover_context_capabilities(&resolved.model).await;
@@ -544,7 +544,7 @@ async fn run() -> Result<()> {
 }
 
 fn workload_key_for(model: &str, generation: &config::GenerationConfig) -> String {
-    ollama_context::workload_key(
+    local_context::workload_key(
         model,
         generation.reasoning,
         generation.max_tokens,
@@ -556,14 +556,20 @@ fn render_context_stats(
     profile: &str,
     model: &config::ResolvedProfile,
     capacity: &context::ContextCapacity,
-    tracker: &ollama_context::OllamaRequestTracker,
+    tracker: &local_context::LocalContextTracker,
 ) -> String {
     let normal = tracker.records(
         profile,
+        model::openai::context_backend_key_for_profile(model),
         &workload_key_for(&model.model, &model.normal),
         false,
     );
-    let deep = tracker.records(profile, &workload_key_for(&model.model, &model.deep), true);
+    let deep = tracker.records(
+        profile,
+        model::openai::context_backend_key_for_profile(model),
+        &workload_key_for(&model.model, &model.deep),
+        true,
+    );
     let total = normal.len() + deep.len();
     let mut output = format!(
         "Context statistics\n\nProfile: {profile}\nPreset: {}\nModel: {}\n\nCurrent local backend context:\n{}\n\nRequests tracked:\n{total}",
@@ -582,7 +588,7 @@ fn render_context_stats(
         } else {
             output.push_str(&render_mode_stats(
                 label,
-                &ollama_context::OllamaContextStatistics::from_records(&records),
+                &local_context::LocalContextStatistics::from_records(&records),
             ));
         }
     }
@@ -590,12 +596,12 @@ fn render_context_stats(
     output
 }
 
-fn render_mode_stats(label: &str, stats: &ollama_context::OllamaContextStatistics) -> String {
+fn render_mode_stats(label: &str, stats: &local_context::LocalContextStatistics) -> String {
     let mut output = format!("{label}: {} requests\n\nRequired context:", stats.count);
     append_distribution(&mut output, &stats.required, |value| {
         format!("{value} tokens")
     });
-    if stats.count < ollama_context::P50_MIN_SAMPLES {
+    if stats.count < local_context::P50_MIN_SAMPLES {
         output.push_str(
             "\n\nMore percentile detail will appear as additional requests are collected.",
         );
@@ -653,7 +659,7 @@ fn render_mode_stats(label: &str, stats: &ollama_context::OllamaContextStatistic
 
 fn append_distribution<T>(
     output: &mut String,
-    distribution: &ollama_context::DistributionStats<T>,
+    distribution: &local_context::DistributionStats<T>,
     format_value: impl Fn(T) -> String,
 ) where
     T: Copy,
@@ -693,14 +699,20 @@ fn render_context_recommendation(
     profile: &str,
     model: &config::ResolvedProfile,
     capacity: &context::ContextCapacity,
-    tracker: &ollama_context::OllamaRequestTracker,
+    tracker: &local_context::LocalContextTracker,
 ) -> String {
     let normal = tracker.records(
         profile,
+        model::openai::context_backend_key_for_profile(model),
         &workload_key_for(&model.model, &model.normal),
         false,
     );
-    let deep = tracker.records(profile, &workload_key_for(&model.model, &model.deep), true);
+    let deep = tracker.records(
+        profile,
+        model::openai::context_backend_key_for_profile(model),
+        &workload_key_for(&model.model, &model.deep),
+        true,
+    );
     let total = normal.len() + deep.len();
     let mut output = format!(
         "Context recommendation\n\nProfile: {profile}\n\nCurrent local backend context:\n{}",
@@ -716,23 +728,23 @@ fn render_context_recommendation(
             continue;
         }
         let recommendation =
-            ollama_context::recommend(&records, capacity.runtime_allocated, capacity.model_max);
+            local_context::recommend(&records, capacity.runtime_allocated, capacity.model_max);
         output.push_str(&format!("\n\n{label}: {} requests", records.len()));
         if matches!(
             recommendation.state,
-            ollama_context::RecommendationState::InsufficientHistory
+            local_context::RecommendationState::InsufficientHistory
         ) {
-            output.push_str(&format!("\n\nRecommendation:\nNot enough history yet.\n\nAt least {} recent requests are required before git-explain recommends\na stable local backend context size.", ollama_context::MIN_SAMPLES));
+            output.push_str(&format!("\n\nRecommendation:\nNot enough history yet.\n\nAt least {} recent requests are required before git-explain recommends\na stable local backend context size.", local_context::MIN_SAMPLES));
             continue;
         }
         if matches!(
             recommendation.state,
-            ollama_context::RecommendationState::CapacityUnknown
+            local_context::RecommendationState::CapacityUnknown
         ) {
-            output.push_str(&format!("\n\nRecommended workload context:\n{} tokens\n\nA safe {} context cannot be recommended until the model maximum is available.\nStart the backend, load the model if needed, then run:\ngit explain profile test {profile}", recommendation.target.unwrap_or_default(), local_backend_name(model)));
+            output.push_str(&format!("\n\nRecommended workload context:\n{} tokens\n\nA safe {} context cannot be recommended until the model maximum is available.\nStart the backend, load the model if needed, then run:\ngit explain profile test {profile}", recommendation.target.unwrap_or_default(), model::openai::context_backend_name_for_profile(model)));
             continue;
         }
-        let statistics = ollama_context::OllamaContextStatistics::from_records(&records);
+        let statistics = local_context::LocalContextStatistics::from_records(&records);
         let target = recommendation.target.unwrap_or_default();
         if let Some(value) = recommendation.recommended {
             output.push_str(&format!("\n\nRecommended context:\n{value} tokens"));
@@ -777,54 +789,21 @@ fn render_context_recommendation(
             output.push_str(&format!("\n\nRaise git-explain's profile cap:\ngit explain profile edit {profile} --context-window {target}"));
         }
         if capacity.runtime_allocated.is_none() {
-            output.push_str(&format!("\n\nThe recommendation is based on recorded request history.\nStart {} and run `git explain profile test {profile}` to compare it\nwith the current runtime allocation.", local_backend_name(model)));
+            output.push_str(&format!("\n\nThe recommendation is based on recorded request history.\nStart {} and run `git explain profile test {profile}` to compare it\nwith the current runtime allocation.", model::openai::context_backend_name_for_profile(model)));
         }
         if matches!(
             recommendation.state,
-            ollama_context::RecommendationState::Increase
+            local_context::RecommendationState::Increase
         ) {
-            output.push_str(&context_change_instruction(
-                profile,
+            output.push_str(&model::openai::context_remediation_instruction_for_profile(
                 model,
+                profile,
                 recommendation.recommended.unwrap_or(target),
             ));
         }
     }
     output.push('\n');
     output
-}
-
-fn local_backend_name(model: &config::ResolvedProfile) -> &'static str {
-    match model.preset.as_deref() {
-        Some(name) if name.eq_ignore_ascii_case("ollama") => "Ollama",
-        Some(name) if name.eq_ignore_ascii_case("llama_cpp") => "llama.cpp",
-        _ => "the local OpenAI-compatible backend",
-    }
-}
-
-fn context_change_instruction(
-    profile: &str,
-    model: &config::ResolvedProfile,
-    target: u32,
-) -> String {
-    match model::openai::context_control_for_profile(model) {
-        context::ContextControl::FixedRuntime if local_backend_name(model) == "Ollama" => format!(
-            "\n\nConfigure Ollama with the recommended context, reload the model, then run:\ngit explain profile test {profile}"
-        ),
-        context::ContextControl::FixedRuntime if local_backend_name(model) == "llama.cpp" => format!(
-            "\n\nRestart llama.cpp with `--ctx-size {target}`, then run:\ngit explain profile test {profile}"
-        ),
-        context::ContextControl::PerRequest => format!(
-            "\n\ngit-explain requests this context per inference. Verify it with:\ngit explain profile test {profile}"
-        ),
-        context::ContextControl::SessionOrModelLoad => format!(
-            "\n\nConfigure the model or session with {target} tokens, reload it, then run:\ngit explain profile test {profile}"
-        ),
-        context::ContextControl::Unknown => format!(
-            "\n\nThis local OpenAI-compatible backend has no verified context-size control. The recommendation is advisory; consult its server documentation or startup configuration, then run:\ngit explain profile test {profile}"
-        ),
-        context::ContextControl::FixedRuntime => unreachable!("known fixed runtimes have a named adapter"),
-    }
 }
 
 fn recommendation_bottleneck(
@@ -842,7 +821,7 @@ fn recommendation_bottleneck(
         return Some(format!("Profile context limit:\n{} tokens\n\nThe profile context limit is currently the bottleneck.", capacity.profile_limit.unwrap()));
     }
     capacity.runtime_allocated.filter(|value| *value < target).map(|value| {
-        let backend = local_backend_name(model);
+        let backend = model::openai::context_backend_name_for_profile(model);
         format!("Current {backend} runtime:\n{value} tokens\n\nThe {backend} runtime context is currently the bottleneck.")
     })
 }
@@ -1196,8 +1175,8 @@ async fn run_direct(
     );
     let provider = if model::openai::is_local_profile(&resolved.model) {
         provider.with_context_tracker(
-            ollama_context::OllamaRequestTracker::for_user_config(
-                &config::default_user_config_path()?,
+            local_context::LocalContextTracker::for_user_config(
+                &config::default_user_config_path()?
             ),
             resolved.profile.clone(),
         )
@@ -1268,9 +1247,13 @@ mod profile_error_tests {
         profile
     }
 
-    fn context_record(deep: bool, required: u32) -> ollama_context::OllamaRequestRecord {
-        let mut record =
-            ollama_context::OllamaRequestRecord::now("ollama".into(), "test-model".into(), deep);
+    fn context_record(deep: bool, required: u32) -> local_context::LocalContextRecord {
+        let mut record = local_context::LocalContextRecord::now(
+            "ollama".into(),
+            "ollama".into(),
+            "test-model".into(),
+            deep,
+        );
         let profile = ollama_profile();
         let generation = if deep { &profile.deep } else { &profile.normal };
         record.workload_key = workload_key_for(&profile.model, generation);
@@ -1299,7 +1282,7 @@ mod profile_error_tests {
     #[test]
     fn context_stats_zero_history_is_concise_and_private() {
         let dir = tempdir().unwrap();
-        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         let output =
             render_context_stats("ollama", &ollama_profile(), &Default::default(), &tracker);
         assert!(output.contains("No context history has been collected yet."));
@@ -1313,7 +1296,7 @@ mod profile_error_tests {
     #[test]
     fn context_stats_collapses_an_empty_mode_and_absent_metrics() {
         let dir = tempdir().unwrap();
-        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         for required in [4_000, 5_000, 6_000] {
             tracker.record(context_record(false, required)).unwrap();
         }
@@ -1331,7 +1314,7 @@ mod profile_error_tests {
     #[test]
     fn context_stats_shows_only_observed_optional_metrics_and_problems() {
         let dir = tempdir().unwrap();
-        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         for n in 0..20 {
             let mut record = context_record(false, 4_000 + n * 100);
             if n < 5 {
@@ -1361,7 +1344,7 @@ mod profile_error_tests {
     #[test]
     fn context_recommendation_distinguishes_zero_and_sparse_history() {
         let dir = tempdir().unwrap();
-        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         let empty = render_context_recommendation(
             "ollama",
             &ollama_profile(),
@@ -1386,7 +1369,7 @@ mod profile_error_tests {
     #[test]
     fn context_recommendation_reports_runtime_bottleneck() {
         let dir = tempdir().unwrap();
-        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         for _ in 0..10 {
             tracker.record(context_record(false, 12_000)).unwrap();
         }
@@ -1405,9 +1388,10 @@ mod profile_error_tests {
     #[test]
     fn context_recommendation_gives_llama_cpp_restart_instruction() {
         let dir = tempdir().unwrap();
-        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         for _ in 0..10 {
             let mut record = context_record(false, 12_000);
+            record.backend = "llama_cpp".into();
             record.compacted = true;
             tracker.record(record).unwrap();
         }
@@ -1426,9 +1410,11 @@ mod profile_error_tests {
     #[test]
     fn context_recommendation_keeps_generic_controls_advisory_only() {
         let dir = tempdir().unwrap();
-        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         for _ in 0..10 {
-            tracker.record(context_record(false, 12_000)).unwrap();
+            let mut record = context_record(false, 12_000);
+            record.backend = "openai_compatible".into();
+            tracker.record(record).unwrap();
         }
         let capacity = context::ContextCapacity {
             runtime_allocated: None,
@@ -1445,7 +1431,7 @@ mod profile_error_tests {
     #[test]
     fn context_recommendation_reports_model_and_profile_bottlenecks() {
         let dir = tempdir().unwrap();
-        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         for _ in 0..10 {
             tracker.record(context_record(false, 30_000)).unwrap();
         }
@@ -1472,7 +1458,7 @@ mod profile_error_tests {
     #[test]
     fn context_recommendation_keeps_history_available_when_ollama_is_offline() {
         let dir = tempdir().unwrap();
-        let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
+        let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         for _ in 0..10 {
             tracker.record(context_record(false, 12_000)).unwrap();
         }
