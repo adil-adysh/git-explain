@@ -1,5 +1,8 @@
 use super::*;
-use crate::config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile};
+use crate::{
+    config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile},
+    context::{ConservativeTokenEstimator, ContextBudget, ContextCapacity, PromptPlan},
+};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -7,9 +10,77 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
+/// Discover Ollama-only capacity information without changing its inference API.
+/// Failures are deliberately non-fatal: generic compatible endpoints need not
+/// expose these native diagnostic routes.
+pub async fn discover_context_capacity(model: &ResolvedProfile) -> ContextCapacity {
+    let mut capacity = ContextCapacity {
+        profile_limit: model.context_window,
+        ..ContextCapacity::default()
+    };
+    if !model
+        .preset
+        .as_deref()
+        .is_some_and(|preset| preset == "ollama")
+    {
+        return capacity;
+    }
+    let client = Client::new();
+    let base = model.base_url.trim_end_matches('/').trim_end_matches("/v1");
+    if let Ok(response) = client.get(format!("{base}/api/ps")).send().await {
+        if let Ok(value) = response.json::<Value>().await {
+            capacity.runtime_allocated = ollama_runtime_context(&value, &model.model);
+        }
+    }
+    if let Ok(response) = client
+        .post(format!("{base}/api/show"))
+        .json(&json!({"model": model.model}))
+        .send()
+        .await
+    {
+        if let Ok(value) = response.json::<Value>().await {
+            capacity.model_max = ollama_model_context(&value);
+        }
+    }
+    capacity
+}
+
+fn ollama_runtime_context(value: &Value, model: &str) -> Option<u32> {
+    value
+        .get("models")
+        .and_then(Value::as_array)
+        .and_then(|models| {
+            models.iter().find(|entry| {
+                ["name", "model"].iter().any(|key| {
+                    entry.get(*key).and_then(Value::as_str).is_some_and(|name| {
+                        name == model || name.strip_suffix(":latest") == Some(model)
+                    })
+                })
+            })
+        })
+        .and_then(|entry| entry.get("context_length"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn ollama_model_context(value: &Value) -> Option<u32> {
+    value
+        .get("model_info")
+        .and_then(Value::as_object)
+        .and_then(|info| {
+            info.iter().find_map(|(key, value)| {
+                key.ends_with(".context_length")
+                    .then(|| value.as_u64())
+                    .flatten()
+            })
+        })
+        .and_then(|value| u32::try_from(value).ok())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderKind {
     LlamaCpp,
+    Ollama,
     OpenAiCompatible,
 }
 
@@ -17,12 +88,17 @@ impl ProviderKind {
     fn from_preset(preset: Option<&str>) -> Self {
         if preset.is_some_and(|name| name.eq_ignore_ascii_case("llama_cpp")) {
             Self::LlamaCpp
+        } else if preset.is_some_and(|name| name.eq_ignore_ascii_case("ollama")) {
+            Self::Ollama
         } else {
             Self::OpenAiCompatible
         }
     }
     fn is_llama_cpp(self) -> bool {
         matches!(self, Self::LlamaCpp)
+    }
+    fn is_ollama(self) -> bool {
+        matches!(self, Self::Ollama)
     }
 }
 
@@ -37,6 +113,7 @@ pub struct OpenAiProvider {
     deep: GenerationConfig,
     reader: ReaderConfig,
     explanation: ExplanationConfig,
+    context_window: Option<u32>,
 }
 
 impl OpenAiProvider {
@@ -71,6 +148,7 @@ impl OpenAiProvider {
             deep: model.deep,
             reader,
             explanation,
+            context_window: model.context_window,
         }
     }
 
@@ -384,6 +462,23 @@ impl OpenAiProvider {
         retry: bool,
     ) -> Result<UnitExplanation> {
         let payload = self.build_request_with_retry(request, retry);
+        let capacity = self.discover_context_capacity().await;
+        let generation = if request.deep {
+            &self.deep
+        } else {
+            &self.normal
+        };
+        let budget = ContextBudget::for_generation(&capacity, generation, request.deep);
+        let plan = PromptPlan::check(
+            &payload.messages[1].content,
+            budget,
+            &ConservativeTokenEstimator,
+        )?;
+        eprintln!(
+            "context plan: total={} output_reserve={} safety_margin={} input_budget={} estimated_input={}",
+            plan.budget.total, plan.budget.output_reserve, plan.budget.safety_margin,
+            plan.budget.input_budget, plan.estimated_input
+        );
         let mut req = self
             .client
             .post(format!(
@@ -437,6 +532,60 @@ impl OpenAiProvider {
             )
         })
     }
+
+    async fn discover_context_capacity(&self) -> ContextCapacity {
+        let mut capacity = ContextCapacity {
+            profile_limit: self.context_window,
+            ..ContextCapacity::default()
+        };
+        if !self.kind.is_ollama() {
+            return capacity;
+        }
+        let base = self.base_url.trim_end_matches('/').trim_end_matches("/v1");
+        let ps = self.client.get(format!("{base}/api/ps")).send().await;
+        if let Ok(response) = ps {
+            if let Ok(value) = response.json::<Value>().await {
+                capacity.runtime_allocated = value
+                    .get("models")
+                    .and_then(Value::as_array)
+                    .and_then(|models| {
+                        models.iter().find(|entry| {
+                            ["name", "model"].iter().any(|key| {
+                                entry.get(*key).and_then(Value::as_str).is_some_and(|name| {
+                                    name == self.model
+                                        || name.strip_suffix(":latest") == Some(self.model.as_str())
+                                })
+                            })
+                        })
+                    })
+                    .and_then(|entry| entry.get("context_length"))
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok());
+            }
+        }
+        let show = self
+            .client
+            .post(format!("{base}/api/show"))
+            .json(&json!({"model": self.model}))
+            .send()
+            .await;
+        if let Ok(response) = show {
+            if let Ok(value) = response.json::<Value>().await {
+                capacity.model_max = value
+                    .get("model_info")
+                    .and_then(Value::as_object)
+                    .and_then(|info| {
+                        info.iter().find_map(|(key, value)| {
+                            key.ends_with(".context_length")
+                                .then(|| value.as_u64())
+                                .flatten()
+                        })
+                    })
+                    .and_then(|value| u32::try_from(value).ok());
+            }
+        }
+        capacity
+    }
 }
 
 fn is_retryable_structured_error(error: &anyhow::Error) -> bool {
@@ -463,6 +612,7 @@ mod tests {
                 model: "test-model".into(),
                 api_key_env: None,
                 api_key: None,
+                context_window: None,
                 normal: GenerationConfig {
                     reasoning: Some(false),
                     max_tokens: Some(500),
@@ -625,5 +775,19 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("malformed explanation JSON"));
+    }
+
+    #[test]
+    fn ollama_metadata_and_runtime_context_are_distinct() {
+        let show = json!({"model_info": {"qwen3.context_length": 131072}});
+        let ps = json!({"models": [{"name": "qwen3:latest", "context_length": 4096}]});
+        assert_eq!(ollama_model_context(&show), Some(131072));
+        assert_eq!(ollama_runtime_context(&ps, "qwen3"), Some(4096));
+        let capacity = ContextCapacity {
+            model_max: ollama_model_context(&show),
+            runtime_allocated: ollama_runtime_context(&ps, "qwen3"),
+            profile_limit: Some(32768),
+        };
+        assert_eq!(capacity.effective().tokens, 4096);
     }
 }

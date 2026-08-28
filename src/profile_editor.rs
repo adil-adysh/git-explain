@@ -29,7 +29,8 @@ pub fn run<R: BufRead, W: Write>(
         writeln!(output, "7. Deep generation settings")?;
         writeln!(output, "8. Review changes and save")?;
         writeln!(output, "9. Cancel")?;
-        let choice = choice(input, output, "Enter 1-9:", 1, 9)?;
+        writeln!(output, "10. Context budget limit")?;
+        let choice = choice(input, output, "Enter 1-10:", 1, 10)?;
         match choice {
             1 => edit_provider(input, output, &mut draft, &preview)?,
             2 => edit_model(input, output, &mut draft, &preview)?,
@@ -64,9 +65,40 @@ pub fn run<R: BufRead, W: Write>(
                 )?;
                 return Ok(());
             }
+            10 => edit_context_window(input, output, &mut draft, &preview)?,
             _ => unreachable!(),
         }
     }
+}
+
+fn edit_context_window<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    draft: &mut ProfileUpdate,
+    profile: &ResolvedProfile,
+) -> Result<()> {
+    writeln!(output, "\nContext budget limit: {}\n\nThis caps git-explain's prompt budget only; it does not reconfigure the model server.\n\n1. Set a token limit\n2. Automatic\n3. Keep unchanged", optional(profile.context_window))?;
+    match choice(input, output, "Enter 1-3:", 1, 3)? {
+        1 => {
+            writeln!(output, "Token limit:")?;
+            let value = line(input)?
+                .context("context limit is required")?
+                .parse::<u32>()
+                .context("context limit must be a positive integer")?;
+            if value == 0 {
+                anyhow::bail!("context limit must be greater than zero");
+            }
+            draft.context_window = Some(value);
+            draft.clear_context_window = false;
+        }
+        2 => {
+            draft.context_window = None;
+            draft.clear_context_window = true;
+        }
+        3 => {}
+        _ => unreachable!(),
+    }
+    Ok(())
 }
 
 pub fn run_add<R: BufRead, W: Write>(input: &mut R, output: &mut W, path: &Path) -> Result<()> {
@@ -162,6 +194,7 @@ pub fn run_add<R: BufRead, W: Write>(input: &mut R, output: &mut W, path: &Path)
             model: model.clone(),
             api_key_env: api_key_env.clone(),
             api_key: None,
+            context_window: None,
             normal: crate::config::GenerationConfig {
                 reasoning: None,
                 max_tokens: None,

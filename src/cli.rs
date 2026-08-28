@@ -259,6 +259,11 @@ pub enum ProfileAction {
         api_key_env: Option<String>,
         #[arg(
             long,
+            help = "Optional git-explain context budget cap; does not configure the model server"
+        )]
+        context_window: Option<u32>,
+        #[arg(
+            long,
             help = "Whether normal responses should use reasoning (true or false)"
         )]
         normal_reasoning: Option<bool>,
@@ -297,10 +302,18 @@ pub enum ProfileAction {
         model: Option<String>,
         #[arg(long, help = "Set the API-key environment variable name")]
         api_key_env: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "clear_context_window",
+            help = "Set a git-explain context budget cap; does not configure the model server"
+        )]
+        context_window: Option<u32>,
         #[arg(long)]
         clear_preset: bool,
         #[arg(long)]
         clear_api_key_env: bool,
+        #[arg(long, conflicts_with = "context_window")]
+        clear_context_window: bool,
         #[arg(long, conflicts_with = "clear_normal_reasoning")]
         normal_reasoning: Option<bool>,
         #[arg(long, conflicts_with = "clear_normal_max_tokens")]
@@ -356,6 +369,26 @@ mod tests {
             panic!("expected profile add");
         };
         assert_eq!(model_port, Some(9000));
+    }
+
+    #[test]
+    fn context_window_is_a_profile_option() {
+        let cli = Cli::try_parse_from([
+            "git-explain",
+            "profile",
+            "edit",
+            "local",
+            "--context-window",
+            "32768",
+        ])
+        .unwrap();
+        let Command::Profile(ProfileCommand {
+            action: ProfileAction::Edit { context_window, .. },
+        }) = cli.command.unwrap()
+        else {
+            panic!("expected profile edit");
+        };
+        assert_eq!(context_window, Some(32_768));
     }
 
     #[test]

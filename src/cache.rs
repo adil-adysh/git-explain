@@ -1,5 +1,6 @@
 use crate::{
     config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile},
+    context::PLAN_VERSION,
     model::ExplanationRequest,
 };
 use anyhow::{Context, Result};
@@ -12,7 +13,7 @@ use std::{
 };
 
 const SCHEMA: &str = "1";
-const PROMPT: &str = "source-unit-on-demand-v1";
+const PROMPT: &str = PLAN_VERSION;
 
 #[derive(Clone)]
 pub struct ExplanationCache {
@@ -173,6 +174,7 @@ mod tests {
             model: "m".into(),
             api_key_env: None,
             api_key: None,
+            context_window: None,
             normal: GenerationConfig {
                 reasoning: Some(false),
                 max_tokens: Some(10),

@@ -1,6 +1,7 @@
 pub mod analyzer;
 pub mod cache;
 pub mod config;
+pub mod context;
 pub mod diff;
 pub mod explain;
 pub mod git;

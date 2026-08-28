@@ -107,6 +107,21 @@ git explain profile edit local --clear-normal-temperature
 
 Generation fields are optional. An omitted field is omitted from the HTTP request, allowing cloud-compatible services to accept only the settings they support. Credentials are always read from `api_key_env`; profile files never contain secret values. Profile and config display commands redact credentials.
 
+## Context management
+
+Before each explanation, git-explain budgets the prompt against the smallest known context capacity, reserves output tokens for the selected Normal or Deep mode, and adds a safety margin for chat-template and structured-output overhead. It uses a deterministic conservative estimator for generic OpenAI-compatible endpoints. If the minimum focused prompt cannot fit, git-explain stops before inference with the available and required budgets instead of sending an oversized request.
+
+`context_window` is an optional profile cap for git-explain's own budgeting; it never changes a model server's allocation. Set or clear it with:
+
+```text
+git explain profile edit local --context-window 32768
+git explain profile edit local --clear-context-window
+```
+
+For Ollama, `git explain profile test ollama` also reads native `/api/show` metadata for the model's theoretical maximum and `/api/ps` for the context currently allocated to the loaded model. The runtime allocation is the hard bound: a model that supports 131072 tokens but is loaded with 4096 is budgeted as 4096.
+
+Ollama's OpenAI-compatible `/v1/chat/completions` API cannot increase context per request. Configure Ollama itself (for example, `OLLAMA_CONTEXT_LENGTH` before `ollama serve`, or a Modelfile with `PARAMETER num_ctx <tokens>`), reload the model, and run `git explain profile test ollama` again. Larger windows use more memory; choose one that fits the model and hardware.
+
 Repository configuration at `.git/git-explain.toml` may select a logical profile name and repository-safe explanation and Git preferences:
 
 ```toml

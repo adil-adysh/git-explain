@@ -3,6 +3,7 @@ mod cache;
 mod cli;
 mod config;
 mod config_editor;
+mod context;
 mod daemon;
 mod diff;
 mod explain;
@@ -280,6 +281,7 @@ async fn run() -> Result<()> {
                 model_port,
                 model,
                 api_key_env,
+                context_window,
                 normal_reasoning,
                 normal_max_tokens,
                 normal_temperature,
@@ -294,6 +296,7 @@ async fn run() -> Result<()> {
                     && model_port.is_none()
                     && model.is_none()
                     && api_key_env.is_none()
+                    && context_window.is_none()
                     && normal_reasoning.is_none()
                     && normal_max_tokens.is_none()
                     && normal_temperature.is_none()
@@ -328,6 +331,7 @@ async fn run() -> Result<()> {
                         api_key_env: api_key_env.clone(),
                     },
                     ProfileUpdate {
+                        context_window: *context_window,
                         normal_reasoning: *normal_reasoning,
                         normal_max_tokens: *normal_max_tokens,
                         normal_temperature: *normal_temperature,
@@ -348,8 +352,10 @@ async fn run() -> Result<()> {
                 model_port,
                 model,
                 api_key_env,
+                context_window,
                 clear_preset,
                 clear_api_key_env,
+                clear_context_window,
                 normal_reasoning,
                 normal_max_tokens,
                 normal_temperature,
@@ -371,8 +377,10 @@ async fn run() -> Result<()> {
                     model_port: *model_port,
                     model: model.clone(),
                     api_key_env: api_key_env.clone(),
+                    context_window: *context_window,
                     clear_preset: *clear_preset,
                     clear_api_key_env: *clear_api_key_env,
+                    clear_context_window: *clear_context_window,
                     normal_reasoning: *normal_reasoning,
                     normal_max_tokens: *normal_max_tokens,
                     normal_temperature: *normal_temperature,
@@ -453,6 +461,9 @@ async fn run() -> Result<()> {
             println!("{message}");
         } else {
             explain::print_debug(&snapshot)?;
+            if let Ok(resolved) = loader.resolve(cli.profile.as_deref()) {
+                print_debug_context(&resolved.model);
+            }
         }
         return Ok(());
     }
@@ -484,6 +495,27 @@ async fn run() -> Result<()> {
         cli.port,
     )
     .await
+}
+
+fn print_debug_context(model: &config::ResolvedProfile) {
+    let capacity = context::ContextCapacity {
+        profile_limit: model.context_window,
+        ..Default::default()
+    };
+    for (label, generation, deep) in [
+        ("Normal", &model.normal, false),
+        ("Deep", &model.deep, true),
+    ] {
+        let budget = context::ContextBudget::for_generation(&capacity, generation, deep);
+        println!(
+            "\nContext planning ({label}, no network discovery)\n  Capacity: {} tokens ({:?})\n  Output reserve: {} tokens\n  Safety margin: {} tokens\n  Available input: {} tokens",
+            budget.total,
+            capacity.effective().source,
+            budget.output_reserve,
+            budget.safety_margin,
+            budget.input_budget,
+        );
+    }
 }
 
 fn display_provider_name(value: &str) -> &str {
@@ -577,7 +609,9 @@ async fn test_profile(name: &str, model: &config::ResolvedProfile) -> Result<Str
             model.base_url
         )
     })?;
-    if response.status().is_success() {
+    let listing_status = response.status();
+    let listed_models = listing_status.is_success();
+    if listed_models {
         let listing: serde_json::Value = response.json().await.context("read model listing")?;
         if let Some(models) = listing.get("data").and_then(serde_json::Value::as_array) {
             let found = models.iter().any(|entry| {
@@ -590,21 +624,31 @@ async fn test_profile(name: &str, model: &config::ResolvedProfile) -> Result<Str
                 );
             }
         }
-        return Ok(profile_test_success(name, model, "verified"));
-    }
-    if matches!(
-        response.status(),
+        if model.preset.as_deref() != Some("ollama")
+            || model::openai::discover_context_capacity(model)
+                .await
+                .runtime_allocated
+                .is_some()
+        {
+            return Ok(profile_test_success(name, model, "verified").await);
+        }
+        // The OpenAI model listing does not mean Ollama has loaded this model.
+        // Continue to the tiny, source-free probe so /api/ps can report runtime context.
+    } else if matches!(
+        listing_status,
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
     ) {
         anyhow::bail!("Profile: {name}\n\nThe model endpoint rejected authentication.\n\nCredential source:\n{}", model.api_key_env.as_deref().unwrap_or("<none>"));
     }
-    if !matches!(
-        response.status(),
-        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
-    ) {
+    if !listed_models
+        && !matches!(
+            listing_status,
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+        )
+    {
         anyhow::bail!(
             "Profile: {name}\n\nThe endpoint returned HTTP {} while listing models.",
-            response.status()
+            listing_status
         );
     }
 
@@ -628,11 +672,7 @@ async fn test_profile(name: &str, model: &config::ResolvedProfile) -> Result<Str
         )
     })?;
     if response.status().is_success() {
-        Ok(profile_test_success(
-            name,
-            model,
-            "verified by a safe compatibility request",
-        ))
+        Ok(profile_test_success(name, model, "verified by a safe compatibility request").await)
     } else if matches!(
         response.status(),
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
@@ -651,9 +691,30 @@ async fn test_profile(name: &str, model: &config::ResolvedProfile) -> Result<Str
     }
 }
 
-fn profile_test_success(name: &str, model: &config::ResolvedProfile, availability: &str) -> String {
+async fn profile_test_success(
+    name: &str,
+    model: &config::ResolvedProfile,
+    availability: &str,
+) -> String {
+    let capacity = model::openai::discover_context_capacity(model).await;
+    let effective = capacity.effective();
+    let context = format!(
+        "\nContext:\n  Model maximum: {}\n  Runtime allocated: {}\n  git-explain limit: {}\n  Effective context: {} tokens ({:?})\n",
+        capacity.model_max.map_or_else(|| "unknown".into(), |value| format!("{value} tokens")),
+        capacity.runtime_allocated.map_or_else(|| "unknown".into(), |value| format!("{value} tokens")),
+        model.context_window.map_or_else(|| "automatic".into(), |value| format!("{value} tokens")),
+        effective.tokens,
+        effective.source,
+    );
+    let remediation = if model.preset.as_deref() == Some("ollama")
+        && capacity.runtime_allocated == Some(4096)
+    {
+        "\nOllama currently allocated 4096 tokens. This can be too small for larger explanations. Increase Ollama's context allocation, reload the model, then run this test again. `context_window` only caps git-explain's budget; it does not reconfigure Ollama.\n"
+    } else {
+        ""
+    };
     format!(
-        "Profile: {name}\n\nProvider: {}\nPreset: {}\nEndpoint: reachable\nAuthentication: {}\nModel: {}\nModel availability: {availability}\n\nProfile is ready.\n",
+        "Profile: {name}\n\nProvider: {}\nPreset: {}\nEndpoint: reachable\nAuthentication: {}\nModel: {}\nModel availability: {availability}\n{context}{remediation}\nProfile is ready.\n",
         display_provider_name(&model.provider),
         model.preset.as_deref().map(display_preset_name).unwrap_or("<none>"),
         if model.api_key_env.is_some() { "accepted" } else { "not required" },
@@ -685,6 +746,14 @@ fn user_facing_error(error: &anyhow::Error) -> String {
     if details.contains("daemon") || details.contains("bind loopback") {
         return format!(
             "The git-explain daemon could not complete the request. Try `git explain daemon status` or use `git explain --direct`.\nDetails: {details}"
+        );
+    }
+    if details.contains("context budget exceeded")
+        || details.contains("context length")
+        || details.contains("maximum context")
+    {
+        return format!(
+            "The configured model context is too small for this explanation.\n\n{details}\n\nFor Ollama, run `git explain profile test <name>` to inspect the runtime allocation, then increase Ollama's context and reload the model."
         );
     }
     if details.contains("connect")

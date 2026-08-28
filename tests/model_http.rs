@@ -24,6 +24,7 @@ fn provider(base_url: String, timeout: Duration) -> OpenAiProvider {
             model: "unsloth-test".into(),
             api_key_env: None,
             api_key: None,
+            context_window: None,
             normal: GenerationConfig {
                 reasoning: Some(false),
                 max_tokens: Some(500),

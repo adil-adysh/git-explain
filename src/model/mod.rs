@@ -73,6 +73,18 @@ pub fn user_facing_error(error: &anyhow::Error) -> UserFacingError {
             retryable: true,
         };
     }
+    if text.contains("context budget exceeded")
+        || text.contains("context length")
+        || text.contains("maximum context")
+        || text.contains("prompt is too long")
+        || text.contains("request too large")
+    {
+        return UserFacingError {
+            code: "context_exceeded",
+            message: "The model context is too small for this explanation. Reduce the change or increase the model server context allocation.",
+            retryable: false,
+        };
+    }
     if text.contains("http 401") || text.contains("http 403") || text.contains("unauthorized") {
         return UserFacingError {
             code: "model_auth",

@@ -90,6 +90,8 @@ pub struct ResolvedProfile {
     pub model: String,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
+    /// A git-explain budgeting cap; never a model-server configuration command.
+    pub context_window: Option<u32>,
     pub normal: GenerationConfig,
     pub deep: GenerationConfig,
 }
@@ -537,6 +539,8 @@ pub struct ProfileUpdate {
     pub api_key_env: Option<String>,
     pub clear_preset: bool,
     pub clear_api_key_env: bool,
+    pub context_window: Option<u32>,
+    pub clear_context_window: bool,
     pub normal_reasoning: Option<bool>,
     pub normal_max_tokens: Option<u32>,
     pub normal_temperature: Option<f32>,
@@ -586,6 +590,7 @@ pub fn add_profile_with_update(
     if let Some(name) = profile.api_key_env {
         value.insert("api_key_env".into(), toml::Value::String(name));
     }
+    set_u32(&mut value, "context_window", update.context_window);
     generation_update(
         &mut value,
         "normal",
@@ -660,8 +665,10 @@ fn apply_profile_update(root: &mut toml::Value, name: &str, update: &ProfileUpda
     set(profile, "base_url", update.base_url.clone());
     set(profile, "model", update.model.clone());
     set(profile, "api_key_env", update.api_key_env.clone());
+    set_u32(profile, "context_window", update.context_window);
     clear(profile, "preset", update.clear_preset);
     clear(profile, "api_key_env", update.clear_api_key_env);
+    clear(profile, "context_window", update.clear_context_window);
     generation_update(profile, "normal", normal_update)?;
     generation_update(profile, "deep", deep_update)?;
     let preset = resolve_preset(profile.get("preset").and_then(toml::Value::as_str))?;
@@ -688,6 +695,8 @@ impl ProfileUpdate {
             || self.api_key_env.is_some()
             || self.clear_preset
             || self.clear_api_key_env
+            || self.context_window.is_some()
+            || self.clear_context_window
             || self.normal_reasoning.is_some()
             || self.normal_max_tokens.is_some()
             || self.normal_temperature.is_some()
@@ -1236,6 +1245,8 @@ pub fn example_config() -> &'static str {
 # model = "your-model"
 # Store only an environment variable name here, never a secret value.
 # api_key_env = "LOCAL_MODEL_API_KEY"
+# Optional git-explain context budget cap; it never configures the model server.
+# context_window = 32768
 #
 # [profiles.local.normal]
 # Omit reasoning to let the provider/model decide.
@@ -1503,7 +1514,7 @@ fn yes_no(value: bool) -> &'static str {
 }
 
 pub fn format_profile_show(config: &ResolvedConfig) -> String {
-    format!("Profile: {}\nDefinition source: user configuration\n\nProvider: {}\nPreset: {}\nBase URL: {}\nModel: {}\nAPI key environment variable: {}\nAPI key configured: {}\n\nNormal:\nReasoning: {}\nMax tokens: {}\nTemperature: {}\n\nDeep:\nReasoning: {}\nMax tokens: {}\nTemperature: {}\n", config.profile, display_provider(&config.model.provider), config.model.preset.as_deref().map(display_preset).unwrap_or("unspecified"), config.model.base_url, config.model.model, config.model.api_key_env.as_deref().unwrap_or("unspecified"), if config.model.api_key.is_some() { "yes" } else { "no" }, display_optional(config.model.normal.reasoning), display_optional(config.model.normal.max_tokens), display_optional(config.model.normal.temperature), display_optional(config.model.deep.reasoning), display_optional(config.model.deep.max_tokens), display_optional(config.model.deep.temperature))
+    format!("Profile: {}\nDefinition source: user configuration\n\nProvider: {}\nPreset: {}\nBase URL: {}\nModel: {}\nAPI key environment variable: {}\nAPI key configured: {}\nContext budget limit: {}\n\nNormal:\nReasoning: {}\nMax tokens: {}\nTemperature: {}\n\nDeep:\nReasoning: {}\nMax tokens: {}\nTemperature: {}\n", config.profile, display_provider(&config.model.provider), config.model.preset.as_deref().map(display_preset).unwrap_or("unspecified"), config.model.base_url, config.model.model, config.model.api_key_env.as_deref().unwrap_or("unspecified"), if config.model.api_key.is_some() { "yes" } else { "no" }, display_optional(config.model.context_window), display_optional(config.model.normal.reasoning), display_optional(config.model.normal.max_tokens), display_optional(config.model.normal.temperature), display_optional(config.model.deep.reasoning), display_optional(config.model.deep.max_tokens), display_optional(config.model.deep.temperature))
 }
 
 fn display_optional<T: std::fmt::Display>(value: Option<T>) -> String {
@@ -1605,6 +1616,7 @@ struct PartialProfileConfig {
     base_url: Option<String>,
     model: Option<String>,
     api_key_env: Option<String>,
+    context_window: Option<u32>,
     normal: Option<PartialGenerationConfig>,
     deep: Option<PartialGenerationConfig>,
 }
@@ -1625,6 +1637,9 @@ impl PartialProfileConfig {
         }
         if other.api_key_env.is_some() {
             self.api_key_env = other.api_key_env;
+        }
+        if other.context_window.is_some() {
+            self.context_window = other.context_window;
         }
         merge_option(&mut self.normal, other.normal, |left, right| {
             left.merge(right)
@@ -1907,6 +1922,7 @@ fn resolve(
             .api_key_env
             .as_deref()
             .and_then(|name| std::env::var(name).ok()),
+        context_window: profile_partial.context_window,
         normal: generation(profile_partial.normal.clone()),
         deep: generation(profile_partial.deep.clone()),
     };
@@ -1949,6 +1965,9 @@ fn validate_model_config(model: &ResolvedProfile, profile: &str) -> Result<()> {
         .is_some_and(|value| value.trim().is_empty())
     {
         anyhow::bail!("profile '{profile}' api_key_env must not be empty");
+    }
+    if model.context_window == Some(0) {
+        anyhow::bail!("profile '{profile}' context_window must be greater than zero");
     }
     validate_generation(&model.normal, profile, "normal")?;
     validate_generation(&model.deep, profile, "deep")
@@ -2210,6 +2229,7 @@ mod tests {
             "# base_url = \"http://127.0.0.1:8080/v1\"",
             "# model = \"your-model\"",
             "# api_key_env = \"LOCAL_MODEL_API_KEY\"",
+            "# context_window = 32768",
             "# reasoning = false",
             "# reasoning = true",
             "# max_tokens = 500",
@@ -2369,6 +2389,7 @@ mod tests {
             &path,
             "local",
             ProfileUpdate {
+                context_window: Some(16_384),
                 model: Some("new".into()),
                 clear_preset: true,
                 clear_api_key_env: true,
@@ -2457,6 +2478,7 @@ mod tests {
                 api_key_env: Some("MODEL_KEY".into()),
             },
             ProfileUpdate {
+                context_window: Some(16_384),
                 normal_reasoning: Some(false),
                 normal_max_tokens: Some(600),
                 normal_temperature: Some(0.2),
@@ -2472,6 +2494,7 @@ mod tests {
             .unwrap();
         assert_eq!(resolved.model.base_url, "http://127.0.0.1:9000/v1");
         assert_eq!(resolved.model.api_key_env.as_deref(), Some("MODEL_KEY"));
+        assert_eq!(resolved.model.context_window, Some(16_384));
         assert_eq!(resolved.model.normal.reasoning, Some(false));
         assert_eq!(resolved.model.normal.max_tokens, Some(600));
         assert_eq!(resolved.model.normal.temperature, Some(0.2));
