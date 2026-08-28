@@ -115,6 +115,7 @@ impl FileAnalysis {
                 .insert(id.into(), result.deep.unwrap_or(result.overview));
         } else {
             self.explanations.insert(id.into(), result);
+            self.deep_explanations.remove(id);
         }
         true
     }
@@ -153,4 +154,36 @@ pub fn unit_key(unit: &crate::change_set::SemanticUnit) -> String {
         unit.source
     );
     format!("{:x}", Sha256::digest(identity.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacing_normal_explanation_invalidates_deep_result() {
+        let source = crate::change_set::SourceFile {
+            path: "lib.rs".into(),
+            content: "fn inspect() {}\n".into(),
+        };
+        let document = crate::semantic::extract_document(&source).unwrap();
+        let id = unit_key(&document.units[0]);
+        let mut analysis = FileAnalysis {
+            revision: None,
+            documents: vec![document],
+            explanations: Default::default(),
+            deep_explanations: BTreeMap::from([(id.clone(), "Old detail".into())]),
+        };
+
+        assert!(analysis.apply(
+            &id,
+            UnitExplanation {
+                overview: "New overview".into(),
+                annotations: vec![],
+                deep: None,
+            },
+            false,
+        ));
+        assert!(!analysis.deep_explanations.contains_key(&id));
+    }
 }

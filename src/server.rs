@@ -100,6 +100,11 @@ pub async fn serve_file(
         .route("/", get(file_index))
         .route("/api/file-units/{id}/explain", post(file_explain))
         .route("/api/file-units/{id}/deep", post(file_deep))
+        .route("/api/file-units/{id}/regenerate", post(file_regenerate))
+        .route(
+            "/api/file-units/{id}/deep/regenerate",
+            post(file_deep_regenerate),
+        )
         .with_state(state);
     let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
     let url = format!("http://{}", listener.local_addr()?);
@@ -119,19 +124,34 @@ async fn file_explain(
     Path(id): Path<String>,
     State(state): State<Arc<FileStateData>>,
 ) -> Json<serde_json::Value> {
-    generate_file(id, false, state).await
+    generate_file(id, false, false, state).await
 }
 
 async fn file_deep(
     Path(id): Path<String>,
     State(state): State<Arc<FileStateData>>,
 ) -> Json<serde_json::Value> {
-    generate_file(id, true, state).await
+    generate_file(id, true, false, state).await
+}
+
+async fn file_regenerate(
+    Path(id): Path<String>,
+    State(state): State<Arc<FileStateData>>,
+) -> Json<serde_json::Value> {
+    generate_file(id, false, true, state).await
+}
+
+async fn file_deep_regenerate(
+    Path(id): Path<String>,
+    State(state): State<Arc<FileStateData>>,
+) -> Json<serde_json::Value> {
+    generate_file(id, true, true, state).await
 }
 
 async fn generate_file(
     id: String,
     deep: bool,
+    regenerate: bool,
     state: Arc<FileStateData>,
 ) -> Json<serde_json::Value> {
     let request = {
@@ -153,15 +173,17 @@ async fn generate_file(
     };
     let key =
         ExplanationCache::snapshot_key(&request, &state.model, &state.reader, &state.explanation);
-    if let Some(cache) = &state.cache {
-        if let Ok(Some(json)) = cache.get(&key) {
-            if let Ok(result) = serde_json::from_str::<UnitExplanation>(&json) {
-                state
-                    .analysis
-                    .lock()
-                    .unwrap()
-                    .apply(&id, result.clone(), deep);
-                return Json(runtime::result(result, true, deep));
+    if !regenerate {
+        if let Some(cache) = &state.cache {
+            if let Ok(Some(json)) = cache.get(&key) {
+                if let Ok(result) = serde_json::from_str::<UnitExplanation>(&json) {
+                    state
+                        .analysis
+                        .lock()
+                        .unwrap()
+                        .apply(&id, result.clone(), deep);
+                    return Json(runtime::result(result, true, deep));
+                }
             }
         }
     }

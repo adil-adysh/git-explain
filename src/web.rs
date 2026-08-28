@@ -16,7 +16,7 @@ pub fn render(change_set: &ChangeSet) -> String {
 
 pub fn render_file_analysis(analysis: &FileAnalysis) -> String {
     let mut html = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>git-explain files</title><style>body{{font:1rem/1.55 system-ui,sans-serif;max-width:1100px;margin:auto;padding:2rem}}section,article{{border:1px solid #bbb;border-radius:.6rem;padding:1.25rem;margin:1.25rem 0}}pre,textarea{{box-sizing:border-box;width:100%;overflow:auto;padding:1rem;white-space:pre;font:.9rem/1.55 ui-monospace,monospace}}button{{margin:.25rem;padding:.45rem .7rem}}</style></head><body><main><h1>Files</h1><p>Revision: {}</p><p id=\"status\" role=\"status\" aria-live=\"polite\"></p>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>git-explain files</title><style>body{{font:1rem/1.55 system-ui,sans-serif;max-width:1100px;margin:auto;padding:2rem}}section,article{{border:1px solid #bbb;border-radius:.6rem;padding:1.25rem;margin:1.25rem 0}}pre,textarea{{box-sizing:border-box;width:100%;overflow:auto;padding:1rem;white-space:pre;font:.9rem/1.55 ui-monospace,monospace}}button{{margin:.25rem;padding:.45rem .7rem}}</style></head><body><main><h1>Files</h1><p>Revision: {}</p><button id=\"toggle-explanations\">Hide explanations</button><p id=\"status\" role=\"status\" aria-live=\"polite\"></p>",
         escape(analysis.revision.as_deref().unwrap_or("working tree"))
     );
     for document in &analysis.documents {
@@ -37,11 +37,12 @@ pub fn render_file_analysis(analysis: &FileAnalysis) -> String {
                 .map(|value| value.overview.as_str())
                 .unwrap_or("Explanation has not been generated.");
             let deep = analysis.deep_explanations.get(&id);
-            html.push_str(&format!("<article data-unit-id=\"{id}\"><h3>{}</h3><p>{:?} · lines {}–{}</p><h4>Overview</h4><p class=\"overview\">{}</p><button data-endpoint=\"/api/file-units/{id}/explain\">Generate explanation</button><button data-deep=\"true\" data-endpoint=\"/api/file-units/{id}/deep\">Explain this code in depth</button><button class=\"source-toggle\">Read code as text</button><h4>Code and explanation</h4><div class=\"source-code\">{}</div><textarea class=\"source-text\" readonly hidden>{}</textarea><section class=\"deep-section\" {}><h4>Detailed explanation</h4><p class=\"deep\">{}</p></section></article>", escape(&unit.identity.qualified_name), unit.identity.kind, unit.location.start_line, unit.location.end_line, escape(explanation), rendered_source(&unit.source, analysis.explanations.get(&id).map(|value|value.annotations.as_slice()).unwrap_or(&[])), escape(&unit.source), if deep.is_some(){""}else{"hidden"}, escape(deep.map(String::as_str).unwrap_or(""))));
+            let normal_cached = analysis.explanations.contains_key(&id);
+            html.push_str(&format!("<article data-unit-id=\"{id}\"><h3>{}</h3><p>{:?} · lines {}–{}</p><h4>Overview</h4><p class=\"overview explanation\">{}</p><button data-endpoint=\"/api/file-units/{id}/{}\" data-regenerate-label=\"Regenerate explanation\">{}</button><button data-deep=\"true\" data-endpoint=\"/api/file-units/{id}/{}\" data-regenerate-label=\"Regenerate in-depth explanation\">{}</button><button class=\"source-toggle\">Read code as text</button><h4>Code and explanation</h4><div class=\"source-code\">{}</div><textarea class=\"source-text\" readonly hidden>{}</textarea><section class=\"deep-section explanation\" {}><h4>Detailed explanation</h4><p class=\"deep\">{}</p></section></article>", escape(&unit.identity.qualified_name), unit.identity.kind, unit.location.start_line, unit.location.end_line, escape(explanation), if normal_cached{"regenerate"}else{"explain"}, if normal_cached{"Regenerate explanation"}else{"Generate explanation"}, if deep.is_some(){"deep/regenerate"}else{"deep"}, if deep.is_some(){"Regenerate in-depth explanation"}else{"Explain this code in depth"}, rendered_source(&unit.source, analysis.explanations.get(&id).map(|value|value.annotations.as_slice()).unwrap_or(&[])), escape(&unit.source), if deep.is_some(){""}else{"hidden"}, escape(deep.map(String::as_str).unwrap_or(""))));
         }
         html.push_str("</section>");
     }
-    html.push_str(r#"<script>const status=document.querySelector('#status');async function explain(button){const label=button.textContent;button.disabled=true;button.textContent='Generating…';try{const value=await(await fetch(button.dataset.endpoint,{method:'POST'})).json();if(!value.ok)throw Error(value.error);const article=button.closest('article');if(button.dataset.deep==='true'){article.querySelector('.deep').textContent=value.deep||value.overview;article.querySelector('.deep-section').hidden=false}else{article.querySelector('.overview').textContent=value.overview||'Explanation unavailable.'}status.textContent='Explanation ready.'}catch(error){status.textContent=error.message}finally{button.disabled=false;button.textContent=label}}document.querySelectorAll('[data-endpoint]').forEach(button=>button.onclick=()=>explain(button));document.querySelectorAll('.source-toggle').forEach(button=>button.onclick=()=>{const article=button.closest('article'),code=article.querySelector('.source-code'),text=article.querySelector('.source-text'),open=text.hidden;text.hidden=!open;code.hidden=open;button.textContent=open?'Show rendered code':'Read code as text'});</script></main></body></html>"#);
+    html.push_str(r#"<script>const status=document.querySelector('#status');function announce(value){status.textContent=value}function escapeHtml(value){return value.replace(/[&<>"']/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]))}function renderAnnotations(article,annotations){const lines=article.querySelector('.source-text').value.split('\n'),target=article.querySelector('.source-code');let cursor=0,html='';(annotations||[]).slice().sort((a,b)=>a.start_line-b.start_line).forEach(annotation=>{const start=Math.max(cursor,Math.min(lines.length,annotation.start_line-1)),end=Math.max(start,Math.min(lines.length,annotation.end_line));if(start>cursor)html+='<pre><code>'+escapeHtml(lines.slice(cursor,start).join('\n'))+'</code></pre>';if(end>start)html+='<pre><code>'+escapeHtml(lines.slice(start,end).join('\n'))+'</code></pre><section class="explanation"><h4>'+escapeHtml(annotation.kind)+'</h4><p>'+escapeHtml(annotation.text)+'</p></section>';cursor=end});if(cursor<lines.length)html+='<pre><code>'+escapeHtml(lines.slice(cursor).join('\n'))+'</code></pre>';target.innerHTML=html}async function explain(button){const original=button.textContent;button.disabled=true;button.textContent='Generating…';try{const value=await(await fetch(button.dataset.endpoint,{method:'POST'})).json();if(!value.ok)throw Error(value.error);const article=button.closest('article');if(button.dataset.deep==='true'){article.querySelector('.deep').textContent=value.deep||value.overview;article.querySelector('.deep-section').hidden=false}else{article.querySelector('.overview').textContent=value.overview||'Explanation unavailable.';renderAnnotations(article,value.annotations);article.querySelector('.deep').textContent='';article.querySelector('.deep-section').hidden=true}button.dataset.endpoint+=button.dataset.endpoint.endsWith('/regenerate')?'':'/regenerate';button.textContent=button.dataset.regenerateLabel;announce(value.cached?'Cached explanation ready.':'Explanation ready.')}catch(error){button.textContent=original;announce(error.message)}finally{button.disabled=false}}document.querySelectorAll('[data-endpoint]').forEach(button=>button.onclick=()=>explain(button));document.querySelectorAll('.source-toggle').forEach(button=>button.onclick=()=>{const article=button.closest('article'),code=article.querySelector('.source-code'),text=article.querySelector('.source-text'),open=text.hidden;text.hidden=!open;code.hidden=open;button.textContent=open?'Show rendered code':'Read code as text';announce(open?'Text code view available.':'Rendered code view available.')});document.querySelector('#toggle-explanations').onclick=event=>{const hide=event.target.textContent.startsWith('Hide');document.querySelectorAll('.explanation').forEach(element=>element.hidden=hide);event.target.textContent=hide?'Show explanations':'Hide explanations';announce(hide?'Explanations hidden.':'Explanations shown.')};</script></main></body></html>"#);
     html
 }
 pub fn render_for_session_at_generation(
@@ -271,7 +272,48 @@ mod tests {
         assert!(html.contains("Generate explanation"));
         assert!(html.contains("Explain this code in depth"));
         assert!(html.contains("Read code as text"));
+        assert!(html.contains("Hide explanations"));
+        assert!(html.contains("renderAnnotations(article,value.annotations)"));
         assert!(!html.contains("Status: Added"));
         assert!(!html.contains("Show Git diff"));
+    }
+
+    #[test]
+    fn file_analysis_renders_cached_results_with_regenerate_actions() {
+        let source = crate::change_set::SourceFile {
+            path: "src/lib.rs".into(),
+            content: "fn inspect() {}\n".into(),
+        };
+        let document = crate::semantic::extract_document(&source).unwrap();
+        let id = unit_key(&document.units[0]);
+        let mut analysis = FileAnalysis {
+            revision: Some("abc123".into()),
+            documents: vec![document],
+            explanations: Default::default(),
+            deep_explanations: Default::default(),
+        };
+        analysis.explanations.insert(
+            id.clone(),
+            crate::model::UnitExplanation {
+                overview: "Cached overview".into(),
+                annotations: vec![crate::model::Annotation {
+                    start_line: 1,
+                    end_line: 1,
+                    kind: "Behavior".into(),
+                    text: "Cached annotation".into(),
+                }],
+                deep: None,
+            },
+        );
+        analysis
+            .deep_explanations
+            .insert(id.clone(), "Cached detail".into());
+
+        let html = render_file_analysis(&analysis);
+        assert!(html.contains(&format!("/api/file-units/{id}/regenerate")));
+        assert!(html.contains(&format!("/api/file-units/{id}/deep/regenerate")));
+        assert!(html.contains("Cached overview"));
+        assert!(html.contains("Cached annotation"));
+        assert!(html.contains("Cached detail"));
     }
 }
