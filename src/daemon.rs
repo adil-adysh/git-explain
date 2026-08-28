@@ -728,8 +728,11 @@ async fn change_set_json(
     Path(session_id): Path<String>,
     State(state): State<Arc<DaemonState>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let session = current(&state, &session_id).await.ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(session.change_set.lock().unwrap().json()))
+    let session = current(&state, &session_id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let value = session.change_set.lock().unwrap().json();
+    Ok(Json(value))
 }
 async fn current(state: &DaemonState, id: &str) -> Option<Arc<RepositorySession>> {
     let session = state.sessions.read().await.get(id).cloned()?;
