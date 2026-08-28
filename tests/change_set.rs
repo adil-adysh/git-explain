@@ -151,3 +151,34 @@ fn binary_and_mode_only_changes_are_deterministic_and_not_explainable() {
         .any(|file| file.mode_changed() && file.semantic_changes.is_empty()));
     assert_eq!(changes.explainable_changes().count(), 0);
 }
+
+#[test]
+fn exact_copy_and_weird_unicode_paths_stay_file_level_metadata() {
+    let dir = repo();
+    std::fs::write(dir.path().join("source.rs"), "fn copied() {}\n").unwrap();
+    std::fs::write(dir.path().join("sp ace-λ.rs"), "fn original() {}\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::copy(dir.path().join("source.rs"), dir.path().join("copy.rs")).unwrap();
+    std::fs::write(dir.path().join("sp ace-λ.rs"), "fn changed() {}\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "copy"]);
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    let copy = changes
+        .files
+        .iter()
+        .find(|file| file.new_path.as_deref() == Some(Path::new("copy.rs")))
+        .unwrap();
+    assert_eq!(copy.kind, FileChangeKind::Copied);
+    assert_eq!(copy.similarity, Some(100));
+    assert!(copy
+        .semantic_changes
+        .iter()
+        .all(|change| change.kind == SemanticUnitChangeKind::Preserved));
+    assert!(changes
+        .files
+        .iter()
+        .any(|file| file.new_path.as_deref() == Some(Path::new("sp ace-λ.rs"))));
+}
