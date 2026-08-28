@@ -79,6 +79,17 @@ async fn run() -> Result<()> {
                             .map_or_else(|| "not available".into(), |v| format!("{v} tokens")),
                         recommendation.reason
                     );
+                    if let Some(target) = recommendation.target {
+                        if let Some(bottleneck) = context_bottleneck(&caps.capacity, target) {
+                            println!("Current limiting layer: {bottleneck}");
+                        }
+                    }
+                    if matches!(
+                        recommendation.state,
+                        ollama_context::RecommendationState::Increase
+                    ) {
+                        println!("Configure Ollama with the recommended context, reload the model, then run: git explain profile test {}", resolved.profile);
+                    }
                 }
             }
             ContextAction::Reset { force } => {
@@ -567,6 +578,22 @@ fn print_context_stats(
 
 fn format_signed_tokens(value: i64) -> String {
     format!("{value:+} tokens")
+}
+
+fn context_bottleneck(capacity: &context::ContextCapacity, target: u32) -> Option<String> {
+    let effective = capacity.effective();
+    (effective.tokens < target).then(|| match effective.source {
+        context::ContextSource::RuntimeDetected => {
+            format!("Ollama runtime allocation ({} tokens)", effective.tokens)
+        }
+        context::ContextSource::ProfileConfigured => {
+            format!("profile context_window ({} tokens)", effective.tokens)
+        }
+        context::ContextSource::ModelMetadata => {
+            format!("model maximum ({} tokens)", effective.tokens)
+        }
+        context::ContextSource::ConservativeFallback => "unknown runtime capacity".into(),
+    })
 }
 
 fn print_debug_context(model: &config::ResolvedProfile) {

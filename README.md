@@ -130,7 +130,7 @@ git explain context recommend --profile ollama
 git explain context reset --profile ollama --force
 ```
 
-Recommendations need at least 10 recent requests and use the observed p95 ideal requirement plus 20% headroom, rounded to a conservative context tier and capped at the model maximum. A decrease is deliberately reported only as a potential decrease after a longer stable history; change Ollama's configuration yourself, reload the model, and verify it with `git explain profile test ollama`.
+Recommendations need at least 10 recent requests and use the observed p95 ideal requirement plus 20% headroom, rounded to a conservative context tier and capped at the model maximum. A decrease is deliberately reported only as a potential decrease after a longer stable history; change Ollama's configuration yourself, reload the model, and verify it with `git explain profile test ollama`. Context is not resized per request because changing it can require runner and KV-cache reallocation; each request is still budgeted independently while the history recommends one stable server setting.
 
 llama.cpp is likewise controlled when its server starts, with `--ctx-size`; its OpenAI-compatible endpoint receives no invented context-size field. When a llama.cpp router exposes its model data through `/v1/models`, `git explain profile test` reports both `meta.n_ctx_train` (the model maximum) and the configured startup context (the fixed runtime bound). Generic OpenAI-compatible profiles are treated conservatively unless a dedicated adapter has verified a request-scoped context option. `git explain --debug` and `git explain profile test <name>` show which control mode applies.
 

@@ -783,6 +783,7 @@ impl OpenAiProvider {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn track_ollama_success(
         &self,
         request: &ExplanationRequest,
