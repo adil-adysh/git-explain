@@ -419,6 +419,7 @@ async fn run(port: u16) -> Result<()> {
         .route("/api/repos/open", post(open))
         .route("/api/repos/refresh", post(refresh))
         .route("/api/sessions/{session}/snapshot", get(snapshot_status))
+        .route("/api/sessions/{session}/changes", get(change_set_json))
         .route("/sessions/{id}", get(session_page))
         .route("/api/sessions/{session}/units/{id}/explain", post(explain))
         .route("/api/sessions/{session}/units/{id}/deep", post(deep))
@@ -722,6 +723,13 @@ async fn snapshot_status(
         "generation": session.change_set.lock().unwrap().generation.0,
         "identity": session.change_set.lock().unwrap().identity.clone(),
     })))
+}
+async fn change_set_json(
+    Path(session_id): Path<String>,
+    State(state): State<Arc<DaemonState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let session = current(&state, &session_id).await.ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(session.change_set.lock().unwrap().json()))
 }
 async fn current(state: &DaemonState, id: &str) -> Option<Arc<RepositorySession>> {
     let session = state.sessions.read().await.get(id).cloned()?;
