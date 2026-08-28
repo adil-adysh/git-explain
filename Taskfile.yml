@@ -27,6 +27,21 @@ tasks:
     cmds:
       - cargo build --release
 
+  test-live-ollama:
+    desc: Run the opt-in real Ollama context and OpenAI-compatibility probe.
+    cmds:
+      - cargo test --test live_context live_ollama -- --ignored --nocapture
+
+  test-live-llama-cpp:
+    desc: Run the opt-in real llama.cpp OpenAI-compatibility probe.
+    cmds:
+      - cargo test --test live_context live_llama_cpp -- --ignored --nocapture
+
+  test-live-context:
+    desc: Run all opt-in real model-server context probes.
+    cmds:
+      - cargo test --test live_context -- --ignored --nocapture
+
   install:
     aliases: [install-release]
     desc: Build and install the release binary into the user-local Git bin directory.

@@ -1,7 +1,11 @@
 use super::*;
 use crate::{
     config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile},
-    context::{ConservativeTokenEstimator, ContextBudget, ContextCapacity, PromptPlan},
+    context::{
+        calculate_context_requirement, negotiate_context, ConservativeTokenEstimator,
+        ContextBudget, ContextCapabilities, ContextCapacity, ContextControl, ContextNegotiation,
+        PromptPlan,
+    },
 };
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -14,27 +18,59 @@ use std::time::{Duration, Instant};
 /// Failures are deliberately non-fatal: generic compatible endpoints need not
 /// expose these native diagnostic routes.
 pub async fn discover_context_capacity(model: &ResolvedProfile) -> ContextCapacity {
+    discover_context_capabilities(model).await.capacity
+}
+
+/// Discover capacity separately from whether the selected transport can alter
+/// it. In particular, Ollama's native diagnostic API is not an instruction to
+/// add non-standard fields to its OpenAI-compatible inference requests.
+pub async fn discover_context_capabilities(model: &ResolvedProfile) -> ContextCapabilities {
+    let kind = provider_kind_for_profile(model);
+    let capacity = discover_context_capacity_for(
+        &Client::new(),
+        kind,
+        &model.base_url,
+        &model.model,
+        model.context_window,
+    )
+    .await;
+    ContextCapabilities {
+        capacity,
+        control: kind.context_control(),
+    }
+}
+
+pub fn context_control_for_profile(model: &ResolvedProfile) -> ContextControl {
+    provider_kind_for_profile(model).context_control()
+}
+
+fn provider_kind_for_profile(model: &ResolvedProfile) -> ProviderKind {
+    ProviderKind::from_preset(model.preset.as_deref())
+}
+
+async fn discover_context_capacity_for(
+    client: &Client,
+    kind: ProviderKind,
+    base_url: &str,
+    model: &str,
+    profile_limit: Option<u32>,
+) -> ContextCapacity {
     let mut capacity = ContextCapacity {
-        profile_limit: model.context_window,
+        profile_limit,
         ..ContextCapacity::default()
     };
-    if !model
-        .preset
-        .as_deref()
-        .is_some_and(|preset| preset == "ollama")
-    {
+    if !kind.is_ollama() {
         return capacity;
     }
-    let client = Client::new();
-    let base = model.base_url.trim_end_matches('/').trim_end_matches("/v1");
+    let base = base_url.trim_end_matches('/').trim_end_matches("/v1");
     if let Ok(response) = client.get(format!("{base}/api/ps")).send().await {
         if let Ok(value) = response.json::<Value>().await {
-            capacity.runtime_allocated = ollama_runtime_context(&value, &model.model);
+            capacity.runtime_allocated = ollama_runtime_context(&value, model);
         }
     }
     if let Ok(response) = client
         .post(format!("{base}/api/show"))
-        .json(&json!({"model": model.model}))
+        .json(&json!({"model": model}))
         .send()
         .await
     {
@@ -99,6 +135,33 @@ impl ProviderKind {
     }
     fn is_ollama(self) -> bool {
         matches!(self, Self::Ollama)
+    }
+
+    pub const fn context_control(self) -> ContextControl {
+        match self {
+            // llama.cpp configures --ctx-size when its server starts. Ollama's
+            // OpenAI-compatible endpoint has no request context-size option.
+            Self::LlamaCpp | Self::Ollama => ContextControl::FixedRuntime,
+            Self::OpenAiCompatible => ContextControl::Unknown,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct InferenceRequestOptions {
+    requested_context: Option<u32>,
+}
+
+impl InferenceRequestOptions {
+    fn for_negotiation(negotiation: &ContextNegotiation) -> Self {
+        // This is deliberately the sole adapter boundary for a future verified
+        // request-scoped context option. Current OpenAI-compatible adapters do
+        // not serialize a non-standard context field.
+        Self {
+            requested_context: matches!(negotiation.control, ContextControl::PerRequest)
+                .then_some(negotiation.requested_context)
+                .flatten(),
+        }
     }
 }
 
@@ -468,22 +531,31 @@ impl OpenAiProvider {
         retry: bool,
     ) -> Result<UnitExplanation> {
         let payload = self.build_request_with_retry(request, retry);
-        let capacity = self.discover_context_capacity().await;
         let generation = if request.deep {
             &self.deep
         } else {
             &self.normal
         };
-        let budget = ContextBudget::for_generation(&capacity, generation, request.deep);
+        let requirement = calculate_context_requirement(
+            &payload.messages[1].content,
+            generation,
+            request.deep,
+            &ConservativeTokenEstimator,
+        );
+        let capabilities = self.discover_context_capabilities().await;
+        let negotiation = negotiate_context(&capabilities, requirement)?;
+        let request_options = InferenceRequestOptions::for_negotiation(&negotiation);
+        let budget = ContextBudget::from_negotiation(&negotiation);
         let plan = PromptPlan::check(
             &payload.messages[1].content,
             budget,
             &ConservativeTokenEstimator,
         )?;
         eprintln!(
-            "context plan: total={} output_reserve={} safety_margin={} input_budget={} estimated_input={}",
+            "context plan: control={} total={} output_reserve={} safety_margin={} input_budget={} estimated_input={} requested_context={:?}",
+            negotiation.control.description(),
             plan.budget.total, plan.budget.output_reserve, plan.budget.safety_margin,
-            plan.budget.input_budget, plan.estimated_input
+            plan.budget.input_budget, plan.estimated_input, request_options.requested_context,
         );
         let mut req = self
             .client
@@ -539,58 +611,19 @@ impl OpenAiProvider {
         })
     }
 
-    async fn discover_context_capacity(&self) -> ContextCapacity {
-        let mut capacity = ContextCapacity {
-            profile_limit: self.context_window,
-            ..ContextCapacity::default()
-        };
-        if !self.kind.is_ollama() {
-            return capacity;
+    async fn discover_context_capabilities(&self) -> ContextCapabilities {
+        let capacity = discover_context_capacity_for(
+            &self.client,
+            self.kind,
+            &self.base_url,
+            &self.model,
+            self.context_window,
+        )
+        .await;
+        ContextCapabilities {
+            capacity,
+            control: self.kind.context_control(),
         }
-        let base = self.base_url.trim_end_matches('/').trim_end_matches("/v1");
-        let ps = self.client.get(format!("{base}/api/ps")).send().await;
-        if let Ok(response) = ps {
-            if let Ok(value) = response.json::<Value>().await {
-                capacity.runtime_allocated = value
-                    .get("models")
-                    .and_then(Value::as_array)
-                    .and_then(|models| {
-                        models.iter().find(|entry| {
-                            ["name", "model"].iter().any(|key| {
-                                entry.get(*key).and_then(Value::as_str).is_some_and(|name| {
-                                    name == self.model
-                                        || name.strip_suffix(":latest") == Some(self.model.as_str())
-                                })
-                            })
-                        })
-                    })
-                    .and_then(|entry| entry.get("context_length"))
-                    .and_then(Value::as_u64)
-                    .and_then(|value| u32::try_from(value).ok());
-            }
-        }
-        let show = self
-            .client
-            .post(format!("{base}/api/show"))
-            .json(&json!({"model": self.model}))
-            .send()
-            .await;
-        if let Ok(response) = show {
-            if let Ok(value) = response.json::<Value>().await {
-                capacity.model_max = value
-                    .get("model_info")
-                    .and_then(Value::as_object)
-                    .and_then(|info| {
-                        info.iter().find_map(|(key, value)| {
-                            key.ends_with(".context_length")
-                                .then(|| value.as_u64())
-                                .flatten()
-                        })
-                    })
-                    .and_then(|value| u32::try_from(value).ok());
-            }
-        }
-        capacity
     }
 }
 

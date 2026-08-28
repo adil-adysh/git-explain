@@ -118,9 +118,11 @@ git explain profile edit local --context-window 32768
 git explain profile edit local --clear-context-window
 ```
 
-For Ollama, `git explain profile test ollama` also reads native `/api/show` metadata for the model's theoretical maximum and `/api/ps` for the context currently allocated to the loaded model. The runtime allocation is the hard bound: a model that supports 131072 tokens but is loaded with 4096 is budgeted as 4096.
+For Ollama, `git explain profile test ollama` also reads native `/api/show` metadata for the model's theoretical maximum and `/api/ps` for the context currently allocated to the loaded model. Because git-explain sends OpenAI-compatible `/v1/chat/completions` requests, that loaded runtime allocation is the hard bound: a model that supports 131072 tokens but is loaded with 4096 is budgeted as 4096.
 
 Ollama's OpenAI-compatible `/v1/chat/completions` API cannot increase context per request. Configure Ollama itself (for example, `OLLAMA_CONTEXT_LENGTH` before `ollama serve`, or a Modelfile with `PARAMETER num_ctx <tokens>`), reload the model, and run `git explain profile test ollama` again. Larger windows use more memory; choose one that fits the model and hardware.
+
+llama.cpp is likewise controlled when its server starts, with `--ctx-size`; its OpenAI-compatible endpoint receives no invented context-size field. Generic OpenAI-compatible profiles are treated conservatively unless a dedicated adapter has verified a request-scoped context option. `git explain --debug` and `git explain profile test <name>` show which control mode applies.
 
 Repository configuration at `.git/git-explain.toml` may select a logical profile name and repository-safe explanation and Git preferences:
 

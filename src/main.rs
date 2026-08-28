@@ -502,13 +502,15 @@ fn print_debug_context(model: &config::ResolvedProfile) {
         profile_limit: model.context_window,
         ..Default::default()
     };
+    let control = model::openai::context_control_for_profile(model);
     for (label, generation, deep) in [
         ("Normal", &model.normal, false),
         ("Deep", &model.deep, true),
     ] {
         let budget = context::ContextBudget::for_generation(&capacity, generation, deep);
         println!(
-            "\nContext planning ({label}, no network discovery)\n  Capacity: {} tokens ({:?})\n  Output reserve: {} tokens\n  Safety margin: {} tokens\n  Available input: {} tokens",
+            "\nContext planning ({label}, no network discovery)\n  Control: {}\n  Capacity: {} tokens ({:?})\n  Output reserve: {} tokens\n  Safety margin: {} tokens\n  Available input: {} tokens",
+            control.description(),
             budget.total,
             capacity.effective().source,
             budget.output_reserve,
@@ -696,10 +698,12 @@ async fn profile_test_success(
     model: &config::ResolvedProfile,
     availability: &str,
 ) -> String {
-    let capacity = model::openai::discover_context_capacity(model).await;
+    let capabilities = model::openai::discover_context_capabilities(model).await;
+    let capacity = &capabilities.capacity;
     let effective = capacity.effective();
     let context = format!(
-        "\nContext:\n  Model maximum: {}\n  Runtime allocated: {}\n  git-explain limit: {}\n  Effective context: {} tokens ({:?})\n",
+        "\nContext:\n  Control: {}\n  Model maximum: {}\n  Runtime allocated: {}\n  git-explain limit: {}\n  Effective context: {} tokens ({:?})\n",
+        capabilities.control.description(),
         capacity.model_max.map_or_else(|| "unknown".into(), |value| format!("{value} tokens")),
         capacity.runtime_allocated.map_or_else(|| "unknown".into(), |value| format!("{value} tokens")),
         model.context_window.map_or_else(|| "automatic".into(), |value| format!("{value} tokens")),
