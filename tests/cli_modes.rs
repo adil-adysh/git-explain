@@ -132,3 +132,16 @@ fn direct_diff_accepts_explicit_ranges() {
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("No changes matched the selected paths in the selected Git range."));
 }
+
+#[test]
+fn help_describes_current_semantic_modes_and_transport() {
+    let output = Command::new(env!("CARGO_BIN_EXE_git-explain"))
+        .arg("-h")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Print deterministic semantic analysis"));
+    assert!(stdout.contains("file mode is always one-shot"));
+    assert!(!stdout.contains("changed supported-language functions"));
+}

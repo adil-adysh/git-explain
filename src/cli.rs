@@ -12,7 +12,7 @@ pub struct Cli {
         short = 'd',
         long,
         global = true,
-        help = "Print changed supported-language functions and exit"
+        help = "Print deterministic semantic analysis and exit without model inference"
     )]
     pub debug: bool,
     #[arg(
@@ -26,7 +26,7 @@ pub struct Cli {
     #[arg(
         long,
         global = true,
-        help = "Bypass the background daemon and use a one-shot server"
+        help = "Use a one-shot server for diff mode; file mode is always one-shot"
     )]
     pub direct: bool,
     #[command(subcommand)]
