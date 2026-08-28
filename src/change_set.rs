@@ -91,10 +91,20 @@ impl ChangeSet {
             return None;
         }
         let summary = self.summary();
-        if summary.files_renamed > 0 && summary.units_preserved > 0 {
+        if summary.files_renamed > 0
+            && self
+                .files
+                .iter()
+                .all(|file| file.kind != FileChangeKind::Renamed || !file.source_content_changed())
+        {
             return Some(format!("{} file{} renamed without source-content changes. No semantic changes require explanation.", summary.files_renamed, plural(summary.files_renamed)));
         }
-        if summary.files_copied > 0 && summary.units_preserved > 0 {
+        if summary.files_copied > 0
+            && self
+                .files
+                .iter()
+                .all(|file| file.kind != FileChangeKind::Copied || !file.source_content_changed())
+        {
             return Some(format!(
                 "{} file{} copied without source-content changes. No semantic changes require explanation.",
                 summary.files_copied,
@@ -182,9 +192,14 @@ impl FileChange {
         self.old_mode != self.new_mode
     }
     pub fn source_content_changed(&self) -> bool {
-        self.semantic_changes
-            .iter()
-            .any(|c| c.kind != SemanticUnitChangeKind::Preserved)
+        match (&self.before, &self.after) {
+            (Some(before), Some(after)) => before.content != after.content,
+            (Some(_), None) | (None, Some(_)) => true,
+            (None, None) => self
+                .patch
+                .as_ref()
+                .is_some_and(|patch| !patch.ranges.is_empty()),
+        }
     }
     pub fn is_unsupported_source(&self) -> bool {
         !self.binary

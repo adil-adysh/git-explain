@@ -190,6 +190,38 @@ fn rename_plus_edit_preserves_other_units() {
     assert!(debug.contains("Lines: 1-1"));
     assert!(debug.contains("fn changed() { let value = 2; }"));
 }
+
+#[test]
+fn rename_with_changes_outside_semantic_units_is_not_reported_as_pure() {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("old.rs"),
+        "const BEFORE: usize = 1;\nfn preserved_one() {}\nfn preserved_two() {}\nfn preserved_three() {}\nfn preserved_four() {}\n",
+    )
+    .unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    git(dir.path(), &["mv", "old.rs", "new.rs"]);
+    std::fs::write(
+        dir.path().join("new.rs"),
+        "const BEFORE: usize = 2;\nfn preserved_one() {}\nfn preserved_two() {}\nfn preserved_three() {}\nfn preserved_four() {}\n",
+    )
+    .unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "rename and edit metadata"]);
+
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    let file = &changes.files[0];
+    assert_eq!(file.kind, FileChangeKind::Renamed);
+    assert_eq!(file.status_label(), "Renamed and modified");
+    assert_eq!(changes.explainable_changes().count(), 0);
+    assert_eq!(
+        changes.empty_state().as_deref(),
+        Some("Source content changed, but no explainable semantic units were found.")
+    );
+}
 #[test]
 fn added_and_deleted_source_units_are_first_class() {
     let dir = repo();
