@@ -11,7 +11,7 @@ use git_explain::{
         openai::{discover_context_capabilities, OpenAiProvider},
         ExplanationProvider, ExplanationRegion, ExplanationRequest,
     },
-    ollama_context::OllamaRequestTracker,
+    ollama_context::{recommend, OllamaRequestTracker, MIN_SAMPLES},
 };
 use reqwest::{Client, StatusCode};
 use serde_json::json;
@@ -285,6 +285,41 @@ async fn live_ollama_explanation_records_private_context_metadata() {
         ,record.generation_duration_ms
         ,record.generation_tokens_per_second
     );
+}
+
+#[tokio::test]
+#[ignore = "requires GIT_EXPLAIN_TEST_OLLAMA_URL and GIT_EXPLAIN_TEST_OLLAMA_MODEL"]
+async fn live_ollama_context_recommendation_uses_real_recent_workload() {
+    let base_url = required("GIT_EXPLAIN_TEST_OLLAMA_URL");
+    let model = required("GIT_EXPLAIN_TEST_OLLAMA_MODEL");
+    let dir = tempdir().expect("create tracker state directory");
+    let tracker = OllamaRequestTracker::for_user_config(&dir.path().join("config.toml"));
+    let provider = production_provider(base_url.clone(), model.clone(), "ollama")
+        .with_ollama_tracker(tracker.clone(), "live-policy".into());
+    let sources = [
+        "fn size_small(value: i32) -> i32 { value + 1 }".to_string(),
+        format!("fn size_medium() {{\n{}\n}}", "let value = 1;\n".repeat(16)),
+        format!("fn size_large() {{\n{}\n}}", "let value = 1;\n".repeat(64)),
+    ];
+    for source in sources.iter().cycle().take(MIN_SAMPLES) {
+        let _ = provider.explain(tracker_request(source)).await;
+    }
+    let capabilities =
+        discover_context_capabilities(&profile(base_url.clone(), model.clone(), "ollama")).await;
+    let records = tracker.records("live-policy", false);
+    unload_ollama_model_if_requested(&Client::new(), native_ollama_base(&base_url), &model).await;
+    assert_eq!(records.len(), MIN_SAMPLES);
+    assert!(records
+        .windows(2)
+        .any(|pair| pair[0].ideal_required_context != pair[1].ideal_required_context));
+    let recommendation = recommend(
+        &records,
+        capabilities.capacity.runtime_allocated,
+        capabilities.capacity.model_max,
+    );
+    assert!(recommendation.recommended.is_some());
+    assert!(recommendation.target.is_some());
+    println!("ollama policy: model_max={:?} runtime={:?} requests={} required_p50={} required_p95={} recommended={:?}", capabilities.capacity.model_max, capabilities.capacity.runtime_allocated, records.len(), git_explain::ollama_context::OllamaContextStatistics::from_records(&records).required_p50.unwrap_or_default(), git_explain::ollama_context::OllamaContextStatistics::from_records(&records).required_p95.unwrap_or_default(), recommendation.recommended);
 }
 
 #[tokio::test]
