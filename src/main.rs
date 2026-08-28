@@ -509,7 +509,7 @@ fn print_debug_context(model: &config::ResolvedProfile) {
     ] {
         let budget = context::ContextBudget::for_generation(&capacity, generation, deep);
         println!(
-            "\nContext planning ({label}, no network discovery)\n  Control: {}\n  Capacity: {} tokens ({:?})\n  Output reserve: {} tokens\n  Safety margin: {} tokens\n  Available input: {} tokens",
+            "\nContext planning ({label}, no network discovery)\n  Control: {}\n  Requested context: none (not supported by this transport)\n  Capacity: {} tokens ({:?})\n  Output reserve: {} tokens\n  Safety margin: {} tokens\n  Available input: {} tokens",
             control.description(),
             budget.total,
             capacity.effective().source,
@@ -702,7 +702,7 @@ async fn profile_test_success(
     let capacity = &capabilities.capacity;
     let effective = capacity.effective();
     let context = format!(
-        "\nContext:\n  Control: {}\n  Model maximum: {}\n  Runtime allocated: {}\n  git-explain limit: {}\n  Effective context: {} tokens ({:?})\n",
+        "\nContext:\n  Control: {}\n  Requested context: none (not supported by this transport)\n  Model maximum: {}\n  Runtime allocated: {}\n  git-explain limit: {}\n  Effective context: {} tokens ({:?})\n",
         capabilities.control.description(),
         capacity.model_max.map_or_else(|| "unknown".into(), |value| format!("{value} tokens")),
         capacity.runtime_allocated.map_or_else(|| "unknown".into(), |value| format!("{value} tokens")),
