@@ -51,6 +51,7 @@ pub async fn serve(
     });
     let app = Router::new()
         .route("/", get(index))
+        .route("/api/changes", get(changes))
         .route("/api/units/{id}/explain", post(explain))
         .route("/api/units/{id}/deep", post(deep))
         .route("/api/units/{id}/deep/regenerate", post(deep_regenerate))
@@ -67,6 +68,9 @@ pub async fn serve(
 }
 async fn index(State(state): State<Arc<StateData>>) -> Html<String> {
     Html(web::render(&state.change_set.lock().unwrap()))
+}
+async fn changes(State(state): State<Arc<StateData>>) -> Json<serde_json::Value> {
+    Json(state.change_set.lock().unwrap().json())
 }
 async fn explain(
     Path(id): Path<String>,

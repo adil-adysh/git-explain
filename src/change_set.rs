@@ -19,6 +19,9 @@ pub struct ChangeSet {
 }
 
 impl ChangeSet {
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({"generation":self.generation.0,"identity":self.identity,"files":self.files.iter().map(|file| serde_json::json!({"kind":format!("{:?}",file.kind).to_lowercase(),"old_path":file.old_path.as_ref().map(|path|path.to_string_lossy()),"new_path":file.new_path.as_ref().map(|path|path.to_string_lossy()),"similarity":file.similarity,"binary":file.binary,"semantic_changes":file.semantic_changes.iter().map(|change| serde_json::json!({"id":change.id.0,"kind":format!("{:?}",change.kind).to_lowercase(),"before":change.before.as_ref().map(unit_json),"after":change.after.as_ref().map(unit_json)})).collect::<Vec<_>>() })).collect::<Vec<_>>()})
+    }
     pub fn semantic_changes(&self) -> impl Iterator<Item = &SemanticUnitChange> {
         self.files
             .iter()
@@ -100,6 +103,10 @@ impl ChangeSet {
         }
         Some("Source content changed, but no explainable semantic units were found.".into())
     }
+}
+
+fn unit_json(unit: &SemanticUnit) -> serde_json::Value {
+    serde_json::json!({"identity":{"kind":format!("{:?}",unit.identity.kind).to_lowercase(),"qualified_name":unit.identity.qualified_name,"occurrence":unit.identity.occurrence},"location":{"path":unit.location.path.to_string_lossy(),"start_line":unit.location.start_line,"end_line":unit.location.end_line},"language":unit.language})
 }
 
 fn plural(count: usize) -> &'static str {
