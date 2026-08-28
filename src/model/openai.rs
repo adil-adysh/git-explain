@@ -6,7 +6,7 @@ use crate::{
         ContextBudget, ContextCapabilities, ContextCapacity, ContextControl, ContextNegotiation,
         PromptPlan,
     },
-    ollama_context::{OllamaRequestRecord, OllamaRequestTracker},
+    ollama_context::{workload_key, OllamaRequestRecord, OllamaRequestTracker},
 };
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -922,6 +922,17 @@ impl OpenAiProvider {
         }
         let mut record =
             OllamaRequestRecord::now(profile.clone(), self.model.clone(), request.deep);
+        let generation = if request.deep {
+            &self.deep
+        } else {
+            &self.normal
+        };
+        record.workload_key = workload_key(
+            &self.model,
+            generation.reasoning,
+            generation.max_tokens,
+            generation.temperature,
+        );
         record.model_max = capabilities.capacity.model_max;
         record.runtime_context = capabilities.capacity.runtime_allocated;
         record.profile_limit = self.context_window;
@@ -983,6 +994,17 @@ impl OpenAiProvider {
         }
         let mut record =
             OllamaRequestRecord::now(profile.clone(), self.model.clone(), request.deep);
+        let generation = if request.deep {
+            &self.deep
+        } else {
+            &self.normal
+        };
+        record.workload_key = workload_key(
+            &self.model,
+            generation.reasoning,
+            generation.max_tokens,
+            generation.temperature,
+        );
         record.model_max = capabilities.capacity.model_max;
         record.runtime_context = capabilities.capacity.runtime_allocated;
         record.profile_limit = self.context_window;

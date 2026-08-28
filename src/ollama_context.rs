@@ -11,6 +11,8 @@ use std::{
 };
 
 pub const HISTORY_LIMIT: usize = 100;
+pub const RECENT_HISTORY_DAYS: u64 = 90;
+const RECENT_HISTORY_MS: u64 = RECENT_HISTORY_DAYS * 24 * 60 * 60 * 1_000;
 pub const MIN_SAMPLES: usize = 10;
 /// Minimum observations before a displayed percentile is useful to people.
 pub const P50_MIN_SAMPLES: usize = 3;
@@ -24,6 +26,8 @@ pub struct OllamaRequestRecord {
     pub timestamp_ms: u64,
     pub profile: String,
     pub model: String,
+    #[serde(default)]
+    pub workload_key: String,
     pub deep: bool,
     pub model_max: Option<u32>,
     pub runtime_context: Option<u32>,
@@ -58,6 +62,7 @@ impl OllamaRequestRecord {
                 .as_millis() as u64,
             profile,
             model,
+            workload_key: String::new(),
             deep,
             model_max: None,
             runtime_context: None,
@@ -85,6 +90,20 @@ impl OllamaRequestRecord {
     }
 }
 
+/// Identifies the model and generation controls which materially affect the
+/// context demand of a normal or deep request. It contains no source content.
+pub fn workload_key(
+    model: &str,
+    reasoning: Option<bool>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+) -> String {
+    format!(
+        "model={model};reasoning={:?};max_tokens={:?};temperature={:?}",
+        reasoning, max_tokens, temperature
+    )
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct History {
     records: Vec<OllamaRequestRecord>,
@@ -108,20 +127,35 @@ impl OllamaRequestTracker {
     pub fn path(&self) -> &Path {
         &self.path
     }
-    pub fn records(&self, profile: &str, deep: bool) -> Vec<OllamaRequestRecord> {
+    pub fn records(
+        &self,
+        profile: &str,
+        workload_key: &str,
+        deep: bool,
+    ) -> Vec<OllamaRequestRecord> {
+        let oldest = now_ms().saturating_sub(RECENT_HISTORY_MS);
         self.load()
             .records
             .into_iter()
-            .filter(|r| r.profile == profile && r.deep == deep)
+            .filter(|r| {
+                r.profile == profile
+                    && r.workload_key == workload_key
+                    && r.deep == deep
+                    && r.timestamp_ms >= oldest
+            })
             .collect()
     }
     pub fn record(&self, record: OllamaRequestRecord) -> Result<()> {
         let mut history = self.load();
         history.records.push(record);
-        let mut groups: HashMap<(String, bool), Vec<OllamaRequestRecord>> = HashMap::new();
+        let mut groups: HashMap<(String, String, bool), Vec<OllamaRequestRecord>> = HashMap::new();
         for record in history.records {
             groups
-                .entry((record.profile.clone(), record.deep))
+                .entry((
+                    record.profile.clone(),
+                    record.workload_key.clone(),
+                    record.deep,
+                ))
                 .or_default()
                 .push(record);
         }
@@ -160,6 +194,13 @@ impl OllamaRequestTracker {
         fs::rename(&temporary, &self.path)
             .with_context(|| format!("replace {}", self.path.display()))
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[derive(Clone, Debug, Default)]
@@ -320,6 +361,7 @@ fn percentile_u64(values: &[u64], percent: usize) -> Option<u64> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecommendationState {
     InsufficientHistory,
+    CapacityUnknown,
     KeepCurrent,
     Increase,
     PotentialDecrease,
@@ -344,6 +386,15 @@ pub fn recommend(
     }
     let p95 = statistics.policy_required_p95.unwrap_or_default();
     let target = p95.saturating_add(p95 / 5);
+    if model_max.is_none() && target > *TIERS.last().unwrap_or(&0) {
+        return OllamaRecommendation {
+            state: RecommendationState::CapacityUnknown,
+            current,
+            recommended: None,
+            target: Some(target),
+            reason: "The recorded workload exceeds the largest advisory tier, but the model maximum is unavailable.".into(),
+        };
+    }
     let ceiling = model_max.unwrap_or(u32::MAX);
     let tier = TIERS
         .iter()
@@ -402,6 +453,7 @@ mod tests {
     use tempfile::tempdir;
     fn record(profile: &str, deep: bool, required: u32) -> OllamaRequestRecord {
         let mut r = OllamaRequestRecord::now(profile.into(), "model".into(), deep);
+        r.workload_key = "test".into();
         r.ideal_required_context = required;
         r.final_required_context = required;
         r
@@ -412,10 +464,10 @@ mod tests {
         let t = OllamaRequestTracker::at(dir.path().join("history.json"));
         for i in 0..101 {
             let mut r = record("p", false, 4096);
-            r.timestamp_ms = i;
+            r.timestamp_ms = now_ms().saturating_add(i);
             t.record(r).unwrap();
         }
-        assert_eq!(t.records("p", false).len(), 100);
+        assert_eq!(t.records("p", "test", false).len(), 100);
         let stored = std::fs::read_to_string(t.path()).unwrap();
         assert!(!stored.contains("SECRET_SOURCE_SENTINEL_94A1"));
         let history = serde_json::from_str::<serde_json::Value>(&stored).unwrap();
@@ -426,6 +478,7 @@ mod tests {
             "timestamp_ms",
             "profile",
             "model",
+            "workload_key",
             "deep",
             "model_max",
             "runtime_context",
@@ -571,7 +624,28 @@ mod tests {
         tracker.record(record("one", false, 4096)).unwrap();
         tracker.record(record("two", false, 4096)).unwrap();
         assert_eq!(tracker.reset("one").unwrap(), 1);
-        assert!(tracker.records("one", false).is_empty());
-        assert_eq!(tracker.records("two", false).len(), 1);
+        assert!(tracker.records("one", "test", false).is_empty());
+        assert_eq!(tracker.records("two", "test", false).len(), 1);
+    }
+
+    #[test]
+    fn history_is_scoped_to_workload_identity_and_recent_samples() {
+        let dir = tempdir().unwrap();
+        let tracker = OllamaRequestTracker::at(dir.path().join("history.json"));
+        let mut current = record("profile", false, 4096);
+        current.workload_key = "model=current".into();
+        current.timestamp_ms = now_ms();
+        tracker.record(current).unwrap();
+        let mut other_model = record("profile", false, 32768);
+        other_model.workload_key = "model=other".into();
+        other_model.timestamp_ms = now_ms();
+        tracker.record(other_model).unwrap();
+        let mut old = record("profile", false, 32768);
+        old.workload_key = "model=current".into();
+        old.timestamp_ms = now_ms().saturating_sub(RECENT_HISTORY_MS + 1);
+        tracker.record(old).unwrap();
+        let records = tracker.records("profile", "model=current", false);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].ideal_required_context, 4096);
     }
 }

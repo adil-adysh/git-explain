@@ -122,7 +122,7 @@ For Ollama, `git explain profile test ollama` also reads native `/api/show` meta
 
 Ollama's native `/api/chat` API cannot increase context per request. If the selected model is not loaded yet, git-explain first sends a source-free one-token warm-up request, then reads `/api/ps` again before it sends an explanation. Configure Ollama itself (for example, `OLLAMA_CONTEXT_LENGTH` before `ollama serve`, or a Modelfile with `PARAMETER num_ctx <tokens>`), reload the model, and run `git explain profile test ollama` again. Larger windows use more memory; choose one that fits the model and hardware.
 
-For Ollama profiles, git-explain keeps a bounded local history of context-planning metadata (100 records for each profile and normal/deep mode). It records capacities, estimates, actual token usage when Ollama returns it, outcomes, and latency—but never source, diffs, prompts, or model responses. It never changes Ollama's context configuration automatically. Use it to inspect demand and get an advisory recommendation:
+For Ollama profiles, git-explain keeps a bounded local history of context-planning metadata (100 records for each profile, model/generation configuration, and normal/deep mode). Only the most recent 90 days are used for advice, so changing models or response settings starts a separate workload history. It records capacities, estimates, actual token usage when Ollama returns it, outcomes, and latency—but never source, diffs, prompts, or model responses. It never changes Ollama's context configuration automatically. Use it to inspect demand and get an advisory recommendation:
 
 ```text
 git explain --profile ollama context stats

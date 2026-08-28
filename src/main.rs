@@ -68,7 +68,12 @@ async fn run() -> Result<()> {
                 let caps = model::openai::discover_context_capabilities(&resolved.model).await;
                 print!(
                     "{}",
-                    render_context_recommendation(&resolved.profile, &caps.capacity, &tracker,)
+                    render_context_recommendation(
+                        &resolved.profile,
+                        &resolved.model,
+                        &caps.capacity,
+                        &tracker,
+                    )
                 );
             }
             ContextAction::Reset { force } => {
@@ -538,14 +543,27 @@ async fn run() -> Result<()> {
     .await
 }
 
+fn workload_key_for(model: &str, generation: &config::GenerationConfig) -> String {
+    ollama_context::workload_key(
+        model,
+        generation.reasoning,
+        generation.max_tokens,
+        generation.temperature,
+    )
+}
+
 fn render_context_stats(
     profile: &str,
     model: &config::ResolvedProfile,
     capacity: &context::ContextCapacity,
     tracker: &ollama_context::OllamaRequestTracker,
 ) -> String {
-    let normal = tracker.records(profile, false);
-    let deep = tracker.records(profile, true);
+    let normal = tracker.records(
+        profile,
+        &workload_key_for(&model.model, &model.normal),
+        false,
+    );
+    let deep = tracker.records(profile, &workload_key_for(&model.model, &model.deep), true);
     let total = normal.len() + deep.len();
     let mut output = format!(
         "Context statistics\n\nProfile: {profile}\nPreset: Ollama\nModel: {}\n\nCurrent Ollama context:\n{}\n\nRequests tracked:\n{total}",
@@ -681,7 +699,8 @@ fn print_context_stats(
         capacity.profile_limit.map_or_else(|| "not configured".into(), |value| format!("{value} tokens")),
     );
     for (label, deep) in [("Normal", false), ("Deep", true)] {
-        let records = tracker.records(profile, deep);
+        let generation = if deep { &model.deep } else { &model.normal };
+        let records = tracker.records(profile, &workload_key_for(&model.model, generation), deep);
         let stats = ollama_context::OllamaContextStatistics::from_records(&records);
         let rate = |count| format!("{:.1}%", count as f64 * 100.0 / stats.count.max(1) as f64);
         println!("\n{label} requests tracked: {}\n\nRequired context:\n  p50: {}\n  p90: {}\n  p95: {}\n  p99: {}\n  max: {}\n\nPrompt estimation (actual minus estimate):\n  p50 error: {}\n  p95 error: {}\n  maximum underestimation: {}\n\nCompletion tokens:\n  p50: {}\n  p95: {}\n\nCompaction: {} requests ({})\nHard context failures: {} ({})\nProvider context overflows: {}\nOutput truncations: {}\n\nLatency:\n  average: {}\n  p50: {}\n  p95: {}", stats.count, stats.required_p50.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p90.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p95.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p99.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_max.map_or_else(|| "none".into(), |v| format!("{v} tokens")), stats.estimator_error_p50.map_or_else(|| "unavailable".into(), format_signed_tokens), stats.estimator_error_p95.map_or_else(|| "unavailable".into(), format_signed_tokens), stats.maximum_underestimation.map_or_else(|| "none".into(), |v| format!("{v} tokens")), stats.completion_p50.map_or_else(|| "unavailable".into(), |v| format!("{v} tokens")), stats.completion_p95.map_or_else(|| "unavailable".into(), |v| format!("{v} tokens")), stats.compactions, rate(stats.compactions), stats.hard_failures, rate(stats.hard_failures), stats.overflows, stats.truncations, stats.average_latency_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")), stats.latency_p50_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")), stats.latency_p95_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")));
@@ -711,11 +730,16 @@ fn context_bottleneck(capacity: &context::ContextCapacity, target: u32) -> Optio
 
 fn render_context_recommendation(
     profile: &str,
+    model: &config::ResolvedProfile,
     capacity: &context::ContextCapacity,
     tracker: &ollama_context::OllamaRequestTracker,
 ) -> String {
-    let normal = tracker.records(profile, false);
-    let deep = tracker.records(profile, true);
+    let normal = tracker.records(
+        profile,
+        &workload_key_for(&model.model, &model.normal),
+        false,
+    );
+    let deep = tracker.records(profile, &workload_key_for(&model.model, &model.deep), true);
     let total = normal.len() + deep.len();
     let mut output = format!(
         "Context recommendation\n\nProfile: {profile}\n\nCurrent Ollama context:\n{}",
@@ -738,6 +762,13 @@ fn render_context_recommendation(
             ollama_context::RecommendationState::InsufficientHistory
         ) {
             output.push_str(&format!("\n\nRecommendation:\nNot enough history yet.\n\nAt least {} recent requests are required before git-explain recommends\na stable Ollama context size.", ollama_context::MIN_SAMPLES));
+            continue;
+        }
+        if matches!(
+            recommendation.state,
+            ollama_context::RecommendationState::CapacityUnknown
+        ) {
+            output.push_str(&format!("\n\nRecommended workload context:\n{} tokens\n\nA safe Ollama context cannot be recommended until the model maximum is available.\nStart Ollama, load the model, then run:\ngit explain profile test {profile}", recommendation.target.unwrap_or_default()));
             continue;
         }
         let statistics = ollama_context::OllamaContextStatistics::from_records(&records);
@@ -781,13 +812,17 @@ fn render_context_recommendation(
         if let Some(bottleneck) = recommendation_bottleneck(capacity, target) {
             output.push_str(&format!("\n\n{bottleneck}"));
         }
+        if capacity.profile_limit.is_some_and(|value| value < target) {
+            output.push_str(&format!("\n\nRaise git-explain's profile cap, then reload Ollama:\ngit explain profile edit {profile} --context-window {target}"));
+        }
         if capacity.runtime_allocated.is_none() {
             output.push_str(&format!("\n\nThe recommendation is based on recorded request history.\nStart Ollama and run `git explain profile test {profile}` to compare it\nwith the current runtime allocation."));
         }
         if matches!(
             recommendation.state,
             ollama_context::RecommendationState::Increase
-        ) {
+        ) && !capacity.profile_limit.is_some_and(|value| value < target)
+        {
             output.push_str(&format!("\n\nConfigure Ollama with the recommended context, reload the model, then run:\ngit explain profile test {profile}"));
         }
     }
@@ -1216,6 +1251,9 @@ mod profile_error_tests {
     fn context_record(deep: bool, required: u32) -> ollama_context::OllamaRequestRecord {
         let mut record =
             ollama_context::OllamaRequestRecord::now("ollama".into(), "test-model".into(), deep);
+        let profile = ollama_profile();
+        let generation = if deep { &profile.deep } else { &profile.normal };
+        record.workload_key = workload_key_for(&profile.model, generation);
         record.ideal_required_context = required;
         record.final_required_context = required;
         record
@@ -1304,12 +1342,22 @@ mod profile_error_tests {
     fn context_recommendation_distinguishes_zero_and_sparse_history() {
         let dir = tempdir().unwrap();
         let tracker = ollama_context::OllamaRequestTracker::at(dir.path().join("history.json"));
-        let empty = render_context_recommendation("ollama", &Default::default(), &tracker);
+        let empty = render_context_recommendation(
+            "ollama",
+            &ollama_profile(),
+            &Default::default(),
+            &tracker,
+        );
         assert!(empty.contains("No context history has been collected yet."));
         for _ in 0..6 {
             tracker.record(context_record(false, 5_000)).unwrap();
         }
-        let sparse = render_context_recommendation("ollama", &Default::default(), &tracker);
+        let sparse = render_context_recommendation(
+            "ollama",
+            &ollama_profile(),
+            &Default::default(),
+            &tracker,
+        );
         assert!(sparse.contains("Not enough history yet."));
         assert!(sparse.contains("At least 10 recent requests"));
         assert!(!sparse.contains("p95 ideal required context"));
@@ -1327,7 +1375,8 @@ mod profile_error_tests {
             model_max: Some(32_768),
             profile_limit: None,
         };
-        let output = render_context_recommendation("ollama", &capacity, &tracker);
+        let output =
+            render_context_recommendation("ollama", &ollama_profile(), &capacity, &tracker);
         assert!(output.contains("Recommended context:\n16384 tokens"));
         assert!(output.contains("p95 ideal required context: 12000 tokens"));
         assert!(output.contains("The Ollama runtime context is currently the bottleneck."));
@@ -1345,7 +1394,8 @@ mod profile_error_tests {
             model_max: Some(32_768),
             profile_limit: None,
         };
-        let model_output = render_context_recommendation("ollama", &model_limited, &tracker);
+        let model_output =
+            render_context_recommendation("ollama", &ollama_profile(), &model_limited, &tracker);
         assert!(model_output.contains("Recommended workload context:"));
         assert!(model_output.contains("The model is already at its maximum supported context."));
         let profile_limited = context::ContextCapacity {
@@ -1353,8 +1403,10 @@ mod profile_error_tests {
             model_max: Some(65_536),
             profile_limit: Some(8_192),
         };
-        let profile_output = render_context_recommendation("ollama", &profile_limited, &tracker);
+        let profile_output =
+            render_context_recommendation("ollama", &ollama_profile(), &profile_limited, &tracker);
         assert!(profile_output.contains("The profile context limit is currently the bottleneck."));
+        assert!(profile_output.contains("git explain profile edit ollama --context-window 36000"));
     }
 
     #[test]
@@ -1364,7 +1416,12 @@ mod profile_error_tests {
         for _ in 0..10 {
             tracker.record(context_record(false, 12_000)).unwrap();
         }
-        let output = render_context_recommendation("ollama", &Default::default(), &tracker);
+        let output = render_context_recommendation(
+            "ollama",
+            &ollama_profile(),
+            &Default::default(),
+            &tracker,
+        );
         assert!(output.contains("Current Ollama context:\nUnavailable"));
         assert!(output.contains("The recommendation is based on recorded request history."));
     }

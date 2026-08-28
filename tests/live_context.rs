@@ -11,7 +11,7 @@ use git_explain::{
         openai::{discover_context_capabilities, OpenAiProvider},
         ExplanationProvider, ExplanationRegion, ExplanationRequest,
     },
-    ollama_context::{recommend, OllamaRequestTracker, MIN_SAMPLES},
+    ollama_context::{recommend, workload_key, OllamaRequestTracker, MIN_SAMPLES},
 };
 use reqwest::{Client, StatusCode};
 use serde_json::json;
@@ -256,7 +256,8 @@ async fn live_ollama_explanation_records_private_context_metadata() {
         )))
         .await;
     unload_ollama_model_if_requested(&Client::new(), native_ollama_base(&base_url), &model).await;
-    let records = tracker.records("live-ollama", false);
+    let identity = workload_key(&model, None, Some(96), Some(0.0));
+    let records = tracker.records("live-ollama", &identity, false);
     assert_eq!(
         records.len(),
         1,
@@ -306,7 +307,8 @@ async fn live_ollama_context_recommendation_uses_real_recent_workload() {
     }
     let capabilities =
         discover_context_capabilities(&profile(base_url.clone(), model.clone(), "ollama")).await;
-    let records = tracker.records("live-policy", false);
+    let identity = workload_key(&model, None, Some(96), Some(0.0));
+    let records = tracker.records("live-policy", &identity, false);
     unload_ollama_model_if_requested(&Client::new(), native_ollama_base(&base_url), &model).await;
     assert_eq!(records.len(), MIN_SAMPLES);
     assert!(records
