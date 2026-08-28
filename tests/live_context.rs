@@ -4,6 +4,11 @@
 //! `GIT_EXPLAIN_TEST_OLLAMA_URL` / `GIT_EXPLAIN_TEST_OLLAMA_MODEL`, or
 //! `GIT_EXPLAIN_TEST_LLAMA_CPP_URL` / `GIT_EXPLAIN_TEST_LLAMA_CPP_MODEL`.
 
+use git_explain::{
+    config::{GenerationConfig, ResolvedProfile},
+    context::ContextControl,
+    model::openai::discover_context_capabilities,
+};
 use reqwest::{Client, StatusCode};
 use serde_json::json;
 
@@ -13,6 +18,28 @@ fn required(name: &str) -> String {
 
 fn native_ollama_base(url: &str) -> &str {
     url.trim_end_matches('/').trim_end_matches("/v1")
+}
+
+fn profile(base_url: String, model: String, preset: &str) -> ResolvedProfile {
+    ResolvedProfile {
+        provider: "openai_compatible".into(),
+        preset: Some(preset.into()),
+        base_url,
+        model,
+        api_key_env: None,
+        api_key: None,
+        context_window: None,
+        normal: GenerationConfig {
+            reasoning: None,
+            max_tokens: None,
+            temperature: None,
+        },
+        deep: GenerationConfig {
+            reasoning: None,
+            max_tokens: None,
+            temperature: None,
+        },
+    }
 }
 
 async fn unload_ollama_model_if_requested(client: &Client, native_base: &str, model: &str) {
@@ -93,6 +120,14 @@ async fn live_ollama_reports_native_context_and_serves_openai_requests() {
     let client = Client::new();
     let native = native_ollama_base(&base_url);
 
+    let capabilities =
+        discover_context_capabilities(&profile(base_url.clone(), model.clone(), "ollama")).await;
+    assert_eq!(capabilities.control, ContextControl::FixedRuntime);
+    println!(
+        "git-explain Ollama discovery: model_max={:?} runtime={:?}",
+        capabilities.capacity.model_max, capabilities.capacity.runtime_allocated
+    );
+
     let show = client
         .post(format!("{native}/api/show"))
         .json(&json!({"model": model}))
@@ -153,6 +188,13 @@ async fn live_llama_cpp_serves_openai_requests_with_its_startup_context() {
     let base_url = required("GIT_EXPLAIN_TEST_LLAMA_CPP_URL");
     let model = required("GIT_EXPLAIN_TEST_LLAMA_CPP_MODEL");
     let client = Client::new();
+    let capabilities =
+        discover_context_capabilities(&profile(base_url.clone(), model.clone(), "llama_cpp")).await;
+    assert_eq!(capabilities.control, ContextControl::FixedRuntime);
+    println!(
+        "git-explain llama.cpp discovery: model_max={:?} runtime={:?}",
+        capabilities.capacity.model_max, capabilities.capacity.runtime_allocated
+    );
     let models = client
         .get(format!("{}/models", base_url.trim_end_matches('/')))
         .send()

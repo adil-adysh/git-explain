@@ -597,7 +597,7 @@ impl OpenAiProvider {
             request.deep,
             &ConservativeTokenEstimator,
         );
-        let capabilities = self.discover_context_capabilities().await;
+        let capabilities = self.discover_context_capabilities().await?;
         let negotiation = negotiate_context(&capabilities, requirement)?;
         let request_options = InferenceRequestOptions::for_negotiation(&negotiation);
         let budget = ContextBudget::from_negotiation(&negotiation);
@@ -662,8 +662,8 @@ impl OpenAiProvider {
         })
     }
 
-    async fn discover_context_capabilities(&self) -> ContextCapabilities {
-        let capacity = discover_context_capacity_for(
+    async fn discover_context_capabilities(&self) -> Result<ContextCapabilities> {
+        let mut capacity = discover_context_capacity_for(
             &self.client,
             self.kind,
             &self.base_url,
@@ -671,10 +671,54 @@ impl OpenAiProvider {
             self.context_window,
         )
         .await;
-        ContextCapabilities {
+        if matches!(self.kind, ProviderKind::Ollama) && capacity.runtime_allocated.is_none() {
+            // Ollama's /api/ps only reports a loaded model. Establish the
+            // runtime allocation with a source-free request before budgeting
+            // an explanation against a fixed OpenAI-compatible transport.
+            self.warm_ollama_model().await?;
+            capacity = discover_context_capacity_for(
+                &self.client,
+                self.kind,
+                &self.base_url,
+                &self.model,
+                self.context_window,
+            )
+            .await;
+        }
+        Ok(ContextCapabilities {
             capacity,
             control: self.kind.context_control(),
+        })
+    }
+
+    async fn warm_ollama_model(&self) -> Result<()> {
+        let mut request = self
+            .client
+            .post(format!(
+                "{}/chat/completions",
+                self.base_url.trim_end_matches('/')
+            ))
+            .json(&json!({
+                "model": self.model,
+                "messages": [{"role": "user", "content": "Reply with OK."}],
+                "max_tokens": 1,
+            }));
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key);
         }
+        let response = request
+            .send()
+            .await
+            .context("load Ollama model for context discovery")?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        bail!(
+            "could not load Ollama model before context planning (HTTP {status}): {}",
+            body.trim().chars().take(300).collect::<String>()
+        );
     }
 }
 

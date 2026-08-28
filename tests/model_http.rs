@@ -1,4 +1,10 @@
-use axum::{http::StatusCode, response::IntoResponse, routing::post, Router};
+use axum::{
+    extract::Json,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Router,
+};
 use git_explain::config::{ExplanationConfig, GenerationConfig, ReaderConfig, ResolvedProfile};
 use git_explain::model::openai::OpenAiProvider;
 use git_explain::model::{
@@ -9,7 +15,7 @@ use std::{
     convert::Infallible,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -22,6 +28,46 @@ fn provider(base_url: String, timeout: Duration) -> OpenAiProvider {
             preset: Some("llama_cpp".into()),
             base_url,
             model: "unsloth-test".into(),
+            api_key_env: None,
+            api_key: None,
+            context_window: None,
+            normal: GenerationConfig {
+                reasoning: Some(false),
+                max_tokens: Some(500),
+                temperature: Some(0.2),
+            },
+            deep: GenerationConfig {
+                reasoning: Some(true),
+                max_tokens: Some(2500),
+                temperature: Some(0.3),
+            },
+        },
+        ReaderConfig {
+            experience: "experienced".into(),
+            known_languages: vec![],
+            learning_languages: vec![],
+            known_frameworks: vec![],
+            learning_frameworks: vec![],
+        },
+        ExplanationConfig {
+            default_depth: "normal".into(),
+            max_annotations: 3,
+            max_annotation_words: 60,
+            explain_language_concepts: true,
+            explain_framework_concepts: true,
+            infer_intent: false,
+        },
+        timeout,
+    )
+}
+
+fn ollama_provider(base_url: String, timeout: Duration) -> OpenAiProvider {
+    OpenAiProvider::from_config_with_timeout(
+        ResolvedProfile {
+            provider: "openai_compatible".into(),
+            preset: Some("ollama".into()),
+            base_url,
+            model: "ollama-test".into(),
             api_key_env: None,
             api_key: None,
             context_window: None,
@@ -124,6 +170,73 @@ async fn accepts_structured_content_and_ignores_separate_reasoning() {
         .unwrap();
     assert_eq!(result.overview, "Adds two values.");
     assert_eq!(result.annotations.len(), 1);
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn unloaded_ollama_model_is_warmed_before_the_explanation_payload() {
+    let ps_calls = Arc::new(AtomicUsize::new(0));
+    let request_bodies = Arc::new(Mutex::new(Vec::new()));
+    let ps_seen = ps_calls.clone();
+    let bodies_seen = request_bodies.clone();
+    let app = Router::new()
+        .route(
+            "/api/ps",
+            get(move || {
+                let call = ps_seen.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    let models = (call > 0).then(|| json!([{
+                        "name": "ollama-test",
+                        "context_length": 4096,
+                    }]));
+                    axum::Json(json!({"models": models.unwrap_or_else(|| json!([]))}))
+                }
+            }),
+        )
+        .route(
+            "/api/show",
+            post(|| async { axum::Json(json!({"model_info": {"test.context_length": 32768}})) }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let bodies_seen = bodies_seen.clone();
+                async move {
+                    bodies_seen.lock().unwrap().push(body);
+                    axum::Json(json!({
+                        "choices": [{
+                            "finish_reason": "stop",
+                            "message": {"content": "{\"overview\":\"Adds values.\",\"annotations\":[]}"}
+                        }]
+                    }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown, signal) = oneshot::channel();
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = signal.await;
+            })
+            .await
+            .unwrap();
+    });
+
+    let result = ollama_provider(format!("http://{address}/v1"), Duration::from_secs(2))
+        .explain(request(false))
+        .await
+        .unwrap();
+    assert_eq!(result.overview, "Adds values.");
+    assert!(ps_calls.load(Ordering::SeqCst) >= 2);
+    let bodies = request_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["messages"][0]["content"], "Reply with OK.");
+    assert!(bodies[1]["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("SOURCE UNIT"));
     let _ = shutdown.send(());
 }
 
