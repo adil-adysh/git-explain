@@ -128,7 +128,9 @@ struct InFlight {
 struct OpenRequest {
     repo_root: String,
     revision: Option<String>,
+    #[serde(default)]
     staged: bool,
+    #[serde(default)]
     paths: Vec<PathBuf>,
     profile: Option<String>,
 }
