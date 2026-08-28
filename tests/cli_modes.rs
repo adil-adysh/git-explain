@@ -27,7 +27,9 @@ fn repository() -> tempfile::TempDir {
 
 fn run(root: &Path, args: &[&str]) -> std::process::Output {
     let config = root.join("user-config.toml");
-    std::fs::write(&config, "").unwrap();
+    if !config.exists() {
+        std::fs::write(&config, "").unwrap();
+    }
     Command::new(env!("CARGO_BIN_EXE_git-explain"))
         .args(args)
         .env("GIT_EXPLAIN_USER_CONFIG", config)
@@ -100,4 +102,33 @@ fn staged_cli_excludes_unstaged_files() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Name: staged"));
     assert!(!stdout.contains("Name: unstaged"));
+}
+
+#[test]
+fn direct_diff_accepts_explicit_ranges() {
+    let directory = repository();
+    std::fs::write(directory.path().join("lib.rs"), "fn value() { one(); }\n").unwrap();
+    git(directory.path(), &["add", "."]);
+    git(directory.path(), &["commit", "-qm", "one"]);
+    std::fs::write(directory.path().join("lib.rs"), "fn value() { two(); }\n").unwrap();
+    git(directory.path(), &["commit", "-qam", "two"]);
+    std::fs::write(
+        directory.path().join("user-config.toml"),
+        "[model]\nprofile = \"local\"\n\n[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"test\"\n",
+    )
+    .unwrap();
+
+    // A non-matching filter makes direct mode return after deterministic
+    // analysis instead of starting its one-shot HTTP server.
+    let output = run(
+        directory.path(),
+        &["--direct", "diff", "HEAD~1..HEAD", "--", "missing.rs"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("No changes matched the selected paths in the selected Git range."));
 }

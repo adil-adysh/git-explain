@@ -1226,7 +1226,7 @@ async fn run_direct(
 ) -> Result<()> {
     let analyzer = RepositoryAnalyzer::new(&repo, resolved.clone());
     let snapshot = if let Some(revision) = revision {
-        analyzer.analyze_commit_with_paths(revision, SnapshotGeneration(1), paths)?
+        analyzer.analyze_revision_or_range(revision, SnapshotGeneration(1), paths)?
     } else if staged {
         analyzer.analyze_staged(SnapshotGeneration(1), paths)?
     } else {
