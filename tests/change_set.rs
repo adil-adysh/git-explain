@@ -61,6 +61,40 @@ fn pure_rename_is_a_file_change_with_preserved_semantics() {
     assert!(html.contains("Semantic units preserved"));
     assert!(html.contains("No semantic changes require explanation."));
 }
+
+#[test]
+fn rename_plus_edit_preserves_other_units() {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("old.rs"),
+        "fn changed() { let value = 1; }\nfn kept() {}\n",
+    )
+    .unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    git(dir.path(), &["mv", "old.rs", "new.rs"]);
+    std::fs::write(
+        dir.path().join("new.rs"),
+        "fn changed() { let value = 2; }\nfn kept() {}\n",
+    )
+    .unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "rename and edit"]);
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    let file = &changes.files[0];
+    assert_eq!(file.kind, FileChangeKind::Renamed);
+    assert!(file
+        .semantic_changes
+        .iter()
+        .any(|change| change.kind == SemanticUnitChangeKind::Modified));
+    assert!(file
+        .semantic_changes
+        .iter()
+        .any(|change| change.kind == SemanticUnitChangeKind::Preserved));
+    assert_eq!(changes.explainable_changes().count(), 1);
+}
 #[test]
 fn added_and_deleted_source_units_are_first_class() {
     let dir = repo();
