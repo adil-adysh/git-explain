@@ -321,7 +321,8 @@ async fn live_ollama_context_recommendation_uses_real_recent_workload() {
     );
     assert!(recommendation.recommended.is_some());
     assert!(recommendation.target.is_some());
-    println!("ollama policy: model_max={:?} runtime={:?} requests={} required_p50={} required_p95={} recommended={:?}", capabilities.capacity.model_max, capabilities.capacity.runtime_allocated, records.len(), git_explain::ollama_context::OllamaContextStatistics::from_records(&records).required_p50.unwrap_or_default(), git_explain::ollama_context::OllamaContextStatistics::from_records(&records).required_p95.unwrap_or_default(), recommendation.recommended);
+    let statistics = git_explain::ollama_context::OllamaContextStatistics::from_records(&records);
+    println!("ollama policy: model_max={:?} runtime={:?} requests={} required_p50={} required_p95={} recommended={:?}", capabilities.capacity.model_max, capabilities.capacity.runtime_allocated, records.len(), statistics.required.p50.unwrap_or_default(), statistics.required.p95.unwrap_or_default(), recommendation.recommended);
 }
 
 #[tokio::test]

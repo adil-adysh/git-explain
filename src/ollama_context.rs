@@ -229,19 +229,6 @@ pub struct OllamaContextStatistics {
     pub truncations: usize,
     pub average_latency_ms: Option<u64>,
     pub latency: DistributionStats<u64>,
-    // Compatibility aliases for internal callers while presentation migrates to
-    // `DistributionStats`. New rendering must use the distributions above.
-    pub required_p50: Option<u32>,
-    pub required_p90: Option<u32>,
-    pub required_p95: Option<u32>,
-    pub required_p99: Option<u32>,
-    pub required_max: Option<u32>,
-    pub completion_p50: Option<u32>,
-    pub completion_p95: Option<u32>,
-    pub estimator_error_p50: Option<i64>,
-    pub estimator_error_p95: Option<i64>,
-    pub latency_p50_ms: Option<u64>,
-    pub latency_p95_ms: Option<u64>,
 }
 impl OllamaContextStatistics {
     pub fn from_records(records: &[OllamaRequestRecord]) -> Self {
@@ -290,18 +277,7 @@ impl OllamaContextStatistics {
             truncations: records.iter().filter(|r| r.output_truncated).count(),
             average_latency_ms: (!latencies.is_empty())
                 .then(|| latencies.iter().sum::<u64>() / latencies.len() as u64),
-            latency: latency_stats.clone(),
-            required_p50: required_stats.p50,
-            required_p90: required_stats.p90,
-            required_p95: required_stats.p95,
-            required_p99: required_stats.p99,
-            required_max: required_stats.max,
-            completion_p50: completion_stats.p50,
-            completion_p95: completion_stats.p95,
-            estimator_error_p50: estimator_error_stats.p50,
-            estimator_error_p95: estimator_error_stats.p95,
-            latency_p50_ms: latency_stats.p50,
-            latency_p95_ms: latency_stats.p95,
+            latency: latency_stats,
         }
     }
 }

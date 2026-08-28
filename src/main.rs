@@ -684,48 +684,8 @@ fn rate(count: usize, total: usize) -> String {
     format!("{:.1}%", count as f64 * 100.0 / total as f64)
 }
 
-#[allow(dead_code)]
-fn print_context_stats(
-    profile: &str,
-    model: &config::ResolvedProfile,
-    capacity: &context::ContextCapacity,
-    tracker: &ollama_context::OllamaRequestTracker,
-) {
-    println!(
-        "Context statistics\n\nProfile: {profile}\nPreset: Ollama\nModel: {}\n\nCurrent Ollama context: {}\nModel maximum: {}\nProfile context_window: {}",
-        model.model,
-        capacity.runtime_allocated.map_or_else(|| "not loaded".into(), |value| format!("{value} tokens")),
-        capacity.model_max.map_or_else(|| "unavailable".into(), |value| format!("{value} tokens")),
-        capacity.profile_limit.map_or_else(|| "not configured".into(), |value| format!("{value} tokens")),
-    );
-    for (label, deep) in [("Normal", false), ("Deep", true)] {
-        let generation = if deep { &model.deep } else { &model.normal };
-        let records = tracker.records(profile, &workload_key_for(&model.model, generation), deep);
-        let stats = ollama_context::OllamaContextStatistics::from_records(&records);
-        let rate = |count| format!("{:.1}%", count as f64 * 100.0 / stats.count.max(1) as f64);
-        println!("\n{label} requests tracked: {}\n\nRequired context:\n  p50: {}\n  p90: {}\n  p95: {}\n  p99: {}\n  max: {}\n\nPrompt estimation (actual minus estimate):\n  p50 error: {}\n  p95 error: {}\n  maximum underestimation: {}\n\nCompletion tokens:\n  p50: {}\n  p95: {}\n\nCompaction: {} requests ({})\nHard context failures: {} ({})\nProvider context overflows: {}\nOutput truncations: {}\n\nLatency:\n  average: {}\n  p50: {}\n  p95: {}", stats.count, stats.required_p50.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p90.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p95.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p99.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_max.map_or_else(|| "none".into(), |v| format!("{v} tokens")), stats.estimator_error_p50.map_or_else(|| "unavailable".into(), format_signed_tokens), stats.estimator_error_p95.map_or_else(|| "unavailable".into(), format_signed_tokens), stats.maximum_underestimation.map_or_else(|| "none".into(), |v| format!("{v} tokens")), stats.completion_p50.map_or_else(|| "unavailable".into(), |v| format!("{v} tokens")), stats.completion_p95.map_or_else(|| "unavailable".into(), |v| format!("{v} tokens")), stats.compactions, rate(stats.compactions), stats.hard_failures, rate(stats.hard_failures), stats.overflows, stats.truncations, stats.average_latency_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")), stats.latency_p50_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")), stats.latency_p95_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")));
-    }
-}
-
 fn format_signed_tokens(value: i64) -> String {
     format!("{value:+} tokens")
-}
-
-#[allow(dead_code)]
-fn context_bottleneck(capacity: &context::ContextCapacity, target: u32) -> Option<String> {
-    let effective = capacity.effective();
-    (effective.tokens < target).then(|| match effective.source {
-        context::ContextSource::RuntimeDetected => {
-            format!("Ollama runtime allocation ({} tokens)", effective.tokens)
-        }
-        context::ContextSource::ProfileConfigured => {
-            format!("profile context_window ({} tokens)", effective.tokens)
-        }
-        context::ContextSource::ModelMetadata => {
-            format!("model maximum ({} tokens)", effective.tokens)
-        }
-        context::ContextSource::ConservativeFallback => "unknown runtime capacity".into(),
-    })
 }
 
 fn render_context_recommendation(
