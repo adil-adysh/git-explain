@@ -28,7 +28,7 @@ tasks:
       - cargo build --release
 
   test-live-ollama:
-    desc: Run the opt-in real Ollama context and OpenAI-compatibility probe.
+    desc: Run the opt-in real Ollama context and OpenAI-compatibility probe (set GIT_EXPLAIN_TEST_OLLAMA_UNLOAD_AFTER=true to unload it afterwards).
     cmds:
       - cargo test --test live_context live_ollama -- --ignored --nocapture
 
@@ -38,9 +38,9 @@ tasks:
       - cargo test --test live_context live_llama_cpp -- --ignored --nocapture
 
   test-live-context:
-    desc: Run all opt-in real model-server context probes.
+    desc: Run all opt-in real model-server context probes serially, with one configured model per server.
     cmds:
-      - cargo test --test live_context -- --ignored --nocapture
+      - cargo test --test live_context -- --ignored --nocapture --test-threads=1
 
   install:
     aliases: [install-release]

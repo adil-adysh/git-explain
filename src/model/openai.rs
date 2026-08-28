@@ -59,24 +59,37 @@ async fn discover_context_capacity_for(
         profile_limit,
         ..ContextCapacity::default()
     };
-    if !kind.is_ollama() {
-        return capacity;
-    }
-    let base = base_url.trim_end_matches('/').trim_end_matches("/v1");
-    if let Ok(response) = client.get(format!("{base}/api/ps")).send().await {
-        if let Ok(value) = response.json::<Value>().await {
-            capacity.runtime_allocated = ollama_runtime_context(&value, model);
+    match kind {
+        ProviderKind::Ollama => {
+            let base = base_url.trim_end_matches('/').trim_end_matches("/v1");
+            if let Ok(response) = client.get(format!("{base}/api/ps")).send().await {
+                if let Ok(value) = response.json::<Value>().await {
+                    capacity.runtime_allocated = ollama_runtime_context(&value, model);
+                }
+            }
+            if let Ok(response) = client
+                .post(format!("{base}/api/show"))
+                .json(&json!({"model": model}))
+                .send()
+                .await
+            {
+                if let Ok(value) = response.json::<Value>().await {
+                    capacity.model_max = ollama_model_context(&value);
+                }
+            }
         }
-    }
-    if let Ok(response) = client
-        .post(format!("{base}/api/show"))
-        .json(&json!({"model": model}))
-        .send()
-        .await
-    {
-        if let Ok(value) = response.json::<Value>().await {
-            capacity.model_max = ollama_model_context(&value);
+        ProviderKind::LlamaCpp => {
+            if let Ok(response) = client
+                .get(format!("{}/models", base_url.trim_end_matches('/')))
+                .send()
+                .await
+            {
+                if let Ok(value) = response.json::<Value>().await {
+                    capacity.runtime_allocated = llama_cpp_configured_context(&value, model);
+                }
+            }
         }
+        ProviderKind::OpenAiCompatible => {}
     }
     capacity
 }
@@ -113,6 +126,32 @@ fn ollama_model_context(value: &Value) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
+fn llama_cpp_configured_context(value: &Value, model: &str) -> Option<u32> {
+    value
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|models| {
+            models.iter().find(|entry| {
+                entry.get("id").and_then(Value::as_str) == Some(model)
+                    || entry
+                        .get("aliases")
+                        .and_then(Value::as_array)
+                        .is_some_and(|aliases| {
+                            aliases.iter().any(|alias| alias.as_str() == Some(model))
+                        })
+            })
+        })
+        .and_then(|entry| entry.pointer("/status/args").and_then(Value::as_array))
+        .and_then(|args| {
+            args.windows(2).find_map(|pair| {
+                (pair[0].as_str() == Some("--ctx-size"))
+                    .then(|| pair[1].as_str())
+                    .flatten()
+                    .and_then(|value| value.parse::<u32>().ok())
+            })
+        })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderKind {
     LlamaCpp,
@@ -133,10 +172,6 @@ impl ProviderKind {
     fn is_llama_cpp(self) -> bool {
         matches!(self, Self::LlamaCpp)
     }
-    fn is_ollama(self) -> bool {
-        matches!(self, Self::Ollama)
-    }
-
     pub const fn context_control(self) -> ContextControl {
         match self {
             // llama.cpp configures --ctx-size when its server starts. Ollama's
@@ -861,6 +896,15 @@ mod tests {
             profile_limit: Some(32768),
         };
         assert_eq!(capacity.effective().tokens, 4096);
+    }
+
+    #[test]
+    fn llama_cpp_router_reports_its_configured_startup_context() {
+        let models = json!({"data": [{
+            "id": "local",
+            "status": {"args": ["llama-server", "--ctx-size", "16384"]}
+        }]});
+        assert_eq!(llama_cpp_configured_context(&models, "local"), Some(16_384));
     }
 
     #[test]
