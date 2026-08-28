@@ -42,8 +42,25 @@ pub enum Command {
     Profile(ProfileCommand),
     #[command(about = "Inspect or clear the explanation cache")]
     Cache(CacheCommand),
+    #[command(about = "Inspect local Ollama context history and recommendations")]
+    Context(ContextCommand),
     #[command(about = "Start, inspect, refresh, or stop the local daemon")]
     Daemon(DaemonCommand),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct ContextCommand {
+    #[command(subcommand)]
+    pub action: ContextAction,
+}
+#[derive(Clone, Debug, Subcommand)]
+pub enum ContextAction {
+    Stats,
+    Recommend,
+    Reset {
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Clone, Debug, Args)]

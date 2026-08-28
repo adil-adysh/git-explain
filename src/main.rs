@@ -20,13 +20,14 @@ mod web;
 use analyzer::RepositoryAnalyzer;
 use anyhow::{Context, Result};
 use clap::Parser;
-use cli::{CacheAction, Cli, Command, ConfigAction, ProfileAction};
+use cli::{CacheAction, Cli, Command, ConfigAction, ContextAction, ProfileAction};
 use config::{
     add_profile_with_update, display_preset, display_provider, edit_config, edit_profile,
     format_application_show, format_profile_show, init_repository_config, init_user_config,
     profile_names, remove_profile, use_profile, use_repository_profile, ConfigLoader, ConfigUpdate,
     ListUpdate, ProfileDraft, ProfileNotFound, ProfileUpdate,
 };
+use git_explain::ollama_context;
 use snapshot::SnapshotGeneration;
 use std::io::{self, IsTerminal};
 
@@ -42,6 +43,40 @@ async fn run() -> Result<()> {
     let cli = Cli::parse();
     if let Some(Command::Daemon(command)) = &cli.command {
         return daemon::command(&command.action).await;
+    }
+    if let Some(Command::Context(command)) = &cli.command {
+        let loader = ConfigLoader::for_context(None)?;
+        let resolved = loader.resolve(cli.profile.as_deref())?;
+        if resolved.model.preset.as_deref() != Some("ollama") {
+            anyhow::bail!("Context history is currently available only for an Ollama profile.");
+        }
+        let tracker = ollama_context::OllamaRequestTracker::for_user_config(&loader.paths.user);
+        match &command.action {
+            ContextAction::Stats => {
+                print_context_stats(&resolved.profile, &resolved.model, &tracker)
+            }
+            ContextAction::Recommend => {
+                let caps = model::openai::discover_context_capabilities(&resolved.model).await;
+                let records = tracker.records(&resolved.profile, false);
+                let recommendation = ollama_context::recommend(
+                    &records,
+                    caps.capacity.runtime_allocated,
+                    caps.capacity.model_max,
+                );
+                println!("Context recommendation\n\nProfile: {}\nCurrent Ollama context: {}\nRecommended context: {}\n\n{}", resolved.profile, caps.capacity.runtime_allocated.map_or_else(|| "not loaded".into(), |v| format!("{v} tokens")), recommendation.recommended.map_or_else(|| "not available".into(), |v| format!("{v} tokens")), recommendation.reason);
+            }
+            ContextAction::Reset { force } => {
+                if !force {
+                    anyhow::bail!("Context reset is destructive. Re-run with --force to remove local history for profile '{}'.", resolved.profile);
+                }
+                println!(
+                    "Removed {} local context records for profile {}.",
+                    tracker.reset(&resolved.profile)?,
+                    resolved.profile
+                );
+            }
+        }
+        return Ok(());
     }
     if let Some(Command::Config(command)) = &cli.command {
         let repository = git::RepositoryContext::discover().ok();
@@ -495,6 +530,16 @@ async fn run() -> Result<()> {
         cli.port,
     )
     .await
+}
+
+fn print_context_stats(
+    profile: &str,
+    model: &config::ResolvedProfile,
+    tracker: &ollama_context::OllamaRequestTracker,
+) {
+    let records = tracker.records(profile, false);
+    let stats = ollama_context::OllamaContextStatistics::from_records(&records);
+    println!("Context statistics\n\nProfile: {profile}\nPreset: Ollama\nModel: {}\n\nRequests tracked: {}\n\nRequired context:\n  p50: {}\n  p90: {}\n  p95: {}\n  max: {}\n\nCompaction: {} requests\nHard context failures: {}\nProvider context overflows: {}\nOutput truncations: {}\nAverage latency: {}", model.model, stats.count, stats.required_p50.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p90.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_p95.map_or_else(|| "insufficient samples".into(), |v| format!("{v} tokens")), stats.required_max.map_or_else(|| "none".into(), |v| format!("{v} tokens")), stats.compactions, stats.hard_failures, stats.overflows, stats.truncations, stats.average_latency_ms.map_or_else(|| "unavailable".into(), |v| format!("{v} ms")));
 }
 
 fn print_debug_context(model: &config::ResolvedProfile) {
