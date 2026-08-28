@@ -26,7 +26,7 @@ creating the profile:
 git explain profile add qwen35b-9000 --preset llama-cpp --model-port 9000 --model qwen3.5-35b
 ```
 
-For Ollama, use its OpenAI-compatible endpoint instead:
+For Ollama, use the Ollama preset:
 
 ```text
 git explain profile add ollama --preset ollama --model qwen3:8b
@@ -118,9 +118,9 @@ git explain profile edit local --context-window 32768
 git explain profile edit local --clear-context-window
 ```
 
-For Ollama, `git explain profile test ollama` also reads native `/api/show` metadata for the model's theoretical maximum and `/api/ps` for the context currently allocated to the loaded model. Because git-explain sends OpenAI-compatible `/v1/chat/completions` requests, that loaded runtime allocation is the hard bound: a model that supports 131072 tokens but is loaded with 4096 is budgeted as 4096.
+For Ollama, `git explain profile test ollama` also reads native `/api/show` metadata for the model's theoretical maximum and `/api/ps` for the context currently allocated to the loaded model. Ollama explanations use native `/api/chat` with `stream: false` and the required JSON Schema in its `format` field. The loaded runtime allocation is the hard bound: a model that supports 131072 tokens but is loaded with 4096 is budgeted as 4096.
 
-Ollama's OpenAI-compatible `/v1/chat/completions` API cannot increase context per request. If the selected model is not loaded yet, git-explain first sends a source-free one-token warm-up request, then reads `/api/ps` again before it sends an explanation. Configure Ollama itself (for example, `OLLAMA_CONTEXT_LENGTH` before `ollama serve`, or a Modelfile with `PARAMETER num_ctx <tokens>`), reload the model, and run `git explain profile test ollama` again. Larger windows use more memory; choose one that fits the model and hardware.
+Ollama's native `/api/chat` API cannot increase context per request. If the selected model is not loaded yet, git-explain first sends a source-free one-token warm-up request, then reads `/api/ps` again before it sends an explanation. Configure Ollama itself (for example, `OLLAMA_CONTEXT_LENGTH` before `ollama serve`, or a Modelfile with `PARAMETER num_ctx <tokens>`), reload the model, and run `git explain profile test ollama` again. Larger windows use more memory; choose one that fits the model and hardware.
 
 For Ollama profiles, git-explain keeps a bounded local history of context-planning metadata (100 records for each profile and normal/deep mode). It records capacities, estimates, actual token usage when Ollama returns it, outcomes, and latency—but never source, diffs, prompts, or model responses. It never changes Ollama's context configuration automatically. Use it to inspect demand and get an advisory recommendation:
 
