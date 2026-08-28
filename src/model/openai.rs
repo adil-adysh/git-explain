@@ -616,8 +616,7 @@ impl OpenAiProvider {
         // Estimate the complete serialized inference payload rather than just
         // source/user text: this includes the system message, JSON schema,
         // reasoning/template options, roles, and message framing.
-        let serialized_payload =
-            serde_json::to_string(&payload).context("serialize model request")?;
+        let serialized_payload = self.serialize_inference_payload(&payload)?;
         let requirement = calculate_context_requirement(
             &serialized_payload,
             generation,
@@ -626,8 +625,7 @@ impl OpenAiProvider {
         );
         let ideal_required_context = if retry {
             let original = self.build_request_with_retry(request, false);
-            let original_payload =
-                serde_json::to_string(&original).context("serialize original model request")?;
+            let original_payload = self.serialize_inference_payload(&original)?;
             calculate_context_requirement(
                 &original_payload,
                 generation,
@@ -835,7 +833,15 @@ impl OpenAiProvider {
         response.json().await.context("model JSON envelope")
     }
 
-    async fn send_ollama_json_request(&self, payload: &Req) -> Result<Resp> {
+    fn serialize_inference_payload(&self, payload: &Req) -> Result<String> {
+        if matches!(self.kind, ProviderKind::Ollama) {
+            return serde_json::to_string(&self.ollama_json_request(payload)?)
+                .context("serialize Ollama JSON request");
+        }
+        serde_json::to_string(payload).context("serialize model request")
+    }
+
+    fn ollama_json_request(&self, payload: &Req) -> Result<Value> {
         let mut options = serde_json::Map::new();
         if let Some(temperature) = payload.temperature {
             options.insert("temperature".into(), json!(temperature));
@@ -853,14 +859,18 @@ impl OpenAiProvider {
             role: "system".into(),
             content: schema_instruction,
         });
-        let request_body = json!({
+        Ok(json!({
             "model": payload.model,
             "messages": messages,
             "stream": false,
             "format": format,
             "think": payload.reasoning_effort.as_deref() != Some("none"),
             "options": options,
-        });
+        }))
+    }
+
+    async fn send_ollama_json_request(&self, payload: &Req) -> Result<Resp> {
+        let request_body = self.ollama_json_request(payload)?;
         let mut request = self
             .client
             .post(format!("{}/api/chat", ollama_native_base(&self.base_url)))
