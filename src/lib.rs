@@ -7,6 +7,7 @@ pub mod explain;
 pub mod git;
 pub mod language;
 pub mod model;
+pub mod ollama_context;
 pub mod runtime;
 pub mod snapshot;
 pub mod web;
