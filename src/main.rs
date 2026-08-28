@@ -51,7 +51,7 @@ async fn run() -> Result<()> {
             command.paths.as_slice(),
         ),
         Some(Command::File(_)) => (None, false, &[] as &[std::path::PathBuf]),
-        _ => (cli.revision.as_deref(), cli.staged, cli.paths.as_slice()),
+        _ => (None, false, &[] as &[std::path::PathBuf]),
     };
     if let Some(Command::Daemon(command)) = &cli.command {
         return daemon::command(&command.action).await;

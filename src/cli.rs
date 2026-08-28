@@ -4,41 +4,30 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     name = "git-explain",
-    about = "Read and understand code changed in the working tree or a Git commit",
-    after_help = "Examples:\n  git explain                 Explain current changes\n  git explain HEAD            Explain an existing commit\n  git explain --direct        Bypass the background daemon\n  git explain --debug         Inspect changes without opening a browser\n\nHelp:\n  git explain -h              Show command help\n  git explain config -h       Show configuration help\n  git explain profile -h      Show profile help"
+    about = "Read source files or understand semantic changes across Git revisions",
+    after_help = "Examples:\n  git explain                         Explain current changes\n  git explain diff HEAD               Explain one commit\n  git explain diff HEAD~3..HEAD       Explain an explicit range\n  git explain file -- src/lib.rs      Explain a working-tree file\n  git explain file HEAD -- src        Explain files under src at HEAD\n  git explain --debug diff -- src     Inspect without opening a browser\n\nHelp:\n  git explain -h              Show command help\n  git explain file -h         Show file-mode help\n  git explain diff -h         Show diff-mode help"
 )]
 pub struct Cli {
     #[arg(
-        value_name = "REVISION",
-        help = "Explain a Git commit instead of the working tree"
-    )]
-    pub revision: Option<String>,
-    #[arg(
-        long,
-        conflicts_with = "revision",
-        help = "Explain staged changes only"
-    )]
-    pub staged: bool,
-    #[arg(
-        last = true,
-        value_name = "PATH",
-        help = "Limit explanation to changed paths; rename paths match either old or new name"
-    )]
-    pub paths: Vec<PathBuf>,
-    #[arg(
         short = 'd',
         long,
+        global = true,
         help = "Print changed supported-language functions and exit"
     )]
     pub debug: bool,
     #[arg(
         long,
+        global = true,
         help = "Override the configured model profile for this invocation"
     )]
     pub profile: Option<String>,
-    #[arg(long, help = "Override the configured web-server port")]
+    #[arg(long, global = true, help = "Override the configured web-server port")]
     pub port: Option<u16>,
-    #[arg(long, help = "Bypass the background daemon and use a one-shot server")]
+    #[arg(
+        long,
+        global = true,
+        help = "Bypass the background daemon and use a one-shot server"
+    )]
     pub direct: bool,
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -69,19 +58,38 @@ pub enum Command {
 
 #[derive(Clone, Debug, Args)]
 pub struct DiffCommand {
-    #[arg(value_name = "COMMIT_OR_RANGE")]
+    #[arg(
+        value_name = "COMMIT_OR_RANGE",
+        help = "Explain one commit, A..B, or A...B; omit for working-tree changes"
+    )]
     pub revision: Option<String>,
-    #[arg(long, conflicts_with = "revision")]
+    #[arg(
+        long,
+        conflicts_with = "revision",
+        help = "Explain only staged changes relative to the configured diff target"
+    )]
     pub staged: bool,
-    #[arg(last = true, value_name = "PATH")]
+    #[arg(
+        last = true,
+        value_name = "PATH",
+        help = "Limit changes to files or directories; renames match old and new paths"
+    )]
     pub paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct FileCommand {
-    #[arg(value_name = "REVISION")]
+    #[arg(
+        value_name = "REVISION",
+        help = "Read files from this commit; omit to read the working tree"
+    )]
     pub revision: Option<String>,
-    #[arg(last = true, required = true, value_name = "PATH")]
+    #[arg(
+        last = true,
+        required = true,
+        value_name = "PATH",
+        help = "One or more files or recursively expanded directories"
+    )]
     pub paths: Vec<PathBuf>,
 }
 
@@ -405,19 +413,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explanation_selection_accepts_revision_staged_and_path_forms() {
-        let revision = Cli::try_parse_from(["git-explain", "HEAD~1", "--", "src/lib.rs"]).unwrap();
-        assert_eq!(revision.revision.as_deref(), Some("HEAD~1"));
-        assert_eq!(revision.paths, vec![PathBuf::from("src/lib.rs")]);
-
-        let staged = Cli::try_parse_from(["git-explain", "--staged", "--", "src"]).unwrap();
-        assert!(staged.staged);
-        assert_eq!(staged.paths, vec![PathBuf::from("src")]);
-
-        assert!(Cli::try_parse_from(["git-explain", "HEAD", "--staged"]).is_err());
-    }
-
-    #[test]
     fn explicit_file_and_diff_forms_parse_without_ambiguity() {
         let diff = Cli::try_parse_from(["git-explain", "diff", "HEAD~3..HEAD", "--", "src/lib.rs"])
             .unwrap();
@@ -434,6 +429,15 @@ mod tests {
         };
         assert_eq!(file.revision.as_deref(), Some("HEAD~1"));
         assert_eq!(file.paths, vec![PathBuf::from("src/lib.rs")]);
+
+        let staged =
+            Cli::try_parse_from(["git-explain", "diff", "--staged", "--debug", "--", "src"])
+                .unwrap();
+        let Some(Command::Diff(staged)) = staged.command else {
+            panic!("expected staged diff command");
+        };
+        assert!(staged.staged);
+        assert_eq!(staged.paths, vec![PathBuf::from("src")]);
     }
 
     #[test]
