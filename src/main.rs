@@ -53,7 +53,8 @@ async fn run() -> Result<()> {
         let tracker = ollama_context::OllamaRequestTracker::for_user_config(&loader.paths.user);
         match &command.action {
             ContextAction::Stats => {
-                print_context_stats(&resolved.profile, &resolved.model, &tracker)
+                let caps = model::openai::discover_context_capabilities(&resolved.model).await;
+                print_context_stats(&resolved.profile, &resolved.model, &caps.capacity, &tracker)
             }
             ContextAction::Recommend => {
                 let caps = model::openai::discover_context_capabilities(&resolved.model).await;
@@ -562,11 +563,15 @@ async fn run() -> Result<()> {
 fn print_context_stats(
     profile: &str,
     model: &config::ResolvedProfile,
+    capacity: &context::ContextCapacity,
     tracker: &ollama_context::OllamaRequestTracker,
 ) {
     println!(
-        "Context statistics\n\nProfile: {profile}\nPreset: Ollama\nModel: {}",
-        model.model
+        "Context statistics\n\nProfile: {profile}\nPreset: Ollama\nModel: {}\n\nCurrent Ollama context: {}\nModel maximum: {}\nProfile context_window: {}",
+        model.model,
+        capacity.runtime_allocated.map_or_else(|| "not loaded".into(), |value| format!("{value} tokens")),
+        capacity.model_max.map_or_else(|| "unavailable".into(), |value| format!("{value} tokens")),
+        capacity.profile_limit.map_or_else(|| "not configured".into(), |value| format!("{value} tokens")),
     );
     for (label, deep) in [("Normal", false), ("Deep", true)] {
         let records = tracker.records(profile, deep);

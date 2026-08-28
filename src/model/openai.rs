@@ -438,6 +438,8 @@ struct OllamaChatResponse {
     prompt_eval_count: Option<u32>,
     #[serde(default)]
     eval_count: Option<u32>,
+    #[serde(default)]
+    eval_duration: Option<u64>,
 }
 #[derive(Deserialize)]
 struct Choice {
@@ -458,6 +460,8 @@ struct Usage {
     prompt_tokens: Option<u32>,
     #[serde(default)]
     completion_tokens: Option<u32>,
+    #[serde(skip)]
+    generation_duration_ms: Option<u64>,
 }
 impl Usage {
     fn summary(&self) -> String {
@@ -864,6 +868,7 @@ impl OpenAiProvider {
             usage: Some(Usage {
                 prompt_tokens: response.prompt_eval_count,
                 completion_tokens: response.eval_count,
+                generation_duration_ms: response.eval_duration.map(|duration| duration / 1_000_000),
             }),
         })
     }
@@ -906,6 +911,15 @@ impl OpenAiProvider {
                 .prompt_tokens
                 .zip(value.completion_tokens)
                 .map(|(prompt, completion)| prompt.saturating_add(completion))
+        });
+        record.generation_duration_ms = usage.and_then(|value| value.generation_duration_ms);
+        record.generation_tokens_per_second = usage.and_then(|value| {
+            value
+                .completion_tokens
+                .zip(value.generation_duration_ms)
+                .and_then(|(tokens, ms)| {
+                    (ms > 0).then(|| u64::from(tokens).saturating_mul(1_000) / ms)
+                })
         });
         record.latency_ms = Some(latency_ms);
         record.success = true;
@@ -956,6 +970,15 @@ impl OpenAiProvider {
                 .prompt_tokens
                 .zip(value.completion_tokens)
                 .map(|(prompt, completion)| prompt.saturating_add(completion))
+        });
+        record.generation_duration_ms = usage.and_then(|value| value.generation_duration_ms);
+        record.generation_tokens_per_second = usage.and_then(|value| {
+            value
+                .completion_tokens
+                .zip(value.generation_duration_ms)
+                .and_then(|(tokens, ms)| {
+                    (ms > 0).then(|| u64::from(tokens).saturating_mul(1_000) / ms)
+                })
         });
         record.latency_ms = latency_ms;
         record.local_context_failure = local_context_failure;

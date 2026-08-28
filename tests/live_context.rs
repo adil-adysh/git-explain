@@ -270,17 +270,20 @@ async fn live_ollama_explanation_records_private_context_metadata() {
     assert!(record.ideal_required_context >= record.final_required_context);
     assert!(record.latency_ms.is_some());
     assert!(record.actual_prompt_tokens.is_some());
+    assert!(record.generation_duration_ms.is_some());
     let stored = std::fs::read_to_string(tracker.path()).expect("read local tracker state");
     assert!(!stored.contains(sentinel));
     assert!(!stored.contains("live Ollama tracker test"));
     println!(
-        "ollama tracker: success={} model_max={:?} runtime={:?} required={} prompt={:?} completion={:?}",
+        "ollama tracker: success={} model_max={:?} runtime={:?} required={} prompt={:?} completion={:?} generation_ms={:?} tokens_per_second={:?}",
         record.success,
         record.model_max,
         record.runtime_context,
         record.ideal_required_context,
         record.actual_prompt_tokens,
         record.actual_completion_tokens
+        ,record.generation_duration_ms
+        ,record.generation_tokens_per_second
     );
 }
 
