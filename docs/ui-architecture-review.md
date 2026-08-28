@@ -1,5 +1,7 @@
 # git-explain UI Architecture Review
 
+> Historical note: this review records the pre-`SemanticDocument` UI implementation. Type names and command forms such as `AnalysisSnapshot`, `ExplainedUnit`, and `git explain REVISION` are retained only as historical evidence. See `docs/architecture.md` and `README.md` for the current file/diff architecture and CLI.
+
 ## Executive Summary
 
 The current browser UI is still a small server-rendered document with localized progressive enhancement. Its browser state consists of one page-wide explanation-visibility flag, two per-unit presentation toggles, transient explanation-request state, and a daemon snapshot-generation check. There is no client-side router, data model, shared store, cross-unit selection, optimistic update system, or component lifecycle.

@@ -1,197 +1,103 @@
 # git-explain architecture
 
-This document describes the current implementation after the daemon milestones. Repository watching and automatic refresh remain intentionally deferred; multi-repository sessions are supported through the bounded daemon registry described below.
-
-## Current entrypoint
-
-`src/main.rs` is orchestration only:
+The product has two explicit analysis modes with one shared extraction boundary.
 
 ```text
-CLI/config/cache/debug handling ── direct path
-        ↓ normal web mode
-daemon discovery/start → authenticated repository open
-        ↓
-single RepositorySession
-        ↓
-RepositoryAnalyzer → AnalysisSnapshot
-        ↓
-session-aware Axum web routes
+SourceLoader
+    ↓
+SemanticExtractor
+    ↓
+SemanticDocument
+    ├── file mode ─────────────→ snapshot explanation cache
+    └── diff mode
+            ↓
+        SemanticMatcher
+            ↓
+        ChangeSet
+            ↓
+        change explanation cache
 ```
 
-The existing commands remain one-shot:
-
-- `git explain` discovers/starts the daemon, then registers the current repository working tree.
-- `git explain REVISION` registers the current repository and asks the daemon to analyze the revision against its first parent, or the empty tree for a root commit.
-- `--debug` prints the already-created snapshot and exits without starting the web server or calling a model.
-- `config` and `cache` commands return before repository analysis as before.
-- `git explain --direct` is an explicit fallback to the original one-shot server path.
-
-## Snapshot domain
-
-The current types are in `src/snapshot.rs`:
-
-| Type | Meaning | Mutability/owner |
-| --- | --- | --- |
-| `SnapshotGeneration(u64)` | Typed version of the analyzed state. One-shot sessions start at `1`; changed active sessions increment it during atomic refresh. | Immutable value owned by the snapshot/server request boundary. |
-| `SnapshotIdentity` | `WorkingTree { fingerprint }` or `Commit { oid }`. | Immutable snapshot identity. |
-| `UnitId(String)` | SHA-256-derived opaque identity for one analyzed unit. | Immutable ID attached to `ExplainedUnit`. |
-| `AnalysisSnapshot` | One coherent repository state: generation, identity, `AnalysisContext`, retained `FileChange`s, and ordered units. | Created by `RepositoryAnalyzer`; passed by value to the server. |
-
-`AnalysisSnapshot` does not contain a model provider, cache, Axum state, watcher, or mutable explanation runtime. The model is never called while a snapshot is being created.
-
-### Snapshot identity
-
-Working-tree identity is:
+`SemanticDocument` describes source at one revision without assigning Git change meaning. File mode consumes it directly. Diff mode compares before and after documents and produces the canonical change hierarchy:
 
 ```text
-SHA-256(
-  HEAD OID + configured diff_target +
-  every parsed FileChange's path, kind, old path, ranges, and unified diff
-)
+ChangeSet
+  └── FileChange[]
+        ├── deterministic Git metadata
+        └── SemanticUnitChange[]
 ```
 
-This is a deterministic identity of the authoritative analysis inputs, not a claim that every filesystem byte was independently indexed. Commit identity is the resolved full commit OID, so aliases such as `HEAD`, a short SHA, and the full SHA converge on the same identity.
+File mode must never manufacture `Added` changes for units that merely exist in a snapshot. Diff mode must never ask a model to infer rename, copy, binary, or mode facts.
 
-### Unit identity
+## CLI selection
 
-`UnitId` hashes length-delimited values for the file path, source-unit kind, qualified name (or name), source range, and source text. Therefore the same unit in the same snapshot receives the same ID; changing source, path, kind, name, or range changes the identity. It is deliberately not semantic rename tracking and does not replace the content-addressed explanation-cache key.
-
-Display order remains the `Vec<ExplainedUnit>` order produced by analysis. Runtime lookup is a `HashMap<UnitId, ExplainedUnit>`, so browser requests do not depend on vector position.
-
-## RepositoryAnalyzer
-
-`src/analyzer.rs` owns the deterministic pipeline:
-
-1. Select Git inputs using the resolved `GitConfig`.
-2. Build `FileChange`s.
-3. Select `WorkingTreeSourceProvider` or `GitCommitSourceProvider`.
-4. Build the historical/working-tree `AnalysisContext`.
-5. Call `analysis_items` to discover source units, scoped diffs, and regions.
-6. Assign stable `UnitId`s.
-7. Return an `AnalysisSnapshot` with explicit identity and generation.
-
-It does not start Axum, open a browser, call the LLM, manage cache entries, watch files, or run a daemon. `include_untracked` remains parsed/documented but unsupported in the current Git diff path. Staged behavior and `diff_target` are unchanged.
-
-Commit analysis retains root-commit empty-tree behavior, first-parent merge behavior, commit subject, deleted-file context, and historical source reads.
-
-## Server and request safety
-
-The direct compatibility server in `src/server.rs` receives one snapshot. The daemon runtime in `src/daemon.rs` uses the same snapshot model inside a single `RepositorySession`. Its global state contains:
+Plain `git explain` is shorthand for the current working-tree diff.
 
 ```text
-immutable AnalysisSnapshot
-Mutex<HashMap<UnitId, ExplainedUnit>>  // generated explanation overlay
-provider, cache, and resolved model/readers/explanation config
+git explain diff                         configured working-tree comparison
+git explain diff --staged                diff_target → index
+git explain diff COMMIT                  first parent → COMMIT
+git explain diff A..B                    A → B
+git explain diff A...B                   merge-base(A, B) → B
+git explain diff RANGE -- PATH...        filter complete Git file changes
+
+git explain file -- PATH...              working-tree documents
+git explain file REVISION -- PATH...     documents from REVISION
 ```
 
-The snapshot is the immutable source/diff/context boundary. Explanation fields are the mutable presentation overlay. Cache hydration and model completion update the overlay by `UnitId`.
+File selectors accept files and directories. Working-tree directories expand through tracked and untracked, non-ignored files. Revision directories expand with `git ls-tree` from the resolved commit, not from the checkout. Results use stable path ordering.
 
-Routes retain their shape but use opaque IDs:
+Diff path filtering occurs after Git discovers the complete change set. A rename therefore matches either its old or new path without degrading rename metadata into a deletion or addition.
 
-```text
-POST /api/sessions/{session-id}/units/{unit-id}/explain
-POST /api/sessions/{session-id}/units/{unit-id}/deep
-POST /api/sessions/{session-id}/units/{unit-id}/regenerate
-POST /api/sessions/{session-id}/units/{unit-id}/deep/regenerate
-```
+## Diff pipeline
 
-The browser renders `data-unit-id` and `data-generation="1"`, and sends `{ "generation": 1 }` with each explanation request. The server rejects a request whose generation differs from its snapshot before looking up the unit or calling the model:
+`RepositoryAnalyzer` asks `git.rs` for raw, NUL-delimited file metadata and unified patches. Git owns file identity and status. Source providers load the before and after versions:
 
-```json
-{"ok":false,"stale":true,"error":"Repository snapshot has changed."}
-```
+- working tree: configured base or index → working tree;
+- staged: configured base → index;
+- commit: first parent or empty tree → commit;
+- explicit range: resolved left endpoint or merge base → resolved right endpoint.
 
-Inference does not hold the item mutex. It copies the unit/request, awaits the provider, then performs a short write-back guarded by session identity, generation, and `UnitId`. If the session has been replaced, the result is discarded and cannot update the replacement repository.
+Each textual side becomes a `SemanticDocument`. `SemanticMatcher` pairs units and classifies them as `Added`, `Modified`, `Deleted`, or `Preserved`. Renderers and inference consume only the resulting `ChangeSet`; there is no parallel flat unit collection.
 
-The cache remains content-addressed by `ExplanationRequest` plus model/reader/explanation configuration. `UnitId` identifies a unit in a snapshot; it is not used as a cache-key replacement.
+Pure renames, exact copies, mode-only changes, binary changes, and preserved units require zero model requests. Added, modified, and deleted semantic units are explainable. Deleted units use before-source; added units use after-source; modified units retain both sides.
 
-## CLI and web lifecycles
+## File pipeline
 
-Normal working-tree flow:
+File mode resolves selected paths at the requested snapshot, loads complete source, and produces `FileAnalysis { documents, explanations }`. Every extracted unit may be explained because the user explicitly requested the file snapshot. There is no `SemanticMatcher`, Git status, or fake before/after pair.
 
-```text
-parse CLI → resolve repo → discover/start daemon → authenticated open request
-→ daemon resolves config → analyzer working-tree snapshot → session URL
-```
+The file browser retains Normal and Deep actions, annotated source, and text-source controls. It intentionally has no Git-diff control because a snapshot has no before/after diff.
 
-Commit:
+## Cache boundaries
 
-```text
-parse revision → discover/start daemon → authenticated open request
-→ analyzer resolves full OID/selects first parent or empty tree → session URL
-```
+Both modes use the repository-local SQLite store, but their content-addressed keys have mandatory, non-overlapping scopes:
 
-Web:
+- `snapshot`: whole-file semantic unit at one snapshot;
+- `change`: semantic unit change with Git context and diff.
 
-```text
-GET /sessions/{session-id} → ordered units + source + existing explanation overlay
-POST session explain/deep → validate session/generation → ID lookup → cache or model
-→ short guarded write-back → JSON result
+Normal and Deep generation settings remain separate key inputs. Model, provider, prompt version, reader settings, explanation settings, source, and prior explanation also participate. A snapshot response can never satisfy a change request, or vice versa.
 
-Daemon lifecycle:
+## Browser and daemon
 
-```text
-daemon start → spawn `git explain daemon run` → health probe → daemon.json
-daemon status → metadata + loopback health probe
-daemon stop → token-authenticated shutdown request
-```
+Diff mode normally registers a `ChangeSet` with the loopback daemon. Sessions have immutable analyzed inputs, a mutable explanation overlay, bounded cache/in-flight state, opaque IDs, cancellation, and atomic refresh. `--direct` uses the one-shot diff server.
 
-The daemon binds only to `127.0.0.1` on a dedicated stable port, `8192` by default. `GIT_EXPLAIN_DAEMON_PORT` may select another port. User-scoped metadata is stored beside the user config as `daemon.json`; it contains PID, port, start time, protocol version, and a random control token, but no source, explanations, API keys, or repository credentials. A create-new lock file prevents duplicate startup races and stale metadata is discarded after a failed health probe.
+File mode uses the loopback snapshot server. Snapshot endpoints use snapshot cache keys and file-unit IDs. Diff endpoints use change cache keys and semantic-change IDs. Both browser experiences generate explanations on demand and keep Normal and Deep responses distinct.
 
-Control routes are separate from browser routes. `POST /api/repos/open` and `POST /api/daemon/shutdown` require the token in `x-git-explain-control-token`. Browser HTML never receives that token and can address only session/unit IDs. Loopback is treated as privileged local access, not as authentication; the token prevents a local webpage from registering arbitrary paths or stopping the daemon.
-```
+The server always binds to `127.0.0.1`. Daemon control routes require the local control token. Repository configuration cannot define model endpoints or credential references.
 
-Normal/deep explanation behavior, retry policy, llama.cpp/OpenAI-compatible configuration, accessibility markup (`aria-live`, semantic headings, hide/show), and cache behavior remain outside deterministic analysis and are unchanged.
+## Rendering and accessibility
 
-## Tests and invariants
+CLI, browser, and JSON render deterministic domain facts; they do not reanalyze source independently. CLI debug output is stable, line-oriented text with explicit status labels, paths, unit names, kinds, ranges, source, semantic counts, and model-request counts. It uses no cursor rewriting, spinner, color-only meaning, or visual-table dependency.
 
-The implementation tests stable unit IDs and working-tree fingerprint determinism. Existing fixture tests cover working-tree discovery, historical commit source correctness, root and merge commits, supported languages, cache, model HTTP behavior, and rendered accessibility behavior.
+Browser output uses headings, file navigation, textual statuses, status regions, native buttons, and source text controls. Diff pages show file metadata above semantic cards. Snapshot pages show document metadata above unit cards.
 
-The key invariant is:
+## Invariants
 
-> Every browser/model request operates against an explicit immutable repository snapshot, identified by generation, and every changed code unit has a stable identity within that snapshot.
-
-No model request is made by `RepositoryAnalyzer`.
-
-## Configuration and profile boundary
-
-`src/config.rs` owns configuration parsing, precedence, validation, preset and
-endpoint resolution, and atomic TOML persistence. User configuration owns
-profile definitions; a repository configuration can only select one of those
-trusted profile names and supply repository-safe application settings. It
-cannot define a provider, endpoint, credential source, or profile.
-
-```text
-CLI flags / line-oriented interactive editor
-              ↓
-ProfileDraft or ProfileUpdate
-              ↓
-validation + preset/endpoint resolution
-              ↓
-user-config atomic write, or ResolvedProfile
-              ↓
-model HTTP provider
-```
-
-`ProfileDraft` represents construction, `ProfileUpdate` represents a partial
-mutation, and `ResolvedProfile` is the complete runtime model configuration;
-there are no compatibility aliases for those distinct roles. The model client
-accepts `ResolvedProfile` directly. `src/terminal.rs` owns the shared
-line-oriented input and confirmation primitives used by both interactive
-editors, while the editors retain their own menus and reviews.
-Optional generation settings use explicit `Update::Unchanged`, `Update::Set`,
-and `Update::Clear` semantics at the mutation boundary. A missing generation
-setting remains omitted from model requests, preserving provider defaults.
-
-Profile selection precedence is command line, `GIT_EXPLAIN_PROFILE`, repository
-selection, then user selection. The resolver exposes the selection source and
-raises a typed profile-not-found error with the requested and available names;
-CLI presentation supplies operation-specific recovery guidance. Presets and
-their default endpoints have one registry, and `--model-port` edits the URL
-port through URL parsing rather than string manipulation.
-
-## Migration plan and remaining daemon work
-
-The daemon now maintains a bounded multi-repository session registry. Each session has an opaque ID, an immutable current snapshot, repository-scoped cache and in-flight inference state, and a cancellation signal. Opening a repository makes it active without invalidating other sessions; the registry evicts the least recently used session at its capacity limit and cancels its work. Refresh still targets only the active session, reuses `RepositoryAnalyzer`, compares snapshot identity, and replaces the snapshot atomically. Existing direct CLI/server mode remains available through `git explain --direct`.
-
-Inference requests in the daemon are limited by a small process-wide semaphore. Each repository session deduplicates identical in-flight requests using the complete repository-scoped cache key. Replacing a session marks its cancellation state before the swap; waiting, queued, and active model requests then stop without writing into the replacement session.
+- Git determines file facts.
+- `SemanticDocument` contains no change classification.
+- `SemanticMatcher` is used only by diff mode.
+- `ChangeSet` is the sole diff-domain result.
+- File mode never creates fake changes.
+- Deterministic metadata never requires inference.
+- Snapshot and change cache identities never collide.
+- Analysis contains no provider, server, or mutable runtime concerns.

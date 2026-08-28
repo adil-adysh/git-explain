@@ -2,7 +2,7 @@
 
 ## Project Structure
 
-`src/` contains the Rust application. CLI and configuration code live in `cli.rs` and `config.rs`; Git analysis is in `git.rs`, `diff.rs`, `analyzer.rs`, and `explain.rs`; supported language parsers are under `src/language/`; daemon, HTTP, and browser behavior is implemented in `daemon.rs`, `server.rs`, and `web.rs`. Shared snapshot and runtime logic is in `snapshot.rs` and `runtime.rs`. Integration tests and fixtures are in `tests/`. Design notes are in `docs/`, installation automation is in `scripts/`, and CI is defined in `.github/workflows/ci.yml`.
+`src/` contains the Rust application. CLI and configuration code live in `cli.rs` and `config.rs`; Git analysis is in `git.rs`, `diff.rs`, `analyzer.rs`, and `explain.rs`; `semantic.rs` produces revision-specific `SemanticDocument`s; `file_analysis.rs` owns file-mode snapshot state; `change_set.rs` owns diff-mode state. Supported language parsers are under `src/language/`; daemon, HTTP, and browser behavior is implemented in `daemon.rs`, `server.rs`, and `web.rs`. Shared identity and runtime logic is in `snapshot.rs` and `runtime.rs`.
 
 ## Build, Test, and Development Commands
 
@@ -17,11 +17,11 @@ task install-dev        # build and install debug binary
 task install FORCE=true # stop/replace a busy installed daemon forcefully
 ```
 
-Equivalent direct commands are `cargo fmt -- --check`, `cargo test`, and `cargo build`. Run `git explain --debug` for deterministic analysis without opening the browser. The normal daemon uses loopback port 8192; `git explain --direct` is the one-shot fallback.
+Equivalent direct commands are `cargo fmt -- --check`, `cargo test`, and `cargo build`. Run `git explain --debug diff` or `git explain --debug file -- <path>` for deterministic analysis without opening the browser. Diff mode accepts a commit, `A..B`, or `A...B`; file-mode selectors accept files or directories. The normal diff daemon uses loopback port 8192; `git explain --direct diff` is the one-shot diff fallback.
 
 ## Coding Style and Naming
 
-Format Rust with `cargo fmt`; CI treats formatting failures as errors. Use idiomatic Rust 2021, four-space indentation, `snake_case` for functions/modules, `PascalCase` for types, and descriptive names for snapshot, unit, and repository boundaries. Keep analysis deterministic and avoid putting model, web-server, or mutable runtime concerns into `RepositoryAnalyzer`.
+Format Rust with `cargo fmt`; CI treats formatting failures as errors. Use idiomatic Rust 2021, four-space indentation, `snake_case` for functions/modules, `PascalCase` for types, and descriptive names for snapshot, unit, and repository boundaries. Keep analysis deterministic and avoid putting model, web-server, cache, or mutable runtime concerns into `RepositoryAnalyzer`. `SemanticDocument` has no change classification; only diff mode invokes `SemanticMatcher`. Snapshot and change cache identities must remain disjoint.
 
 ## Testing Guidelines
 

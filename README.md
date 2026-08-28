@@ -1,6 +1,6 @@
 # git-explain
 
-`git-explain` explains changed source code in a local browser. It analyzes Git changes locally, then asks the model endpoint selected by the active profile for an explanation.
+`git-explain` reads complete source files or explains semantic changes in a local browser. Source extraction and Git analysis stay local; only individual semantic units requested in the browser are sent to the selected model endpoint.
 
 ## Quick start
 
@@ -16,7 +16,7 @@ Choose one local model-server preset. For llama.cpp running on its default port:
 git explain profile add qwen35b --preset llama-cpp --model qwen3.5-35b
 git explain profile test qwen35b
 git explain profile use qwen35b
-git explain
+git explain diff
 ```
 
 If your llama.cpp server uses a different port, override only that port when
@@ -31,7 +31,7 @@ For Ollama, use the Ollama preset:
 ```text
 git explain profile add ollama --preset ollama --model qwen3:8b
 git explain profile test ollama
-git explain --profile ollama
+git explain --profile ollama diff
 ```
 
 Replace the example model names with the model loaded by your local server. `profile test` is a safe connection check: it never sends repository source.
@@ -41,7 +41,7 @@ For a hosted OpenAI-compatible endpoint, set the credential in your shell first,
 ```text
 git explain profile add cloud --base-url https://api.example.com/v1 --model example-model --api-key-env CLOUD_API_KEY
 git explain profile test cloud
-git explain --profile cloud
+git explain --profile cloud diff
 ```
 
 Use `--profile` for a one-off run; `git explain profile use <name>` makes a profile the default. `GIT_EXPLAIN_PROFILE` can select a profile when an explicit command-line selection is not provided.
@@ -49,15 +49,19 @@ Use `--profile` for a one-off run; `git explain profile use <name>` makes a prof
 Useful first-run commands:
 
 ```text
-# See the changed source units without contacting a model or opening a browser.
-git explain --debug
+# See changed semantic units without contacting a model or opening a browser.
+git explain --debug diff
+
+# Inspect complete files from the working tree or a commit.
+git explain --debug file -- src/lib.rs
+git explain --debug file HEAD -- src
 
 # Inspect the effective configuration and available profiles.
 git explain config show
 git explain profile list
 
 # Use a different local git-explain web-server port for this run.
-git explain --port 9000
+git explain --port 9000 diff
 
 # Create repository-scoped preferences; it can select a trusted user profile,
 # but cannot define an endpoint or credential.
@@ -134,7 +138,7 @@ git explain --profile local context reset --force
 
 `context recommend` stays concise too: no history asks you to run git-explain, and fewer than 10 requests reports that the policy needs more history. Recommendations use the policy p95 ideal requirement plus 20% headroom, rounded to a conservative context tier and capped at the model maximum. It identifies only the current bottleneck (model maximum, profile `context_window`, or a detected backend runtime); when a local backend is offline it still uses local history and marks the live context unavailable. A decrease is deliberately reported only as a potential decrease after a longer stable history. Context is not resized per request because changing it can require runner and KV-cache reallocation; each request is still budgeted independently while the history recommends one stable server setting.
 
-Ollama context is a fixed loaded-runner setting: configure Ollama, reload the model, and verify with `git explain profile test <name>`. llama.cpp is likewise fixed when its server starts; restart it with `--ctx-size <tokens>`. Its OpenAI-compatible endpoint receives no invented context-size field. When a llama.cpp router exposes its model data through `/v1/models`, `git explain profile test` reports both `meta.n_ctx_train` (the model maximum) and the configured startup context (the fixed runtime bound). Generic local OpenAI-compatible profiles collect the same private history, but their context recommendation is advisory-only until a dedicated adapter verifies how that server controls context. `git explain --debug` and `git explain profile test <name>` show which control mode applies.
+Ollama context is a fixed loaded-runner setting: configure Ollama, reload the model, and verify with `git explain profile test <name>`. llama.cpp is likewise fixed when its server starts; restart it with `--ctx-size <tokens>`. Its OpenAI-compatible endpoint receives no invented context-size field. When a llama.cpp router exposes its model data through `/v1/models`, `git explain profile test` reports both `meta.n_ctx_train` (the model maximum) and the configured startup context (the fixed runtime bound). Generic local OpenAI-compatible profiles collect the same private history, but their context recommendation is advisory-only until a dedicated adapter verifies how that server controls context. `git explain --debug diff` and `git explain profile test <name>` show which control mode applies.
 
 Repository configuration at `.git/git-explain.toml` may select a logical profile name and repository-safe explanation and Git preferences:
 
@@ -174,9 +178,32 @@ Run `git explain profile add` in an interactive terminal to create a profile thr
 
 ## Commands
 
-`git explain` explains current changes. Pass a revision to explain a commit. `--direct` bypasses the local daemon; `--debug` inspects detected changed source units without opening the browser. The daemon binds to `127.0.0.1`.
+There are two analysis modes. Plain `git explain` remains shorthand for the current working-tree diff.
 
-For help, use `git explain -h`, `git explain profile -h`, and `git explain config -h`. Git may intercept `git explain --help` before this application starts.
+```text
+# Diff mode: compare semantic documents and explain only actual changes.
+git explain diff
+git explain diff --staged
+git explain diff HEAD
+git explain diff HEAD~3..HEAD
+git explain diff main...feature
+git explain diff HEAD -- src/lib.rs
+
+# File mode: explain every semantic unit in selected complete files.
+# Each selector may be a file or a recursively expanded directory.
+git explain file -- src/lib.rs
+git explain file -- src
+git explain file HEAD -- src
+git explain file <commit> -- src/lib.rs
+```
+
+In diff mode, no revision means the configured working-tree comparison. A single commit means its first parent (or the empty tree for a root commit) to that commit. `A..B` compares exactly A to B. `A...B` compares their merge base to B. `--staged` compares the configured `diff_target` to the index. Path filters are applied after complete Git metadata discovery, so either the old or new path selects a rename.
+
+File mode reads the working tree when no revision is supplied. With a revision, both file and directory selection come from that commit tree, even when the current checkout differs. File mode consumes `SemanticDocument` directly and never labels existing units as fake additions.
+
+`--debug` prints deterministic, line-oriented analysis without opening a browser or contacting a model. Diff mode normally uses the daemon; `--direct` uses the one-shot diff server. File mode uses its snapshot server and snapshot-cache namespace. All servers bind to `127.0.0.1`.
+
+For help, use `git explain -h`, `git explain file -h`, `git explain diff -h`, `git explain profile -h`, and `git explain config -h`. Git may intercept `git explain --help` before this application starts.
 
 ### Convenience aliases
 
