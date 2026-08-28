@@ -10,8 +10,19 @@ use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 
-/// Extracts complete semantic units from either revision of a file.
-pub fn extract(file: &SourceFile) -> Result<Vec<SemanticUnit>> {
+/// A complete, revision-specific semantic view of one source file.
+///
+/// File mode consumes this document directly. Diff mode compares two
+/// documents through [`match_documents`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticDocument {
+    pub source: SourceFile,
+    pub language: Option<String>,
+    pub units: Vec<SemanticUnit>,
+}
+
+/// Extracts a reusable semantic document without assigning change meaning.
+pub fn extract_document(file: &SourceFile) -> Result<SemanticDocument> {
     let line_count = file.content.lines().count().max(1);
     let units = LanguageRegistry::find_changed_units(
         &file.path,
@@ -21,11 +32,9 @@ pub fn extract(file: &SourceFile) -> Result<Vec<SemanticUnit>> {
             end: line_count,
         }],
     )?;
-    let language = LanguageRegistry::language_for_path(&file.path)
-        .unwrap_or("unknown")
-        .to_string();
+    let language = LanguageRegistry::language_for_path(&file.path).map(str::to_string);
     let mut occurrences = HashMap::<(crate::language::SourceUnitKind, String), usize>::new();
-    Ok(units
+    let units = units
         .into_iter()
         .map(|unit| {
             let name = unit.qualified_name.clone().unwrap_or(unit.name);
@@ -45,15 +54,36 @@ pub fn extract(file: &SourceFile) -> Result<Vec<SemanticUnit>> {
                     end_line: unit.end_line,
                 },
                 source: unit.source,
-                language: language.clone(),
+                language: language.clone().unwrap_or_else(|| "unknown".into()),
             }
         })
-        .collect())
+        .collect();
+    Ok(SemanticDocument {
+        source: file.clone(),
+        language,
+        units,
+    })
+}
+
+pub fn match_documents(
+    before: Option<&SemanticDocument>,
+    after: Option<&SemanticDocument>,
+    diff: String,
+) -> Vec<SemanticUnitChange> {
+    match_units(
+        before
+            .map(|document| document.units.clone())
+            .unwrap_or_default(),
+        after
+            .map(|document| document.units.clone())
+            .unwrap_or_default(),
+        diff,
+    )
 }
 
 /// Conservative deterministic matcher. Identity is kind + qualified name +
 /// occurrence; uncertain duplicate matches deliberately become delete + add.
-pub fn match_units(
+fn match_units(
     before: Vec<SemanticUnit>,
     after: Vec<SemanticUnit>,
     diff: String,

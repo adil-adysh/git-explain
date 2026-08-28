@@ -5,10 +5,11 @@ use crate::{
         AnalysisContext, AnalysisMode, GitCommitSourceProvider, GitIndexSourceProvider,
         SourceProvider, WorkingTreeSourceProvider,
     },
+    file_analysis::FileAnalysis,
     git, semantic,
     snapshot::{working_tree_fingerprint, SnapshotGeneration, SnapshotIdentity},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
@@ -17,6 +18,29 @@ pub struct RepositoryAnalyzer {
     git_config: GitConfig,
 }
 impl RepositoryAnalyzer {
+    pub fn analyze_files(&self, revision: Option<&str>, paths: &[PathBuf]) -> Result<FileAnalysis> {
+        let resolved_revision = revision
+            .map(|value| git::resolve_revision(&self.repo_root, value))
+            .transpose()?;
+        let provider: Box<dyn SourceProvider> = match &resolved_revision {
+            Some(oid) => Box::new(GitCommitSourceProvider::new(&self.repo_root, oid)),
+            None => Box::new(WorkingTreeSourceProvider::new(&self.repo_root)),
+        };
+        let mut documents = Vec::with_capacity(paths.len());
+        for path in paths {
+            let source = SourceFile {
+                path: path.clone(),
+                content: provider
+                    .read_file(path)
+                    .with_context(|| format!("read selected file {}", path.display()))?,
+            };
+            documents.push(semantic::extract_document(&source)?);
+        }
+        Ok(FileAnalysis {
+            revision: resolved_revision,
+            documents,
+        })
+    }
     pub fn new(repo_root: impl Into<PathBuf>, config: ResolvedConfig) -> Self {
         Self {
             repo_root: repo_root.into(),
@@ -134,6 +158,51 @@ impl RepositoryAnalyzer {
             files,
         })
     }
+
+    pub fn analyze_range(
+        &self,
+        expression: &str,
+        generation: SnapshotGeneration,
+        paths: &[PathBuf],
+    ) -> Result<ChangeSet> {
+        let analysis = git::range_analysis(&self.repo_root, expression)?;
+        let mut files = analysis.files;
+        filter_files(&mut files, paths);
+        let before = GitCommitSourceProvider::new(&self.repo_root, &analysis.from_oid);
+        let after = GitCommitSourceProvider::new(&self.repo_root, &analysis.to_oid);
+        populate_semantics(&mut files, &before, &after);
+        Ok(ChangeSet {
+            generation,
+            identity: SnapshotIdentity::Range {
+                from_oid: analysis.from_oid.clone(),
+                to_oid: analysis.to_oid.clone(),
+            },
+            context: AnalysisContext {
+                mode: AnalysisMode::Range {
+                    expression: analysis.expression,
+                    from_oid: analysis.from_oid,
+                    to_oid: analysis.to_oid,
+                },
+                path_filters: paths.to_vec(),
+            },
+            files,
+        })
+    }
+
+    pub fn analyze_revision_or_range(
+        &self,
+        revision: &str,
+        generation: SnapshotGeneration,
+        paths: &[PathBuf],
+    ) -> Result<ChangeSet> {
+        if revision.contains("..") {
+            self.analyze_range(revision, generation, paths)
+        } else if paths.is_empty() {
+            self.analyze_commit(revision, generation)
+        } else {
+            self.analyze_commit_with_paths(revision, generation, paths)
+        }
+    }
 }
 
 fn filter_files(files: &mut Vec<FileChange>, paths: &[PathBuf]) {
@@ -174,10 +243,10 @@ fn populate_semantics(
             .new_path
             .as_ref()
             .and_then(|path| read_source(after, path));
-        let before_units = file
+        let before_document = file
             .before
             .as_ref()
-            .map(semantic::extract)
+            .map(semantic::extract_document)
             .transpose()
             .unwrap_or_else(|error| {
                 eprintln!(
@@ -185,12 +254,11 @@ fn populate_semantics(
                     file.display_path().display()
                 );
                 None
-            })
-            .unwrap_or_default();
-        let after_units = file
+            });
+        let after_document = file
             .after
             .as_ref()
-            .map(semantic::extract)
+            .map(semantic::extract_document)
             .transpose()
             .unwrap_or_else(|error| {
                 eprintln!(
@@ -198,11 +266,10 @@ fn populate_semantics(
                     file.display_path().display()
                 );
                 None
-            })
-            .unwrap_or_default();
-        file.semantic_changes = semantic::match_units(
-            before_units,
-            after_units,
+            });
+        file.semantic_changes = semantic::match_documents(
+            before_document.as_ref(),
+            after_document.as_ref(),
             file.patch
                 .as_ref()
                 .map(|patch| patch.text.clone())

@@ -46,6 +46,12 @@ pub struct Cli {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
+    #[command(
+        about = "Explain semantic changes in the working tree, a commit, or an explicit Git range"
+    )]
+    Diff(DiffCommand),
+    #[command(about = "Explain complete source files from the working tree or a revision")]
+    File(FileCommand),
     #[command(alias = "cfg", about = "Initialize and inspect configuration")]
     Config(ConfigCommand),
     #[command(
@@ -59,6 +65,24 @@ pub enum Command {
     Context(ContextCommand),
     #[command(about = "Start, inspect, refresh, or stop the local daemon")]
     Daemon(DaemonCommand),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct DiffCommand {
+    #[arg(value_name = "COMMIT_OR_RANGE")]
+    pub revision: Option<String>,
+    #[arg(long, conflicts_with = "revision")]
+    pub staged: bool,
+    #[arg(last = true, value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct FileCommand {
+    #[arg(value_name = "REVISION")]
+    pub revision: Option<String>,
+    #[arg(last = true, required = true, value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -391,6 +415,25 @@ mod tests {
         assert_eq!(staged.paths, vec![PathBuf::from("src")]);
 
         assert!(Cli::try_parse_from(["git-explain", "HEAD", "--staged"]).is_err());
+    }
+
+    #[test]
+    fn explicit_file_and_diff_forms_parse_without_ambiguity() {
+        let diff = Cli::try_parse_from(["git-explain", "diff", "HEAD~3..HEAD", "--", "src/lib.rs"])
+            .unwrap();
+        let Some(Command::Diff(diff)) = diff.command else {
+            panic!("expected diff command");
+        };
+        assert_eq!(diff.revision.as_deref(), Some("HEAD~3..HEAD"));
+        assert_eq!(diff.paths, vec![PathBuf::from("src/lib.rs")]);
+
+        let file =
+            Cli::try_parse_from(["git-explain", "file", "HEAD~1", "--", "src/lib.rs"]).unwrap();
+        let Some(Command::File(file)) = file.command else {
+            panic!("expected file command");
+        };
+        assert_eq!(file.revision.as_deref(), Some("HEAD~1"));
+        assert_eq!(file.paths, vec![PathBuf::from("src/lib.rs")]);
     }
 
     #[test]

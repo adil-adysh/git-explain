@@ -8,6 +8,7 @@ pub struct SnapshotGeneration(pub u64);
 pub enum SnapshotIdentity {
     WorkingTree { fingerprint: String },
     Commit { oid: String },
+    Range { from_oid: String, to_oid: String },
 }
 pub fn working_tree_fingerprint(head: &str, diff_target: &str, files: &[FileChange]) -> String {
     let mut input = format!("head={head}\ndiff_target={diff_target}\n");

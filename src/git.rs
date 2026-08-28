@@ -43,6 +43,33 @@ pub struct CommitAnalysis {
     pub subject: String,
     pub files: Vec<FileChange>,
 }
+pub struct RangeAnalysis {
+    pub expression: String,
+    pub from_oid: String,
+    pub to_oid: String,
+    pub files: Vec<FileChange>,
+}
+
+pub fn range_analysis(root: &Path, expression: &str) -> Result<RangeAnalysis> {
+    let (from_oid, to_oid) = if let Some((left, right)) = expression.split_once("...") {
+        let left = resolve_revision(root, left)?;
+        let right = resolve_revision(root, right)?;
+        (git_output(root, &["merge-base", &left, &right])?, right)
+    } else if let Some((left, right)) = expression.split_once("..") {
+        (
+            resolve_revision(root, left)?,
+            resolve_revision(root, right)?,
+        )
+    } else {
+        anyhow::bail!("Git range '{expression}' must contain '..' or '...'");
+    };
+    Ok(RangeAnalysis {
+        files: collect_files(root, &[&from_oid, &to_oid])?,
+        expression: expression.into(),
+        from_oid,
+        to_oid,
+    })
+}
 pub fn working_tree_files(root: &Path, config: &GitConfig) -> Result<Vec<FileChange>> {
     let range = config
         .include_staged

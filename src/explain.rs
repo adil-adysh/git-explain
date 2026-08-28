@@ -85,6 +85,11 @@ pub enum AnalysisMode {
         subject: String,
         merge_parent_count: usize,
     },
+    Range {
+        expression: String,
+        from_oid: String,
+        to_oid: String,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnalysisContext {
@@ -104,6 +109,13 @@ impl AnalysisContext {
             AnalysisMode::Commit { oid, subject, .. } => {
                 format!("Change source: commit {oid}\nCommit subject: {subject}")
             }
+            AnalysisMode::Range {
+                expression,
+                from_oid,
+                to_oid,
+            } => format!(
+                "Change source: Git range {expression}\nBefore revision: {from_oid}\nAfter revision: {to_oid}"
+            ),
         }
     }
 }
@@ -140,6 +152,15 @@ pub fn format_debug(change_set: &ChangeSet) -> String {
             if *merge_parent_count > 1 {
                 writeln!(output, "Merge policy: first parent").unwrap();
             }
+        }
+        AnalysisMode::Range {
+            expression,
+            from_oid,
+            to_oid,
+        } => {
+            writeln!(output, "\nSelected Git range: {expression}").unwrap();
+            writeln!(output, "Before revision: {from_oid}").unwrap();
+            writeln!(output, "After revision: {to_oid}").unwrap();
         }
     }
     if !change_set.context.path_filters.is_empty() {

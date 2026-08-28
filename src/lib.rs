@@ -5,6 +5,7 @@ pub mod config;
 pub mod context;
 pub mod diff;
 pub mod explain;
+pub mod file_analysis;
 pub mod git;
 pub mod language;
 pub mod local_context;

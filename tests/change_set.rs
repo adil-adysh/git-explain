@@ -123,6 +123,29 @@ fn staged_selection_excludes_unstaged_edits() {
 }
 
 #[test]
+fn explicit_range_uses_its_two_endpoints_not_the_working_tree() {
+    let dir = repo();
+    std::fs::write(dir.path().join("lib.rs"), "fn value() { one(); }\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "one"]);
+    std::fs::write(dir.path().join("lib.rs"), "fn value() { two(); }\n").unwrap();
+    git(dir.path(), &["commit", "-am", "two", "-q"]);
+    std::fs::write(dir.path().join("lib.rs"), "fn value() { working(); }\n").unwrap();
+
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_revision_or_range("HEAD~1..HEAD", SnapshotGeneration(1), &[])
+        .unwrap();
+    let change = changes.explainable_changes().next().unwrap();
+    assert!(change.before.as_ref().unwrap().source.contains("one()"));
+    assert!(change.after.as_ref().unwrap().source.contains("two()"));
+    assert!(!change.after.as_ref().unwrap().source.contains("working()"));
+    assert!(matches!(
+        changes.identity,
+        git_explain::snapshot::SnapshotIdentity::Range { .. }
+    ));
+}
+
+#[test]
 fn rename_plus_edit_preserves_other_units() {
     let dir = repo();
     std::fs::write(

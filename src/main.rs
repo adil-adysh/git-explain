@@ -8,6 +8,7 @@ mod context;
 mod daemon;
 mod diff;
 mod explain;
+mod file_analysis;
 mod git;
 mod language;
 mod model;
@@ -43,6 +44,15 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    let (selected_revision, selected_staged, selected_paths) = match &cli.command {
+        Some(Command::Diff(command)) => (
+            command.revision.as_deref(),
+            command.staged,
+            command.paths.as_slice(),
+        ),
+        Some(Command::File(_)) => (None, false, &[] as &[std::path::PathBuf]),
+        _ => (cli.revision.as_deref(), cli.staged, cli.paths.as_slice()),
+    };
     if let Some(Command::Daemon(command)) = &cli.command {
         return daemon::command(&command.action).await;
     }
@@ -497,21 +507,24 @@ async fn run() -> Result<()> {
     let context = git::RepositoryContext::discover()?;
     let repo = context.worktree_root.clone();
     let loader = ConfigLoader::for_context(Some(&context))?;
+    if let Some(Command::File(command)) = &cli.command {
+        let application = loader.application_config(cli.profile.as_deref())?;
+        let analysis = RepositoryAnalyzer::with_git_config(&repo, application.git)
+            .analyze_files(command.revision.as_deref(), &command.paths)?;
+        print!("{}", analysis.format_debug());
+        return Ok(());
+    }
     if cli.debug {
         let application = loader.application_config(cli.profile.as_deref())?;
         let analyzer = RepositoryAnalyzer::with_git_config(&repo, application.git);
-        let snapshot = if let Some(revision) = cli.revision.as_deref() {
-            if cli.paths.is_empty() {
-                analyzer.analyze_commit(revision, SnapshotGeneration(1))?
-            } else {
-                analyzer.analyze_commit_with_paths(revision, SnapshotGeneration(1), &cli.paths)?
-            }
-        } else if cli.staged {
-            analyzer.analyze_staged(SnapshotGeneration(1), &cli.paths)?
-        } else if cli.paths.is_empty() {
+        let snapshot = if let Some(revision) = selected_revision {
+            analyzer.analyze_revision_or_range(revision, SnapshotGeneration(1), selected_paths)?
+        } else if selected_staged {
+            analyzer.analyze_staged(SnapshotGeneration(1), selected_paths)?
+        } else if selected_paths.is_empty() {
             analyzer.analyze_working_tree(SnapshotGeneration(1))?
         } else {
-            analyzer.analyze_working_tree_with_paths(SnapshotGeneration(1), &cli.paths)?
+            analyzer.analyze_working_tree_with_paths(SnapshotGeneration(1), selected_paths)?
         };
         explain::print_debug(&snapshot)?;
         if let Some(message) = snapshot.empty_state().as_deref() {
@@ -544,18 +557,18 @@ async fn run() -> Result<()> {
         return run_direct(
             repo,
             resolved,
-            cli.revision.as_deref(),
-            cli.staged,
-            &cli.paths,
+            selected_revision,
+            selected_staged,
+            selected_paths,
             cli.port,
         )
         .await;
     }
     daemon::open_repository(
         &repo,
-        cli.revision.as_deref(),
-        cli.staged,
-        &cli.paths,
+        selected_revision,
+        selected_staged,
+        selected_paths,
         cli.profile.as_deref(),
         cli.port,
     )

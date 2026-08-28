@@ -32,6 +32,18 @@ pub fn render_for_session_at_generation(
                 escape(parent_oid.as_deref().unwrap_or("<empty tree>"))
             ),
         ),
+        AnalysisMode::Range {
+            expression,
+            from_oid,
+            to_oid,
+        } => (
+            format!("Range {expression}"),
+            format!(
+                "<p>Compared {} with {}</p>",
+                escape(&from_oid[..from_oid.len().min(12)]),
+                escape(&to_oid[..to_oid.len().min(12)])
+            ),
+        ),
     };
     let summary = change_set.summary();
     let endpoint = if session_id.is_empty() {

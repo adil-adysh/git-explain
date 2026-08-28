@@ -667,7 +667,7 @@ fn build_session_from_analyzer(
     analyzer: RepositoryAnalyzer,
 ) -> Result<Arc<RepositorySession>> {
     let mut change_set = if let Some(revision) = selection.revision.as_deref() {
-        analyzer.analyze_commit_with_paths(revision, generation, &selection.paths)?
+        analyzer.analyze_revision_or_range(revision, generation, &selection.paths)?
     } else if selection.staged {
         analyzer.analyze_staged(generation, &selection.paths)?
     } else {
