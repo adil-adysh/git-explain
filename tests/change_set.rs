@@ -18,6 +18,19 @@ fn git(dir: &Path, args: &[&str]) {
         .unwrap()
         .success());
 }
+fn git_output(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().into()
+}
 fn config(dir: &Path) -> ResolvedConfig {
     let path = dir.join("config.toml");
     std::fs::write(&path, "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"local\"").unwrap();
@@ -315,6 +328,32 @@ fn binary_and_mode_only_changes_are_deterministic_and_not_explainable() {
         .empty_state()
         .unwrap()
         .contains("Binary content has no semantic source explanation"));
+}
+
+#[test]
+fn type_changes_are_deterministic_and_not_semantically_parsed() {
+    let dir = repo();
+    std::fs::write(dir.path().join("typed.rs"), "fn before() {}\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::write(dir.path().join("link-target"), "target.rs\n").unwrap();
+    let blob = git_output(dir.path(), &["hash-object", "-w", "link-target"]);
+    let cache_info = format!("120000,{blob},typed.rs");
+    git(dir.path(), &["update-index", "--cacheinfo", &cache_info]);
+    git(dir.path(), &["commit", "-qm", "change type"]);
+
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    assert_eq!(changes.files.len(), 1);
+    let file = &changes.files[0];
+    assert_eq!(file.kind, FileChangeKind::TypeChanged);
+    assert!(file.semantic_changes.is_empty());
+    assert_eq!(changes.explainable_changes().count(), 0);
+    assert_eq!(
+        changes.empty_state().as_deref(),
+        Some("The type changed for 1 file. No semantic source explanation is available.")
+    );
 }
 
 #[test]

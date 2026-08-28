@@ -118,6 +118,17 @@ impl ChangeSet {
                 plural(summary.files_binary)
             ));
         }
+        if summary.files_type_changed > 0 {
+            return Some(format!(
+                "The type changed for {} file{}. No semantic source explanation is available.",
+                summary.files_type_changed,
+                if summary.files_type_changed == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        }
         if summary.files_mode_changed > 0 {
             return Some(format!(
                 "The mode changed for {} file{}. No semantic changes require explanation.",

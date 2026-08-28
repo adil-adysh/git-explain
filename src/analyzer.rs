@@ -236,7 +236,7 @@ fn populate_semantics(
     after: &dyn SourceProvider,
 ) {
     for file in files {
-        if file.binary {
+        if file.binary || file.kind == crate::change_set::FileChangeKind::TypeChanged {
             continue;
         }
         file.before = file
