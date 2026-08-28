@@ -209,6 +209,18 @@ pub fn run_add<R: BufRead, W: Write>(input: &mut R, output: &mut W, path: &Path)
         edit_generation(input, output, &mut update, &draft, false)?;
         edit_generation(input, output, &mut update, &draft, true)?;
     }
+    writeln!(output, "\nSet an optional git-explain context budget limit? This does not configure the model server. [y/N]:")?;
+    if matches!(line(input)?.as_deref(), Some("y" | "yes" | "Y" | "YES")) {
+        writeln!(output, "Context token limit:")?;
+        let value = line(input)?
+            .context("context limit is required")?
+            .parse::<u32>()
+            .context("context limit must be a positive integer")?;
+        if value == 0 {
+            anyhow::bail!("context limit must be greater than zero");
+        }
+        update.context_window = Some(value);
+    }
     let profile = ProfileDraft {
         name: name.clone(),
         provider: Some("openai_compatible".into()),
@@ -787,7 +799,7 @@ mod tests {
     fn interactive_add_creates_profile_without_secret_values() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("config.toml");
-        let mut input = Cursor::new("local\n1\n1\nqwen\n\nn\ny\n");
+        let mut input = Cursor::new("local\n1\n1\nqwen\n\nn\nn\ny\n");
         let mut output = Vec::new();
         run_add(&mut input, &mut output, &path).unwrap();
 
@@ -820,7 +832,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("config.toml");
         let mut input = Cursor::new(
-            "local\n1\n1\nqwen\n\ny\n1\n1\n2\n600\n3\n0.2\n4\n1\n2\n2\n3000\n3\n0.35\n4\ny\n",
+            "local\n1\n1\nqwen\n\ny\n1\n1\n2\n600\n3\n0.2\n4\n1\n2\n2\n3000\n3\n0.35\n4\nn\ny\n",
         );
         let mut output = Vec::new();
         run_add(&mut input, &mut output, &path).unwrap();
@@ -833,5 +845,21 @@ mod tests {
         assert_eq!(created.model.deep.reasoning, Some(false));
         assert_eq!(created.model.deep.max_tokens, Some(3000));
         assert_eq!(created.model.deep.temperature, Some(0.35));
+    }
+
+    #[test]
+    fn interactive_add_can_set_a_context_budget_cap_without_configuring_the_server() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut input = Cursor::new("local\n1\n1\nqwen\n\nn\ny\n16384\ny\n");
+        let mut output = Vec::new();
+        run_add(&mut input, &mut output, &path).unwrap();
+        let created = crate::config::ConfigLoader::with_paths(path, None)
+            .resolve(Some("local"))
+            .unwrap();
+        assert_eq!(created.model.context_window, Some(16_384));
+        assert!(String::from_utf8(output)
+            .unwrap()
+            .contains("does not configure the model server"));
     }
 }
