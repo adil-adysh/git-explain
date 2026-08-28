@@ -1,10 +1,10 @@
 use crate::{
     cache::ExplanationCache,
+    change_set::{ChangeSet, SemanticChangeId},
     config::{ExplanationConfig, ReaderConfig, ResolvedProfile, ServerConfig},
-    explain::ExplainedUnit,
     model::{user_facing_error, ExplanationProvider, UnitExplanation},
     runtime,
-    snapshot::{AnalysisSnapshot, SnapshotGeneration, UnitId},
+    snapshot::SnapshotGeneration,
     web,
 };
 use anyhow::Result;
@@ -15,14 +15,10 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 struct StateData {
-    snapshot: AnalysisSnapshot,
-    items: Mutex<HashMap<UnitId, ExplainedUnit>>,
+    change_set: Mutex<ChangeSet>,
     provider: Arc<dyn ExplanationProvider>,
     cache: Option<ExplanationCache>,
     model: ResolvedProfile,
@@ -34,7 +30,7 @@ struct SnapshotRequest {
     generation: Option<SnapshotGeneration>,
 }
 pub async fn serve(
-    snapshot: AnalysisSnapshot,
+    mut change_set: ChangeSet,
     provider: impl ExplanationProvider + 'static,
     config: ServerConfig,
     cache: Option<ExplanationCache>,
@@ -42,25 +38,11 @@ pub async fn serve(
     reader: ReaderConfig,
     explanation: ExplanationConfig,
 ) -> Result<()> {
-    let mut items: HashMap<_, _> = snapshot
-        .units
-        .iter()
-        .cloned()
-        .map(|item| (item.id.clone(), item))
-        .collect();
     if let Some(cache_ref) = &cache {
-        runtime::hydrate(
-            &mut items,
-            cache_ref,
-            &snapshot,
-            &model,
-            &reader,
-            &explanation,
-        );
+        runtime::hydrate(&mut change_set, cache_ref, &model, &reader, &explanation);
     }
     let state = Arc::new(StateData {
-        snapshot,
-        items: Mutex::new(items),
+        change_set: Mutex::new(change_set),
         provider: Arc::new(provider),
         cache,
         model,
@@ -73,58 +55,46 @@ pub async fn serve(
         .route("/api/units/{id}/deep", post(deep))
         .route("/api/units/{id}/deep/regenerate", post(deep_regenerate))
         .route("/api/units/{id}/regenerate", post(regenerate))
-        .route("/api/deep/{id}", post(deep))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
     let url = format!("http://{}", listener.local_addr()?);
-    println!("git explain: {}", url);
+    println!("git explain: {url}");
     if config.open_browser {
-        if let Err(error) = webbrowser::open(&url) {
-            eprintln!("Could not open the browser automatically: {error}");
-            eprintln!("Open:\n{url}");
-        }
+        let _ = webbrowser::open(&url);
     }
     axum::serve(listener, app).await?;
     Ok(())
 }
 async fn index(State(state): State<Arc<StateData>>) -> Html<String> {
-    let items = state.items.lock().unwrap();
-    let ordered: Vec<_> = state
-        .snapshot
-        .units
-        .iter()
-        .filter_map(|unit| items.get(&unit.id))
-        .cloned()
-        .collect();
-    Html(web::render(&ordered, &state.snapshot.context))
+    Html(web::render(&state.change_set.lock().unwrap()))
 }
 async fn explain(
     Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, false, false, body.map(|Json(body)| body), state).await
+    generate(id, false, false, body.map(|Json(value)| value), state).await
 }
 async fn deep(
     Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, true, false, body.map(|Json(body)| body), state).await
+    generate(id, true, false, body.map(|Json(value)| value), state).await
 }
 async fn deep_regenerate(
     Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, true, true, body.map(|Json(body)| body), state).await
+    generate(id, true, true, body.map(|Json(value)| value), state).await
 }
 async fn regenerate(
     Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, false, true, body.map(|Json(body)| body), state).await
+    generate(id, false, true, body.map(|Json(value)| value), state).await
 }
 async fn generate(
     id: String,
@@ -133,30 +103,32 @@ async fn generate(
     body: Option<SnapshotRequest>,
     state: Arc<StateData>,
 ) -> Json<serde_json::Value> {
-    let requested = body.and_then(|body| body.generation);
-    if requested.is_some_and(|generation| generation != state.snapshot.generation) {
-        return stale();
-    }
-    let unit_id = UnitId(id);
-    let item = { state.items.lock().unwrap().get(&unit_id).cloned() };
-    let Some(item) = item else {
-        return Json(
-            serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available. Reload the page and try again.","retryable":false}),
-        );
+    let id = SemanticChangeId(id);
+    let (generation, request) = {
+        let changes = state.change_set.lock().unwrap();
+        if body
+            .and_then(|value| value.generation)
+            .is_some_and(|wanted| wanted != changes.generation)
+        {
+            return stale();
+        }
+        let Some((file, change)) = changes.find_change(&id) else {
+            return Json(
+                serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available.","retryable":false}),
+            );
+        };
+        (
+            changes.generation,
+            runtime::request_for(file, change, &changes.context, deep),
+        )
     };
-    if !crate::language::contains_meaningful_source(&item.unit.source) {
-        return Json(
-            serde_json::json!({"ok":false,"code":"no_source","error":"This code unit has no meaningful source to explain.","retryable":false}),
-        );
-    }
-    let request = runtime::request_for(&item, &state.snapshot.context, deep);
     let key = ExplanationCache::key(&request, &state.model, &state.reader, &state.explanation);
     if !regenerate {
         if let Some(cache) = &state.cache {
             if let Ok(Some(json)) = cache.get(&key) {
-                if let Ok(e) = serde_json::from_str::<UnitExplanation>(&json) {
-                    if update(&state, &unit_id, state.snapshot.generation, e.clone(), deep) {
-                        return Json(runtime::result(e, true, deep));
+                if let Ok(result) = serde_json::from_str::<UnitExplanation>(&json) {
+                    if apply(&state, &id, generation, result.clone(), deep) {
+                        return Json(runtime::result(result, true, deep));
                     }
                     return stale();
                 }
@@ -164,23 +136,22 @@ async fn generate(
         }
     }
     match state.provider.explain(request.clone()).await {
-        Ok(e) => {
+        Ok(result) => {
             if let Some(cache) = &state.cache {
                 let _ = cache.put(
                     &key,
                     &request,
                     &state.model,
-                    &serde_json::to_string(&e).unwrap(),
+                    &serde_json::to_string(&result).unwrap(),
                 );
             }
-            if update(&state, &unit_id, state.snapshot.generation, e.clone(), deep) {
-                Json(runtime::result(e, false, deep))
+            if apply(&state, &id, generation, result.clone(), deep) {
+                Json(runtime::result(result, false, deep))
             } else {
                 stale()
             }
         }
         Err(error) => {
-            eprintln!("unit {} explanation failed: {error:#}", unit_id);
             let info = user_facing_error(&error);
             Json(
                 serde_json::json!({"ok":false,"code":info.code,"error":info.message,"retryable":info.retryable}),
@@ -188,21 +159,21 @@ async fn generate(
         }
     }
 }
-fn update(
+fn apply(
     state: &StateData,
-    id: &UnitId,
+    id: &SemanticChangeId,
     generation: SnapshotGeneration,
-    e: UnitExplanation,
+    result: UnitExplanation,
     deep: bool,
 ) -> bool {
-    if generation != state.snapshot.generation {
+    let mut changes = state.change_set.lock().unwrap();
+    if changes.generation != generation {
         return false;
     }
-    let mut items = state.items.lock().unwrap();
-    let Some(item) = items.get_mut(id) else {
+    let Some(change) = changes.find_change_mut(id) else {
         return false;
     };
-    runtime::apply(item, e, deep);
+    runtime::apply(change, result, deep);
     true
 }
 fn stale() -> Json<serde_json::Value> {

@@ -1,15 +1,15 @@
 use crate::{
     analyzer::RepositoryAnalyzer,
     cache::ExplanationCache,
+    change_set::{ChangeSet, SemanticChangeId},
     cli::DaemonAction,
     config::{ConfigLoader, ExplanationConfig, ReaderConfig, ResolvedProfile},
-    explain::ExplainedUnit,
     model::{
         user_facing_error, ExplanationProvider, ExplanationRequest, UnitExplanation,
         UserFacingError,
     },
     runtime,
-    snapshot::{AnalysisSnapshot, SnapshotGeneration, UnitId},
+    snapshot::SnapshotGeneration,
     web,
 };
 use anyhow::{Context, Result};
@@ -59,8 +59,7 @@ struct RepositorySession {
     analyzer: RepositoryAnalyzer,
     revision: Option<String>,
     config: crate::config::ResolvedConfig,
-    snapshot: AnalysisSnapshot,
-    items: Mutex<HashMap<UnitId, ExplainedUnit>>,
+    change_set: Mutex<ChangeSet>,
     provider: Arc<dyn ExplanationProvider>,
     cache: Option<ExplanationCache>,
     model: ResolvedProfile,
@@ -502,13 +501,14 @@ async fn open(
         Ok(session) => session,
         Err(error) => return error_json(StatusCode::BAD_REQUEST, error.to_string()),
     };
-    if let Some(message) = session.snapshot.context.no_op.as_deref() {
+    if let Some(message) = session.change_set.lock().unwrap().empty_state() {
         return (
             StatusCode::OK,
             Json(serde_json::json!({"ok":false,"code":"no_op","error":message,"retryable":false})),
         );
     }
-    let response = serde_json::json!({"ok":true,"session_id":session.id.0,"generation":session.snapshot.generation.0,"url":format!("http://127.0.0.1:{}/sessions/{}", state.port, session.id.0)});
+    let generation = session.change_set.lock().unwrap().generation.0;
+    let response = serde_json::json!({"ok":true,"session_id":session.id.0,"generation":generation,"url":format!("http://127.0.0.1:{}/sessions/{}", state.port, session.id.0)});
     register_session(&state, session).await;
     (StatusCode::OK, Json(response))
 }
@@ -560,8 +560,8 @@ async fn refresh(
         "ok": true,
         "changed": refreshed.changed,
         "session_id": replacement.id.0,
-        "generation": replacement.snapshot.generation.0,
-        "identity": replacement.snapshot.identity,
+        "generation": replacement.change_set.lock().unwrap().generation.0,
+        "identity": replacement.change_set.lock().unwrap().identity,
         "url": format!("http://127.0.0.1:{}/sessions/{}", state.port, replacement.id.0)
     });
     (StatusCode::OK, Json(response))
@@ -578,7 +578,9 @@ async fn refresh_current_session(state: &DaemonState) -> Result<RefreshResult> {
         .context("No repository session is open")?;
     let generation = SnapshotGeneration(
         current_session
-            .snapshot
+            .change_set
+            .lock()
+            .unwrap()
             .generation
             .0
             .checked_add(1)
@@ -599,7 +601,9 @@ async fn refresh_current_session(state: &DaemonState) -> Result<RefreshResult> {
     if !Arc::ptr_eq(active, &current_session) {
         anyhow::bail!("Repository session changed while refresh was running");
     }
-    if replacement.snapshot.identity == current_session.snapshot.identity {
+    if replacement.change_set.lock().unwrap().identity
+        == current_session.change_set.lock().unwrap().identity
+    {
         return Ok(RefreshResult {
             session: current_session,
             changed: false,
@@ -632,7 +636,7 @@ fn build_session_from_analyzer(
     generation: SnapshotGeneration,
     analyzer: RepositoryAnalyzer,
 ) -> Result<Arc<RepositorySession>> {
-    let snapshot = if let Some(revision) = revision.as_deref() {
+    let mut change_set = if let Some(revision) = revision.as_deref() {
         analyzer.analyze_commit(revision, generation)?
     } else {
         analyzer.analyze_working_tree(generation)?
@@ -658,17 +662,10 @@ fn build_session_from_analyzer(
     } else {
         provider
     };
-    let mut items: HashMap<UnitId, ExplainedUnit> = snapshot
-        .units
-        .iter()
-        .cloned()
-        .map(|item| (item.id.clone(), item))
-        .collect();
     if let Some(cache_ref) = &cache {
         runtime::hydrate(
-            &mut items,
+            &mut change_set,
             cache_ref,
-            &snapshot,
             &config.model,
             &config.reader,
             &config.explanation,
@@ -680,8 +677,7 @@ fn build_session_from_analyzer(
         analyzer,
         revision,
         config: config.clone(),
-        snapshot,
-        items: Mutex::new(items),
+        change_set: Mutex::new(change_set),
         provider: Arc::new(provider),
         cache,
         model: config.model,
@@ -706,19 +702,11 @@ async fn session_page(
     State(state): State<Arc<DaemonState>>,
 ) -> Result<Html<String>, StatusCode> {
     let session = current(&state, &id).await.ok_or(StatusCode::NOT_FOUND)?;
-    let items = session.items.lock().unwrap();
-    let ordered: Vec<_> = session
-        .snapshot
-        .units
-        .iter()
-        .filter_map(|unit| items.get(&unit.id))
-        .cloned()
-        .collect();
+    let change_set = session.change_set.lock().unwrap();
     Ok(Html(web::render_for_session_at_generation(
-        &ordered,
-        &session.snapshot.context,
+        &change_set,
         &id,
-        session.snapshot.generation.0,
+        change_set.generation.0,
     )))
 }
 async fn snapshot_status(
@@ -731,8 +719,8 @@ async fn snapshot_status(
     Ok(Json(serde_json::json!({
         "ok": true,
         "session_id": session.id.0,
-        "generation": session.snapshot.generation.0,
-        "identity": session.snapshot.identity,
+        "generation": session.change_set.lock().unwrap().generation.0,
+        "identity": session.change_set.lock().unwrap().identity.clone(),
     })))
 }
 async fn current(state: &DaemonState, id: &str) -> Option<Arc<RepositorySession>> {
@@ -791,25 +779,22 @@ async fn generate(
     };
     if body
         .and_then(|Json(body)| body.generation)
-        .is_some_and(|generation| generation != session.snapshot.generation)
+        .is_some_and(|generation| generation != session.change_set.lock().unwrap().generation)
     {
         return Json(
             serde_json::json!({"ok":false,"stale":true,"code":"snapshot_stale","error":"The repository changed while this page was open. Reload the page and try again.","retryable":true}),
         );
     }
-    let unit_id = UnitId(id);
-    let item = { session.items.lock().unwrap().get(&unit_id).cloned() };
-    let Some(item) = item else {
-        return Json(
-            serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available. Reload the page and try again.","retryable":false}),
-        );
+    let unit_id = SemanticChangeId(id);
+    let request = {
+        let changes = session.change_set.lock().unwrap();
+        let Some((file, item)) = changes.find_change(&unit_id) else {
+            return Json(
+                serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available. Reload the page and try again.","retryable":false}),
+            );
+        };
+        runtime::request_for(file, item, &changes.context, deep)
     };
-    if !crate::language::contains_meaningful_source(&item.unit.source) {
-        return Json(
-            serde_json::json!({"ok":false,"code":"no_source","error":"This code unit has no meaningful source to explain.","retryable":false}),
-        );
-    }
-    let request = runtime::request_for(&item, &session.snapshot.context, deep);
     let key = ExplanationCache::key(
         &request,
         &session.model,
@@ -925,7 +910,7 @@ async fn infer_with_dedup(
 async fn update_if_current(
     state: &DaemonState,
     session: &Arc<RepositorySession>,
-    id: &UnitId,
+    id: &SemanticChangeId,
     e: UnitExplanation,
     deep: bool,
 ) -> bool {
@@ -935,7 +920,7 @@ async fn update_if_current(
     if !Arc::ptr_eq(&active, session) {
         return false;
     }
-    if let Some(item) = session.items.lock().unwrap().get_mut(id) {
+    if let Some(item) = session.change_set.lock().unwrap().find_change_mut(id) {
         runtime::apply(item, e, deep);
         true
     } else {
@@ -1071,7 +1056,7 @@ mod tests {
             SnapshotGeneration(1),
         )
         .unwrap();
-        let old_snapshot = session.snapshot.clone();
+        let old_snapshot = session.change_set.lock().unwrap().clone();
         let state = test_state(Some(session.clone()));
 
         fs::write(
@@ -1083,8 +1068,14 @@ mod tests {
         let replacement = refreshed.session;
         assert!(refreshed.changed);
         assert_eq!(replacement.id, session.id);
-        assert_eq!(replacement.snapshot.generation, SnapshotGeneration(2));
-        assert_ne!(replacement.snapshot.identity, old_snapshot.identity);
+        assert_eq!(
+            replacement.change_set.lock().unwrap().generation,
+            SnapshotGeneration(2)
+        );
+        assert_ne!(
+            replacement.change_set.lock().unwrap().identity,
+            old_snapshot.identity
+        );
         let active = active_session(&state).await.unwrap();
         assert!(Arc::ptr_eq(&active, &replacement));
         assert!(!Arc::ptr_eq(&active, &session));
@@ -1124,7 +1115,10 @@ mod tests {
 
         let refreshed = refresh_current_session(&state).await.unwrap();
         assert!(!refreshed.changed);
-        assert_eq!(refreshed.session.snapshot.generation, SnapshotGeneration(4));
+        assert_eq!(
+            refreshed.session.change_set.lock().unwrap().generation,
+            SnapshotGeneration(4)
+        );
         assert!(Arc::ptr_eq(&refreshed.session, &session));
     }
 
@@ -1218,16 +1212,14 @@ mod tests {
             analyzer: RepositoryAnalyzer::new(".", config.clone()),
             revision: None,
             config: config.clone(),
-            snapshot: AnalysisSnapshot {
+            change_set: Mutex::new(ChangeSet {
                 generation: SnapshotGeneration(1),
                 identity: crate::snapshot::SnapshotIdentity::WorkingTree {
                     fingerprint: "test".into(),
                 },
                 context: crate::explain::AnalysisContext::working_tree(),
-                changes: vec![],
-                units: vec![],
-            },
-            items: Mutex::new(HashMap::new()),
+                files: vec![],
+            }),
             provider: provider.clone(),
             cache: None,
             model: config.model.clone(),

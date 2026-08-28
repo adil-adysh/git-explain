@@ -1,5 +1,6 @@
 mod analyzer;
 mod cache;
+mod change_set;
 mod cli;
 mod config;
 mod config_editor;
@@ -12,6 +13,7 @@ mod language;
 mod model;
 mod profile_editor;
 mod runtime;
+mod semantic;
 mod server;
 mod snapshot;
 mod terminal;
@@ -503,13 +505,12 @@ async fn run() -> Result<()> {
         } else {
             analyzer.analyze_working_tree(SnapshotGeneration(1))?
         };
-        if let Some(message) = snapshot.context.no_op.as_deref() {
-            println!("{message}");
-        } else {
-            explain::print_debug(&snapshot)?;
-            if let Ok(resolved) = loader.resolve(cli.profile.as_deref()) {
-                print_debug_context(&resolved.model);
-            }
+        explain::print_debug(&snapshot)?;
+        if let Some(message) = snapshot.empty_state().as_deref() {
+            println!("\n{message}");
+        }
+        if let Ok(resolved) = loader.resolve(cli.profile.as_deref()) {
+            print_debug_context(&resolved.model);
         }
         return Ok(());
     }
@@ -1160,7 +1161,7 @@ async fn run_direct(
     } else {
         analyzer.analyze_working_tree(SnapshotGeneration(1))?
     };
-    if let Some(message) = snapshot.context.no_op.as_deref() {
+    if let Some(message) = snapshot.empty_state().as_deref() {
         println!("{message}");
         return Ok(());
     }

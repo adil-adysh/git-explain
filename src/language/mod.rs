@@ -11,7 +11,7 @@ use crate::diff::LineRange;
 use anyhow::Result;
 use std::path::Path;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SourceUnitKind {
     Namespace,
     Function,

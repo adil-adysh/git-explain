@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod cache;
+pub mod change_set;
 pub mod config;
 pub mod context;
 pub mod diff;
@@ -9,5 +10,6 @@ pub mod language;
 pub mod local_context;
 pub mod model;
 pub mod runtime;
+pub mod semantic;
 pub mod snapshot;
 pub mod web;
