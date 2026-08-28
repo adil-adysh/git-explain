@@ -5,9 +5,57 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     process::Command,
 };
+
+pub fn files_at_revision(
+    root: &Path,
+    revision: Option<&str>,
+    selections: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    let normalized: Vec<String> = selections
+        .iter()
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    let mut command = Command::new("git");
+    command.current_dir(root);
+    if let Some(oid) = revision {
+        command.args(["ls-tree", "-r", "--name-only", "-z", oid, "--"]);
+    } else {
+        command.args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+        ]);
+    }
+    command.args(&normalized);
+    let output = command.output().context("list selected Git files")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "list selected Git files failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let files = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            std::str::from_utf8(value)
+                .map(PathBuf::from)
+                .context("selected Git path is not UTF-8")
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    if files.is_empty() {
+        anyhow::bail!("No files matched the selected file or directory paths.");
+    }
+    Ok(files.into_iter().collect())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepositoryContext {

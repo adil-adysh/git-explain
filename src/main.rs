@@ -509,21 +509,47 @@ async fn run() -> Result<()> {
     let loader = ConfigLoader::for_context(Some(&context))?;
     if let Some(Command::File(command)) = &cli.command {
         let application = loader.application_config(cli.profile.as_deref())?;
-        let mut analysis = RepositoryAnalyzer::with_git_config(&repo, application.git)
+        let analysis = RepositoryAnalyzer::with_git_config(&repo, application.git)
             .analyze_files(command.revision.as_deref(), &command.paths)?;
-        if let Ok(resolved) = loader.resolve(cli.profile.as_deref()) {
-            if resolved.cache.enabled {
-                let cache = cache::ExplanationCache::open(&git::git_dir(&repo)?)?;
-                analysis.hydrate(
-                    &cache,
-                    &resolved.model,
-                    &resolved.reader,
-                    &resolved.explanation,
-                );
-            }
+        if cli.debug {
+            print!("{}", analysis.format_debug());
+            return Ok(());
         }
-        print!("{}", analysis.format_debug());
-        return Ok(());
+        let resolved = loader.resolve(cli.profile.as_deref())?;
+        let provider = model::openai::OpenAiProvider::from_config(
+            resolved.model.clone(),
+            resolved.reader.clone(),
+            resolved.explanation.clone(),
+        );
+        let provider = if model::openai::is_local_profile(&resolved.model) {
+            provider.with_context_tracker(
+                local_context::LocalContextTracker::for_user_config(
+                    &config::default_user_config_path()?,
+                ),
+                resolved.profile.clone(),
+            )
+        } else {
+            provider
+        };
+        let mut server_config = resolved.server;
+        if let Some(port) = cli.port {
+            server_config.port = port;
+        }
+        let cache = if resolved.cache.enabled {
+            Some(cache::ExplanationCache::open(&git::git_dir(&repo)?)?)
+        } else {
+            None
+        };
+        return server::serve_file(
+            analysis,
+            provider,
+            server_config,
+            cache,
+            resolved.model,
+            resolved.reader,
+            resolved.explanation,
+        )
+        .await;
     }
     if cli.debug {
         let application = loader.application_config(cli.profile.as_deref())?;

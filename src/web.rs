@@ -1,5 +1,6 @@
 use crate::change_set::{ChangeSet, FileChange, SemanticUnitChange, SemanticUnitChangeKind};
 use crate::explain::AnalysisMode;
+use crate::file_analysis::{unit_key, FileAnalysis};
 
 fn escape(value: &str) -> String {
     value
@@ -11,6 +12,37 @@ fn escape(value: &str) -> String {
 }
 pub fn render(change_set: &ChangeSet) -> String {
     render_for_session_at_generation(change_set, "", change_set.generation.0)
+}
+
+pub fn render_file_analysis(analysis: &FileAnalysis) -> String {
+    let mut html = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>git-explain files</title><style>body{{font:1rem/1.55 system-ui,sans-serif;max-width:1100px;margin:auto;padding:2rem}}section,article{{border:1px solid #bbb;border-radius:.6rem;padding:1.25rem;margin:1.25rem 0}}pre,textarea{{box-sizing:border-box;width:100%;overflow:auto;padding:1rem;white-space:pre;font:.9rem/1.55 ui-monospace,monospace}}button{{margin:.25rem;padding:.45rem .7rem}}</style></head><body><main><h1>Files</h1><p>Revision: {}</p><p id=\"status\" role=\"status\" aria-live=\"polite\"></p>",
+        escape(analysis.revision.as_deref().unwrap_or("working tree"))
+    );
+    for document in &analysis.documents {
+        html.push_str(&format!(
+            "<section><h2>{}</h2><p>Language: {}</p><p>Semantic units: {}</p>",
+            escape(&document.source.path.display().to_string()),
+            escape(document.language.as_deref().unwrap_or("unsupported")),
+            document.units.len()
+        ));
+        if document.units.is_empty() {
+            html.push_str("<p>No semantic units were found in this file.</p>");
+        }
+        for unit in &document.units {
+            let id = unit_key(unit);
+            let explanation = analysis
+                .explanations
+                .get(&id)
+                .map(|value| value.overview.as_str())
+                .unwrap_or("Explanation has not been generated.");
+            let deep = analysis.deep_explanations.get(&id);
+            html.push_str(&format!("<article data-unit-id=\"{id}\"><h3>{}</h3><p>{:?} · lines {}–{}</p><h4>Overview</h4><p class=\"overview\">{}</p><button data-endpoint=\"/api/file-units/{id}/explain\">Generate explanation</button><button data-deep=\"true\" data-endpoint=\"/api/file-units/{id}/deep\">Explain this code in depth</button><button class=\"source-toggle\">Read code as text</button><h4>Code and explanation</h4><div class=\"source-code\">{}</div><textarea class=\"source-text\" readonly hidden>{}</textarea><section class=\"deep-section\" {}><h4>Detailed explanation</h4><p class=\"deep\">{}</p></section></article>", escape(&unit.identity.qualified_name), unit.identity.kind, unit.location.start_line, unit.location.end_line, escape(explanation), rendered_source(&unit.source, analysis.explanations.get(&id).map(|value|value.annotations.as_slice()).unwrap_or(&[])), escape(&unit.source), if deep.is_some(){""}else{"hidden"}, escape(deep.map(String::as_str).unwrap_or(""))));
+        }
+        html.push_str("</section>");
+    }
+    html.push_str(r#"<script>const status=document.querySelector('#status');async function explain(button){const label=button.textContent;button.disabled=true;button.textContent='Generating…';try{const value=await(await fetch(button.dataset.endpoint,{method:'POST'})).json();if(!value.ok)throw Error(value.error);const article=button.closest('article');if(button.dataset.deep==='true'){article.querySelector('.deep').textContent=value.deep||value.overview;article.querySelector('.deep-section').hidden=false}else{article.querySelector('.overview').textContent=value.overview||'Explanation unavailable.'}status.textContent='Explanation ready.'}catch(error){status.textContent=error.message}finally{button.disabled=false;button.textContent=label}}document.querySelectorAll('[data-endpoint]').forEach(button=>button.onclick=()=>explain(button));document.querySelectorAll('.source-toggle').forEach(button=>button.onclick=()=>{const article=button.closest('article'),code=article.querySelector('.source-code'),text=article.querySelector('.source-text'),open=text.hidden;text.hidden=!open;code.hidden=open;button.textContent=open?'Show rendered code':'Read code as text'});</script></main></body></html>"#);
+    html
 }
 pub fn render_for_session_at_generation(
     change_set: &ChangeSet,
@@ -220,5 +252,26 @@ mod tests {
         assert!(html.contains("second"));
         assert!(html.contains("Explains second"));
         assert!(html.contains("third"));
+    }
+
+    #[test]
+    fn file_analysis_keeps_rich_controls_without_fake_change_status() {
+        let source = crate::change_set::SourceFile {
+            path: "src/lib.rs".into(),
+            content: "fn inspect() {}\n".into(),
+        };
+        let document = crate::semantic::extract_document(&source).unwrap();
+        let analysis = FileAnalysis {
+            revision: Some("abc123".into()),
+            documents: vec![document],
+            explanations: Default::default(),
+            deep_explanations: Default::default(),
+        };
+        let html = render_file_analysis(&analysis);
+        assert!(html.contains("Generate explanation"));
+        assert!(html.contains("Explain this code in depth"));
+        assert!(html.contains("Read code as text"));
+        assert!(!html.contains("Status: Added"));
+        assert!(!html.contains("Show Git diff"));
     }
 }

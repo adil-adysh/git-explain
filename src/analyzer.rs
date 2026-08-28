@@ -26,8 +26,10 @@ impl RepositoryAnalyzer {
             Some(oid) => Box::new(GitCommitSourceProvider::new(&self.repo_root, oid)),
             None => Box::new(WorkingTreeSourceProvider::new(&self.repo_root)),
         };
-        let mut documents = Vec::with_capacity(paths.len());
-        for path in paths {
+        let selected_files =
+            git::files_at_revision(&self.repo_root, resolved_revision.as_deref(), paths)?;
+        let mut documents = Vec::with_capacity(selected_files.len());
+        for path in &selected_files {
             let source = SourceFile {
                 path: path.clone(),
                 content: provider
@@ -40,6 +42,7 @@ impl RepositoryAnalyzer {
             revision: resolved_revision,
             documents,
             explanations: Default::default(),
+            deep_explanations: Default::default(),
         })
     }
     pub fn new(repo_root: impl Into<PathBuf>, config: ResolvedConfig) -> Self {

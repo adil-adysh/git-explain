@@ -2,6 +2,7 @@ use crate::{
     cache::ExplanationCache,
     change_set::{ChangeSet, SemanticChangeId},
     config::{ExplanationConfig, ReaderConfig, ResolvedProfile, ServerConfig},
+    file_analysis::{self, FileAnalysis},
     model::{user_facing_error, ExplanationProvider, UnitExplanation},
     runtime,
     snapshot::SnapshotGeneration,
@@ -19,6 +20,14 @@ use std::sync::{Arc, Mutex};
 
 struct StateData {
     change_set: Mutex<ChangeSet>,
+    provider: Arc<dyn ExplanationProvider>,
+    cache: Option<ExplanationCache>,
+    model: ResolvedProfile,
+    reader: ReaderConfig,
+    explanation: ExplanationConfig,
+}
+struct FileStateData {
+    analysis: Mutex<FileAnalysis>,
     provider: Arc<dyn ExplanationProvider>,
     cache: Option<ExplanationCache>,
     model: ResolvedProfile,
@@ -65,6 +74,121 @@ pub async fn serve(
     }
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+pub async fn serve_file(
+    mut analysis: FileAnalysis,
+    provider: impl ExplanationProvider + 'static,
+    config: ServerConfig,
+    cache: Option<ExplanationCache>,
+    model: ResolvedProfile,
+    reader: ReaderConfig,
+    explanation: ExplanationConfig,
+) -> Result<()> {
+    if let Some(cache_ref) = &cache {
+        analysis.hydrate(cache_ref, &model, &reader, &explanation);
+    }
+    let state = Arc::new(FileStateData {
+        analysis: Mutex::new(analysis),
+        provider: Arc::new(provider),
+        cache,
+        model,
+        reader,
+        explanation,
+    });
+    let app = Router::new()
+        .route("/", get(file_index))
+        .route("/api/file-units/{id}/explain", post(file_explain))
+        .route("/api/file-units/{id}/deep", post(file_deep))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    println!("git explain: {url}");
+    if config.open_browser {
+        let _ = webbrowser::open(&url);
+    }
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn file_index(State(state): State<Arc<FileStateData>>) -> Html<String> {
+    Html(web::render_file_analysis(&state.analysis.lock().unwrap()))
+}
+
+async fn file_explain(
+    Path(id): Path<String>,
+    State(state): State<Arc<FileStateData>>,
+) -> Json<serde_json::Value> {
+    generate_file(id, false, state).await
+}
+
+async fn file_deep(
+    Path(id): Path<String>,
+    State(state): State<Arc<FileStateData>>,
+) -> Json<serde_json::Value> {
+    generate_file(id, true, state).await
+}
+
+async fn generate_file(
+    id: String,
+    deep: bool,
+    state: Arc<FileStateData>,
+) -> Json<serde_json::Value> {
+    let request = {
+        let analysis = state.analysis.lock().unwrap();
+        let Some(unit) = analysis.find_unit(&id) else {
+            return Json(
+                serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available.","retryable":false}),
+            );
+        };
+        let prior = deep
+            .then(|| {
+                analysis
+                    .explanations
+                    .get(&id)
+                    .map(|value| value.overview.clone())
+            })
+            .flatten();
+        file_analysis::request_for(unit, analysis.revision.as_deref(), deep, prior)
+    };
+    let key =
+        ExplanationCache::snapshot_key(&request, &state.model, &state.reader, &state.explanation);
+    if let Some(cache) = &state.cache {
+        if let Ok(Some(json)) = cache.get(&key) {
+            if let Ok(result) = serde_json::from_str::<UnitExplanation>(&json) {
+                state
+                    .analysis
+                    .lock()
+                    .unwrap()
+                    .apply(&id, result.clone(), deep);
+                return Json(runtime::result(result, true, deep));
+            }
+        }
+    }
+    match state.provider.explain(request.clone()).await {
+        Ok(result) => {
+            if let Some(cache) = &state.cache {
+                let _ = cache.put(
+                    &key,
+                    &request,
+                    &state.model,
+                    &serde_json::to_string(&result).unwrap(),
+                );
+            }
+            state
+                .analysis
+                .lock()
+                .unwrap()
+                .apply(&id, result.clone(), deep);
+            Json(runtime::result(result, false, deep))
+        }
+        Err(error) => {
+            let info = user_facing_error(&error);
+            Json(
+                serde_json::json!({"ok":false,"code":info.code,"error":info.message,"retryable":info.retryable}),
+            )
+        }
+    }
 }
 async fn index(State(state): State<Arc<StateData>>) -> Html<String> {
     Html(web::render(&state.change_set.lock().unwrap()))
