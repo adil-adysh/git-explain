@@ -624,6 +624,20 @@ impl OpenAiProvider {
             request.deep,
             &ConservativeTokenEstimator,
         );
+        let ideal_required_context = if retry {
+            let original = self.build_request_with_retry(request, false);
+            let original_payload =
+                serde_json::to_string(&original).context("serialize original model request")?;
+            calculate_context_requirement(
+                &original_payload,
+                generation,
+                request.deep,
+                &ConservativeTokenEstimator,
+            )
+            .minimum_required_context
+        } else {
+            requirement.minimum_required_context
+        };
         let capabilities = self.discover_context_capabilities().await?;
         let negotiation = match negotiate_context(&capabilities, requirement.clone()) {
             Ok(negotiation) => negotiation,
@@ -633,6 +647,7 @@ impl OpenAiProvider {
                         request,
                         &capabilities,
                         &requirement,
+                        ideal_required_context,
                         retry,
                         previous_provider_overflow,
                         true,
@@ -678,6 +693,7 @@ impl OpenAiProvider {
                 request,
                 &capabilities,
                 &negotiation.requirement,
+                ideal_required_context,
                 retry,
                 previous_provider_overflow,
                 false,
@@ -708,6 +724,7 @@ impl OpenAiProvider {
                         request,
                         &capabilities,
                         &negotiation.requirement,
+                        ideal_required_context,
                         retry,
                         previous_provider_overflow,
                         false,
@@ -726,6 +743,7 @@ impl OpenAiProvider {
             previous_provider_overflow,
             &capabilities,
             &negotiation,
+            ideal_required_context,
             plan.estimated_input,
             response.usage.as_ref(),
             started.elapsed().as_millis() as u64,
@@ -881,6 +899,7 @@ impl OpenAiProvider {
         provider_overflow_seen: bool,
         capabilities: &ContextCapabilities,
         negotiation: &ContextNegotiation,
+        ideal_required_context: u32,
         estimated_input: u32,
         usage: Option<&Usage>,
         latency_ms: u64,
@@ -901,7 +920,7 @@ impl OpenAiProvider {
         record.output_reserve = negotiation.requirement.output_reserve;
         record.safety_margin =
             negotiation.requirement.protocol_overhead + negotiation.requirement.safety_margin;
-        record.ideal_required_context = negotiation.requirement.minimum_required_context;
+        record.ideal_required_context = ideal_required_context;
         record.final_required_context = negotiation.requirement.minimum_required_context;
         record.compacted = concise_retry_used;
         record.actual_prompt_tokens = usage.and_then(|value| value.prompt_tokens);
@@ -937,6 +956,7 @@ impl OpenAiProvider {
         request: &ExplanationRequest,
         capabilities: &ContextCapabilities,
         requirement: &crate::context::ContextRequirement,
+        ideal_required_context: u32,
         concise_retry_used: bool,
         previous_provider_overflow: bool,
         local_context_failure: bool,
@@ -960,7 +980,7 @@ impl OpenAiProvider {
         record.estimated_input = requirement.estimated_input;
         record.output_reserve = requirement.output_reserve;
         record.safety_margin = requirement.protocol_overhead + requirement.safety_margin;
-        record.ideal_required_context = requirement.minimum_required_context;
+        record.ideal_required_context = ideal_required_context;
         record.final_required_context = requirement.minimum_required_context;
         record.compacted = concise_retry_used;
         record.actual_prompt_tokens = usage.and_then(|value| value.prompt_tokens);
@@ -1151,6 +1171,26 @@ mod tests {
         assert!(
             estimator.estimate(&serialized) > estimator.estimate(&payload.messages[1].content),
             "the full request must cost more than user content alone"
+        );
+    }
+
+    #[test]
+    fn concise_retry_keeps_the_original_ideal_context_requirement() {
+        let provider = provider("llama_cpp");
+        let request = request(false);
+        let generation = &provider.normal;
+        let original =
+            serde_json::to_string(&provider.build_request_with_retry(&request, false)).unwrap();
+        let concise =
+            serde_json::to_string(&provider.build_request_with_retry(&request, true)).unwrap();
+        let estimator = ConservativeTokenEstimator;
+        let original_requirement =
+            calculate_context_requirement(&original, generation, false, &estimator);
+        let concise_requirement =
+            calculate_context_requirement(&concise, generation, false, &estimator);
+        assert!(
+            original_requirement.minimum_required_context
+                > concise_requirement.minimum_required_context
         );
     }
     #[test]
