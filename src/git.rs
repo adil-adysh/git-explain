@@ -1,5 +1,5 @@
 use crate::{
-    change_set::{FileChange, FileChangeKind},
+    change_set::{FileChange, FileChangeKind, FilePatch, LineRange},
     config::GitConfig,
     diff::{parse_unified_patches, ParsedPatch},
 };
@@ -123,7 +123,71 @@ pub fn working_tree_files(root: &Path, config: &GitConfig) -> Result<Vec<FileCha
         .include_staged
         .then_some(vec![config.diff_target.as_str()])
         .unwrap_or_default();
-    collect_files(root, &range)
+    let mut files = collect_files(root, &range)?;
+    if config.include_untracked {
+        append_untracked_files(root, &mut files)?;
+    }
+    files.sort_by(|left, right| left.display_path().cmp(right.display_path()));
+    Ok(files)
+}
+
+fn append_untracked_files(root: &Path, files: &mut Vec<FileChange>) -> Result<()> {
+    let output = git_bytes(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    for value in output
+        .split(|byte| *byte == 0)
+        .filter(|value| !value.is_empty())
+    {
+        let path = PathBuf::from(
+            std::str::from_utf8(value).context("untracked Git path is not valid UTF-8")?,
+        );
+        let absolute = root.join(&path);
+        let metadata = std::fs::symlink_metadata(&absolute)
+            .with_context(|| format!("inspect untracked file {}", path.display()))?;
+        let (new_mode, binary, patch) = if metadata.file_type().is_symlink() {
+            (Some("120000".into()), false, None)
+        } else {
+            let content = std::fs::read(&absolute)
+                .with_context(|| format!("read untracked file {}", path.display()))?;
+            let binary = content.contains(&0);
+            let patch = (!binary).then(|| untracked_patch(&content));
+            (Some("100644".into()), binary, patch)
+        };
+        files.push(FileChange {
+            old_path: None,
+            new_path: Some(path),
+            kind: FileChangeKind::Added,
+            similarity: None,
+            old_mode: None,
+            new_mode,
+            binary,
+            patch,
+            before: None,
+            after: None,
+            semantic_changes: vec![],
+        });
+    }
+    Ok(())
+}
+
+fn untracked_patch(content: &[u8]) -> FilePatch {
+    let text = String::from_utf8_lossy(content);
+    let line_count = text.lines().count();
+    let mut patch = format!("@@ -0,0 +1,{line_count} @@\n");
+    for line in text.lines() {
+        patch.push('+');
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    FilePatch {
+        ranges: (line_count > 0)
+            .then_some(LineRange {
+                start: 1,
+                end: line_count,
+            })
+            .into_iter()
+            .collect(),
+        text: patch,
+    }
 }
 pub fn staged_files(root: &Path, config: &GitConfig) -> Result<Vec<FileChange>> {
     collect_files(root, &["--cached", config.diff_target.as_str()])

@@ -136,6 +136,37 @@ fn staged_selection_excludes_unstaged_edits() {
 }
 
 #[test]
+fn working_tree_untracked_policy_is_respected() {
+    let dir = repo();
+    std::fs::write(dir.path().join(".gitignore"), "ignored.rs\nconfig.toml\n").unwrap();
+    git(dir.path(), &["add", ".gitignore"]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::write(dir.path().join("new.rs"), "fn introduced() {}\n").unwrap();
+    std::fs::write(dir.path().join("ignored.rs"), "fn ignored() {}\n").unwrap();
+
+    let disabled_config = config(dir.path());
+    let disabled = RepositoryAnalyzer::new(dir.path(), disabled_config)
+        .analyze_working_tree(SnapshotGeneration(1))
+        .unwrap();
+    assert!(disabled.files.is_empty());
+
+    let mut enabled_config = config(dir.path());
+    enabled_config.git.include_untracked = true;
+    let enabled = RepositoryAnalyzer::new(dir.path(), enabled_config)
+        .analyze_working_tree(SnapshotGeneration(1))
+        .unwrap();
+    assert_eq!(enabled.files.len(), 1);
+    let file = &enabled.files[0];
+    assert_eq!(file.kind, FileChangeKind::Added);
+    assert_eq!(file.new_path.as_deref(), Some(Path::new("new.rs")));
+    assert!(file
+        .semantic_changes
+        .iter()
+        .any(|change| change.kind == SemanticUnitChangeKind::Added));
+    assert_eq!(enabled.explainable_changes().count(), 1);
+}
+
+#[test]
 fn explicit_range_uses_its_two_endpoints_not_the_working_tree() {
     let dir = repo();
     std::fs::write(dir.path().join("lib.rs"), "fn value() { one(); }\n").unwrap();

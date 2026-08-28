@@ -199,6 +199,8 @@ git explain file <commit> -- src/lib.rs
 
 In diff mode, no revision means the configured working-tree comparison. A single commit means its first parent (or the empty tree for a root commit) to that commit. `A..B` compares exactly A to B. `A...B` compares their merge base to B. `--staged` compares the configured `diff_target` to the index. Path filters are applied after complete Git metadata discovery, so either the old or new path selects a rename.
 
+Working-tree diff mode includes staged changes according to `git.include_staged` and includes untracked, non-ignored files when `git.include_untracked = true`. The default for both settings is `false`. Explicit `--staged` analyzes only the index and never includes untracked files.
+
 File mode reads the working tree when no revision is supplied. With a revision, both file and directory selection come from that commit tree, even when the current checkout differs. File mode consumes `SemanticDocument` directly and never labels existing units as fake additions.
 
 `--debug` prints deterministic, line-oriented analysis without opening a browser or contacting a model. Diff mode normally uses the daemon; `--direct` uses the one-shot diff server. File mode uses its snapshot server and snapshot-cache namespace. All servers bind to `127.0.0.1`.

@@ -1432,7 +1432,7 @@ pub fn format_show(config: &ResolvedConfig) -> String {
     .unwrap();
     writeln!(
         output,
-        "\nGit:\ndiff_target: {}\ninclude_staged: {}\ninclude_untracked: {} (not yet implemented)",
+        "\nGit:\ndiff_target: {}\ninclude_staged: {}\ninclude_untracked: {}",
         config.git.diff_target, config.git.include_staged, config.git.include_untracked
     )
     .unwrap();

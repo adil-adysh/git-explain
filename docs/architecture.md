@@ -45,6 +45,10 @@ git explain file -- PATH...              working-tree documents
 git explain file REVISION -- PATH...     documents from REVISION
 ```
 
+Working-tree discovery optionally adds untracked, non-ignored files when
+`git.include_untracked` is enabled. Staged-only and revision/range analysis
+never add untracked files.
+
 File selectors accept files and directories. Working-tree directories expand through tracked and untracked, non-ignored files. Revision directories expand with `git ls-tree` from the resolved commit, not from the checkout. Results use stable path ordering.
 
 Diff path filtering occurs after Git discovers the complete change set. A rename therefore matches either its old or new path without degrading rename metadata into a deletion or addition.
