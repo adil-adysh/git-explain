@@ -145,3 +145,48 @@ fn help_describes_current_semantic_modes_and_transport() {
     assert!(stdout.contains("file mode is always one-shot"));
     assert!(!stdout.contains("changed supported-language functions"));
 }
+
+#[test]
+fn diff_paths_are_relative_to_a_nested_invocation_directory() {
+    let directory = repository();
+    std::fs::create_dir_all(directory.path().join("src")).unwrap();
+    std::fs::write(
+        directory.path().join("lib.rs"),
+        "fn root_file() { one(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("src/lib.rs"),
+        "fn nested_file() { one(); }\n",
+    )
+    .unwrap();
+    git(directory.path(), &["add", "."]);
+    git(directory.path(), &["commit", "-qm", "base"]);
+    std::fs::write(
+        directory.path().join("lib.rs"),
+        "fn root_file() { two(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("src/lib.rs"),
+        "fn nested_file() { two(); }\n",
+    )
+    .unwrap();
+    let config = directory.path().join("user-config.toml");
+    std::fs::write(&config, "").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_git-explain"))
+        .args(["--debug", "diff", "--", "lib.rs"])
+        .env("GIT_EXPLAIN_USER_CONFIG", config)
+        .current_dir(directory.path().join("src"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Name: nested_file"));
+    assert!(!stdout.contains("Name: root_file"));
+}

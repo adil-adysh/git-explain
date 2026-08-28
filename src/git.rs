@@ -57,6 +57,62 @@ pub fn files_at_revision(
     Ok(files.into_iter().collect())
 }
 
+pub fn normalize_selections(
+    repository_root: &Path,
+    invocation_directory: &Path,
+    selections: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    let invocation_prefix = invocation_directory
+        .strip_prefix(repository_root)
+        .context("current directory is outside the Git worktree")?;
+    selections
+        .iter()
+        .map(|selection| {
+            let combined;
+            let relative = if selection.is_absolute() {
+                selection.strip_prefix(repository_root).with_context(|| {
+                    format!(
+                        "selected path '{}' is outside the Git worktree",
+                        selection.display()
+                    )
+                })?
+            } else {
+                combined = invocation_prefix.join(selection);
+                &combined
+            };
+            normalize_relative_path(relative)
+        })
+        .collect()
+}
+
+fn normalize_relative_path(path: &Path) -> Result<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(value) => normalized.push(value),
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    anyhow::bail!(
+                        "selected path '{}' escapes the Git worktree",
+                        path.display()
+                    );
+                }
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                anyhow::bail!(
+                    "selected path '{}' is not repository-relative",
+                    path.display()
+                );
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        normalized.push(".");
+    }
+    Ok(normalized)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepositoryContext {
     pub worktree_root: PathBuf,

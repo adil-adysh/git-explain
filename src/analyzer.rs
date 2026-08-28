@@ -227,7 +227,7 @@ fn filter_files(files: &mut Vec<FileChange>, paths: &[PathBuf]) {
 }
 
 fn path_matches(path: &Path, filter: &Path) -> bool {
-    path == filter || path.starts_with(filter)
+    filter == Path::new(".") || path == filter || path.starts_with(filter)
 }
 
 fn populate_semantics(

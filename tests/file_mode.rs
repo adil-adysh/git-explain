@@ -154,3 +154,29 @@ fn file_mode_expands_working_tree_directories_and_accepts_mixed_selectors() {
     assert!(!stdout.contains("ignored"));
     assert!(stdout.contains("Files: 3"));
 }
+
+#[test]
+fn file_mode_resolves_paths_from_a_nested_invocation_directory() {
+    let directory = tempdir().unwrap();
+    git(directory.path(), &["init", "-q"]);
+    std::fs::create_dir_all(directory.path().join("src")).unwrap();
+    std::fs::write(directory.path().join("lib.rs"), "fn root_file() {}\n").unwrap();
+    std::fs::write(directory.path().join("src/lib.rs"), "fn nested_file() {}\n").unwrap();
+    let config = directory.path().join("user-config.toml");
+    std::fs::write(&config, "").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_git-explain"))
+        .args(["--debug", "file", "--", "lib.rs"])
+        .env("GIT_EXPLAIN_USER_CONFIG", config)
+        .current_dir(directory.path().join("src"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Name: nested_file"));
+    assert!(!stdout.contains("Name: root_file"));
+}

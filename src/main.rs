@@ -506,11 +506,14 @@ async fn run() -> Result<()> {
     }
     let context = git::RepositoryContext::discover()?;
     let repo = context.worktree_root.clone();
+    let invocation_directory = std::env::current_dir().context("determine current directory")?;
+    let selected_paths = git::normalize_selections(&repo, &invocation_directory, selected_paths)?;
     let loader = ConfigLoader::for_context(Some(&context))?;
     if let Some(Command::File(command)) = &cli.command {
+        let file_paths = git::normalize_selections(&repo, &invocation_directory, &command.paths)?;
         let application = loader.application_config(cli.profile.as_deref())?;
         let analysis = RepositoryAnalyzer::with_git_config(&repo, application.git)
-            .analyze_files(command.revision.as_deref(), &command.paths)?;
+            .analyze_files(command.revision.as_deref(), &file_paths)?;
         if cli.debug {
             print!("{}", analysis.format_debug());
             return Ok(());
@@ -555,13 +558,13 @@ async fn run() -> Result<()> {
         let application = loader.application_config(cli.profile.as_deref())?;
         let analyzer = RepositoryAnalyzer::with_git_config(&repo, application.git);
         let snapshot = if let Some(revision) = selected_revision {
-            analyzer.analyze_revision_or_range(revision, SnapshotGeneration(1), selected_paths)?
+            analyzer.analyze_revision_or_range(revision, SnapshotGeneration(1), &selected_paths)?
         } else if selected_staged {
-            analyzer.analyze_staged(SnapshotGeneration(1), selected_paths)?
+            analyzer.analyze_staged(SnapshotGeneration(1), &selected_paths)?
         } else if selected_paths.is_empty() {
             analyzer.analyze_working_tree(SnapshotGeneration(1))?
         } else {
-            analyzer.analyze_working_tree_with_paths(SnapshotGeneration(1), selected_paths)?
+            analyzer.analyze_working_tree_with_paths(SnapshotGeneration(1), &selected_paths)?
         };
         explain::print_debug(&snapshot)?;
         if let Some(message) = snapshot.empty_state().as_deref() {
@@ -596,7 +599,7 @@ async fn run() -> Result<()> {
             resolved,
             selected_revision,
             selected_staged,
-            selected_paths,
+            &selected_paths,
             cli.port,
         )
         .await;
@@ -605,7 +608,7 @@ async fn run() -> Result<()> {
         &repo,
         selected_revision,
         selected_staged,
-        selected_paths,
+        &selected_paths,
         cli.profile.as_deref(),
         cli.port,
     )
