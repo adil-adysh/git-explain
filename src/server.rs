@@ -332,3 +332,88 @@ fn stale() -> Json<serde_json::Value> {
         serde_json::json!({"ok":false,"stale":true,"code":"snapshot_stale","error":"The repository changed while this page was open. Reload the page and try again.","retryable":true}),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::tempdir;
+
+    struct CountingProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ExplanationProvider for CountingProvider {
+        async fn explain(
+            &self,
+            _request: crate::model::ExplanationRequest,
+        ) -> anyhow::Result<UnitExplanation> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(UnitExplanation {
+                overview: format!("result {call}"),
+                annotations: vec![crate::model::Annotation {
+                    start_line: 1,
+                    end_line: 1,
+                    kind: "Behavior".into(),
+                    text: "annotation".into(),
+                }],
+                deep: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn file_generation_uses_snapshot_cache_unless_regenerated() {
+        let directory = tempdir().unwrap();
+        let config_path = directory.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[model]\nprofile = \"test\"\n\n[profiles.test]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"test\"\n",
+        )
+        .unwrap();
+        let config = crate::config::ConfigLoader::with_paths(config_path, None)
+            .resolve(Some("test"))
+            .unwrap();
+        let source = crate::change_set::SourceFile {
+            path: "lib.rs".into(),
+            content: "fn inspect() {}\n".into(),
+        };
+        let document = crate::semantic::extract_document(&source).unwrap();
+        let id = crate::file_analysis::unit_key(&document.units[0]);
+        let provider = Arc::new(CountingProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let state = Arc::new(FileStateData {
+            analysis: Mutex::new(FileAnalysis {
+                revision: None,
+                documents: vec![document],
+                explanations: Default::default(),
+                deep_explanations: Default::default(),
+            }),
+            provider: provider.clone(),
+            cache: Some(ExplanationCache::open(directory.path()).unwrap()),
+            model: config.model,
+            reader: config.reader,
+            explanation: config.explanation,
+        });
+
+        let first = generate_file(id.clone(), false, false, state.clone())
+            .await
+            .0;
+        assert_eq!(first["cache_hit"], false);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+        let cached = generate_file(id.clone(), false, false, state.clone())
+            .await
+            .0;
+        assert_eq!(cached["cache_hit"], true);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+        let regenerated = generate_file(id, false, true, state).await.0;
+        assert_eq!(regenerated["cache_hit"], false);
+        assert_eq!(regenerated["overview"], "result 2");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+}
