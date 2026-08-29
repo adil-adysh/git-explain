@@ -168,7 +168,7 @@ git explain config model --profile local
 
 List settings use `--add-*`, `--remove-*`, and `--clear-*` operations. `config edit` uses numbered menus and writes only after review and confirmation. Repository editing (`--repo`) can change application settings and select an already trusted user profile, but can never define profiles, endpoints, providers, or credentials.
 
-`git explain --port 9000` is a runtime-only server override; `git explain config server --port 9000` persists the setting. Likewise `git explain --profile cloud` is a one-shot profile override, while `git explain profile use cloud` persists the default selection.
+`git explain --port 9000` is a runtime-only server override; `git explain config server --port 9000` persists the setting for file, direct, and daemon-backed diff servers. A running daemon keeps its bound port. If a different port is requested, git-explain reports the conflict; run `git explain daemon stop` before retrying. Likewise `git explain --profile cloud` is a one-shot profile override, while `git explain profile use cloud` persists the default selection.
 
 For testing or portable setups, `GIT_EXPLAIN_USER_CONFIG` can point to an alternate user configuration file. `git explain config path` and `config show` display the effective path. `GIT_EXPLAIN_PROFILE` remains a one-shot profile-selection override.
 

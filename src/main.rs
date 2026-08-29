@@ -54,7 +54,22 @@ async fn run() -> Result<()> {
         _ => (None, false, &[] as &[std::path::PathBuf]),
     };
     if let Some(Command::Daemon(command)) = &cli.command {
-        return daemon::command(&command.action).await;
+        let environment_port = std::env::var("GIT_EXPLAIN_DAEMON_PORT")
+            .ok()
+            .and_then(|value| value.parse().ok());
+        let port = if matches!(command.action, cli::DaemonAction::Start) {
+            Some(if let Some(port) = cli.port.or(environment_port) {
+                port
+            } else {
+                ConfigLoader::for_context(None)?
+                    .application_config(None)?
+                    .server
+                    .port
+            })
+        } else {
+            cli.port
+        };
+        return daemon::command(&command.action, port).await;
     }
     if let Some(Command::Context(command)) = &cli.command {
         let loader = ConfigLoader::for_context(None)?;
@@ -610,7 +625,7 @@ async fn run() -> Result<()> {
         selected_staged,
         &selected_paths,
         cli.profile.as_deref(),
-        cli.port,
+        Some(cli.port.unwrap_or(resolved.server.port)),
     )
     .await
 }

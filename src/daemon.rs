@@ -139,13 +139,13 @@ struct SnapshotRequest {
     generation: Option<SnapshotGeneration>,
 }
 
-pub async fn command(action: &DaemonAction) -> Result<()> {
+pub async fn command(action: &DaemonAction, port: Option<u16>) -> Result<()> {
     match action {
-        DaemonAction::Start => start(daemon_port()).await,
+        DaemonAction::Start => start(port.unwrap_or_else(daemon_port)).await,
         DaemonAction::Stop => stop().await,
         DaemonAction::Status => status().await,
         DaemonAction::Refresh => refresh_repository().await,
-        DaemonAction::Run => run(daemon_port()).await,
+        DaemonAction::Run => run(port.unwrap_or_else(daemon_port)).await,
     }
 }
 
@@ -216,7 +216,7 @@ async fn start(port: u16) -> Result<()> {
 
 async fn ensure_running(port: u16) -> Result<Metadata> {
     if let Some(metadata) = discover().await? {
-        return Ok(metadata);
+        return require_port(metadata, port);
     }
     fs::create_dir_all(daemon_dir()?)?;
     let lock = lock_path()?;
@@ -238,7 +238,7 @@ async fn ensure_running(port: u16) -> Result<Metadata> {
         for _ in 0..50 {
             if let Some(metadata) = discover().await? {
                 let _ = fs::remove_file(&lock);
-                return Ok(metadata);
+                return require_port(metadata, port);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -248,13 +248,24 @@ async fn ensure_running(port: u16) -> Result<Metadata> {
     } else {
         for _ in 0..50 {
             if let Some(metadata) = discover().await? {
-                return Ok(metadata);
+                return require_port(metadata, port);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let _ = fs::remove_file(&lock);
         Box::pin(ensure_running(port)).await
     }
+}
+
+fn require_port(metadata: Metadata, requested: u16) -> Result<Metadata> {
+    if requested != 0 && metadata.port != requested {
+        anyhow::bail!(
+            "git-explain daemon is already running on port {}, but port {} was requested.\n\nStop it first with:\ngit explain daemon stop\n\nThen retry, or use the existing port.",
+            metadata.port,
+            requested
+        );
+    }
+    Ok(metadata)
 }
 
 async fn discover() -> Result<Option<Metadata>> {
@@ -1059,6 +1070,22 @@ mod tests {
         let second = new_id();
         assert_eq!(first.len(), 32);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn existing_daemon_must_match_the_requested_port() {
+        let metadata = Metadata {
+            pid: 42,
+            port: 8192,
+            started_at: "now".into(),
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            control_token: "secret".into(),
+        };
+        assert_eq!(require_port(metadata.clone(), 8192).unwrap().port, 8192);
+        let error = require_port(metadata, 9000).unwrap_err().to_string();
+        assert!(error.contains("already running on port 8192"));
+        assert!(error.contains("port 9000 was requested"));
+        assert!(error.contains("git explain daemon stop"));
     }
 
     fn git(dir: &Path, args: &[&str]) {
