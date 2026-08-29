@@ -23,9 +23,23 @@ Equivalent direct commands are `cargo fmt -- --check`, `cargo test`, and `cargo 
 
 Format Rust with `cargo fmt`; CI treats formatting failures as errors. Use idiomatic Rust 2021, four-space indentation, `snake_case` for functions/modules, `PascalCase` for types, and descriptive names for snapshot, unit, and repository boundaries. Keep analysis deterministic and avoid putting model, web-server, cache, or mutable runtime concerns into `RepositoryAnalyzer`. `SemanticDocument` has no change classification; only diff mode invokes `SemanticMatcher`. Snapshot and change cache identities must remain disjoint.
 
+## Explanation UX Contract
+
+Treat [docs/explanation-ux.md](docs/explanation-ux.md) as the product contract when changing model requests, explanation state, HTTP routes, cache identity, or browser rendering.
+
+- Optimize for a local GPU with about 8 GiB VRAM. Keep inference serialized unless a measured design explicitly replaces that constraint.
+- Generate explanations only after the user presses the visible Generate/Regenerate action. Selecting a tab is navigation and must never start inference.
+- Keep each available view—Overview, Changes, Concepts, and Deep—as a distinct `ExplanationKind` request with independent state and cache keys. File mode intentionally omits Changes. Regenerating one must not invalidate unrelated kinds; replacing a prerequisite may invalidate Deep when required.
+- Render one shared source view per code section. Changes and Concepts may replace annotations on that view; do not create parallel source copies, injected concept panels, or mode-specific executable scripts.
+- In diff mode, Changes and Concepts use deterministic changed regions while retaining the complete active code section as model context. In file mode, Overview and Concepts use the complete deterministic code section. The model may reference only regions supplied by the application.
+- Keep unsupported files out of the browser experience. Use Git and code terminology in visible copy; do not expose internal terms such as semantic unit, snapshot, inference, provider, or cache.
+- Preserve loopback-only transport and existing control-token requirements.
+
 ## Testing Guidelines
 
 Tests use Rust’s built-in test framework plus fixture-based integration tests. Add focused regression coverage in `tests/` for parser, Git-history, daemon lifecycle, HTTP/model, snapshot, or rendered-UI changes as appropriate. Run `task check` before submitting; CI runs formatting, `cargo test`, and a debug build.
+
+For explanation UX changes, verify request kind and deterministic regions, cache-key independence, one source view per rendered code section, server-rendered controls/state, absence of dynamically injected panels, and that tab selection performs no network request. Use browser validation when interaction behavior changes.
 
 ## Commits and Pull Requests
 

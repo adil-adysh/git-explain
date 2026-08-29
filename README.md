@@ -2,6 +2,8 @@
 
 `git-explain` reads complete source files or explains semantic changes in a local browser. Source extraction and Git analysis stay local; only individual semantic units requested in the browser are sent to the selected model endpoint.
 
+Explanations are on demand. Overview, Changes, Concepts, and Deep are separate requests and are generated only from their explicit action. File mode teaches concepts from the complete code section; diff mode explains Changes and Concepts at deterministic changed regions while retaining the complete active section as context. The daemon serializes model inference by default, keeping the workflow suitable for a local GPU with about 8 GiB of VRAM.
+
 ## Quick start
 
 From inside a Git repository, create the documented starter configuration:

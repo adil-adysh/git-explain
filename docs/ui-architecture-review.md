@@ -1,6 +1,6 @@
 # git-explain UI Architecture Review
 
-> Historical note: this review records the pre-`SemanticDocument` UI implementation. Type names and command forms such as `AnalysisSnapshot`, `ExplainedUnit`, and `git explain REVISION` are retained only as historical evidence. See `docs/architecture.md` and `README.md` for the current file/diff architecture and CLI.
+> Historical note: this review records the pre-`SemanticDocument` and pre-layer-redesign UI implementation. Type names, command forms, duplicated rendering patterns, and Normal/Deep behavior are retained only as historical evidence and must not guide new implementation. See `docs/explanation-ux.md`, `docs/architecture.md`, and `README.md` for the current contract.
 
 ## Executive Summary
 

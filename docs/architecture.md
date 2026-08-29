@@ -70,7 +70,7 @@ Pure renames, exact copies, mode-only changes, binary changes, and preserved uni
 
 File mode resolves selected paths at the requested snapshot, loads complete source, and produces `FileAnalysis { documents, explanations }`. Every extracted unit may be explained because the user explicitly requested the file snapshot. There is no `SemanticMatcher`, Git status, or fake before/after pair.
 
-The file browser retains Normal and Deep actions, annotated source, and text-source controls. It intentionally has no Git-diff control because a snapshot has no before/after diff.
+The file browser exposes Overview, Concepts, and Deep views on one shared source rendering. It intentionally has no Changes or Git-diff control because a file snapshot has no before/after diff. See `docs/explanation-ux.md` for the interaction contract.
 
 ## Cache boundaries
 
@@ -79,13 +79,13 @@ Both modes use the repository-local SQLite store, but their content-addressed ke
 - `snapshot`: whole-file semantic unit at one snapshot;
 - `change`: semantic unit change with Git context and diff.
 
-Normal and Deep generation settings remain separate key inputs. Model, provider, prompt version, reader settings, explanation settings, source, and prior explanation also participate. A snapshot response can never satisfy a change request, or vice versa.
+`ExplanationKind` and the applicable normal/deep generation settings are key inputs. Overview, Changes, Concepts, and Deep therefore remain independent, as do model, provider, prompt version, reader settings, explanation settings, source, regions, diff, and prior explanation. A snapshot response can never satisfy a change request, or vice versa.
 
 ## Browser and daemon
 
 Diff mode normally registers a `ChangeSet` with the loopback daemon. Sessions have immutable analyzed inputs, a mutable explanation overlay, bounded cache/in-flight state, opaque IDs, cancellation, and atomic refresh. `--direct` uses the one-shot diff server.
 
-File mode uses the loopback snapshot server. Snapshot endpoints use snapshot cache keys and file-unit IDs. Diff endpoints use change cache keys and semantic-change IDs. Both browser experiences generate explanations on demand and keep Normal and Deep responses distinct.
+File mode uses the loopback snapshot server. Snapshot endpoints use snapshot cache keys and file-unit IDs. Diff endpoints use change cache keys and semantic-change IDs. Both browser experiences generate only from the explicit action and keep every `ExplanationKind` response distinct; selecting a view never starts inference.
 
 The server always binds to `127.0.0.1`. Daemon control routes require the local control token. Repository configuration cannot define model endpoints or credential references.
 
@@ -93,7 +93,7 @@ The server always binds to `127.0.0.1`. Daemon control routes require the local 
 
 CLI, browser, and JSON render deterministic domain facts; they do not reanalyze source independently. CLI debug output is stable, line-oriented text with explicit status labels, paths, unit names, kinds, ranges, source, semantic counts, and model-request counts. It uses no cursor rewriting, spinner, color-only meaning, or visual-table dependency.
 
-Browser output uses headings, file navigation, textual statuses, status regions, native buttons, and source text controls. Diff pages show file metadata above semantic cards. Snapshot pages show document metadata above unit cards.
+Browser output uses headings, file navigation, textual statuses, status regions, native buttons, and source text controls. Diff pages show file metadata above code-section cards. File pages show document metadata above code-section cards. Each card has one shared source view; Changes and Concepts redraw annotations on that view.
 
 ## Invariants
 
