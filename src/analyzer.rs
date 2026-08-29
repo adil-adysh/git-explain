@@ -122,6 +122,7 @@ impl RepositoryAnalyzer {
         })
     }
 
+    #[allow(dead_code)]
     pub fn analyze_commit(
         &self,
         revision: &str,
@@ -130,6 +131,7 @@ impl RepositoryAnalyzer {
         self.analyze_commit_with_paths(revision, generation, &[])
     }
 
+    #[allow(dead_code)]
     pub fn analyze_commit_with_paths(
         &self,
         revision: &str,
@@ -201,10 +203,8 @@ impl RepositoryAnalyzer {
     ) -> Result<ChangeSet> {
         if revision.contains("..") {
             self.analyze_range(revision, generation, paths)
-        } else if paths.is_empty() {
-            self.analyze_commit(revision, generation)
         } else {
-            self.analyze_commit_with_paths(revision, generation, paths)
+            self.analyze_range(&format!("{revision}..HEAD"), generation, paths)
         }
     }
 }
@@ -287,6 +287,7 @@ fn read_source(provider: &dyn SourceProvider, path: &Path) -> Option<SourceFile>
         content,
     })
 }
+#[allow(dead_code)]
 struct EmptySourceProvider;
 impl SourceProvider for EmptySourceProvider {
     fn read_file(&self, _: &Path) -> Result<String> {

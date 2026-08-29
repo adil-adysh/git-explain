@@ -140,6 +140,7 @@ pub fn git_dir(root: &Path) -> Result<PathBuf> {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct CommitAnalysis {
     pub oid: String,
     pub parent_oid: Option<String>,
@@ -248,6 +249,7 @@ fn untracked_patch(content: &[u8]) -> FilePatch {
 pub fn staged_files(root: &Path, config: &GitConfig) -> Result<Vec<FileChange>> {
     collect_files(root, &["--cached", config.diff_target.as_str()])
 }
+#[allow(dead_code)]
 pub fn commit_analysis(root: &Path, revision: &str) -> Result<CommitAnalysis> {
     let oid = resolve_revision(root, revision)?;
     let parents: Vec<_> = git_output(root, &["rev-list", "--parents", "-n", "1", &oid])?

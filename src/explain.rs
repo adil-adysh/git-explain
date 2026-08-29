@@ -79,6 +79,7 @@ impl SourceProvider for GitIndexSourceProvider {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AnalysisMode {
     WorkingTree,
+    #[allow(dead_code)]
     Commit {
         oid: String,
         parent_oid: Option<String>,

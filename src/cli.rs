@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "git-explain",
     about = "Read source files or understand semantic changes across Git revisions",
-    after_help = "Examples:\n  git explain                         Explain current changes\n  git explain diff HEAD               Explain one commit\n  git explain diff HEAD~3..HEAD       Explain an explicit range\n  git explain file -- src/lib.rs      Explain a working-tree file\n  git explain file HEAD -- src        Explain files under src at HEAD\n  git explain --debug diff -- src     Inspect without opening a browser\n\nHelp:\n  git explain -h              Show command help\n  git explain file -h         Show file-mode help\n  git explain diff -h         Show diff-mode help"
+    after_help = "Examples:\n  git explain                         Explain current changes\n  git explain diff HEAD~3             Explain changes from HEAD~3 to HEAD\n  git explain diff HEAD~3..HEAD       Explain an explicit range\n  git explain file -- src/lib.rs      Explain a working-tree file\n  git explain file HEAD -- src        Explain files under src at HEAD\n  git explain --debug diff -- src     Inspect without opening a browser\n\nHelp:\n  git explain -h              Show command help\n  git explain file -h         Show file-mode help\n  git explain diff -h         Show diff-mode help"
 )]
 pub struct Cli {
     #[arg(
@@ -36,7 +36,7 @@ pub struct Cli {
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
     #[command(
-        about = "Explain semantic changes in the working tree, a commit, or an explicit Git range"
+        about = "Explain semantic changes in the working tree, from a revision to HEAD, or across an explicit Git range"
     )]
     Diff(DiffCommand),
     #[command(about = "Explain complete source files from the working tree or a revision")]
@@ -60,7 +60,7 @@ pub enum Command {
 pub struct DiffCommand {
     #[arg(
         value_name = "COMMIT_OR_RANGE",
-        help = "Explain one commit, A..B, or A...B; omit for working-tree changes"
+        help = "Explain REVISION..HEAD, A..B, or A...B; omit for working-tree changes"
     )]
     pub revision: Option<String>,
     #[arg(

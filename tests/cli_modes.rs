@@ -75,6 +75,38 @@ fn diff_range_cli_uses_explicit_endpoints_and_path_filter() {
 }
 
 #[test]
+fn single_revision_cli_compares_that_revision_to_head() {
+    let directory = repository();
+    std::fs::write(directory.path().join("lib.rs"), "fn first() {}\n").unwrap();
+    git(directory.path(), &["add", "."]);
+    git(directory.path(), &["commit", "-qm", "base"]);
+    std::fs::write(
+        directory.path().join("lib.rs"),
+        "fn first() {}\nfn second() {}\n",
+    )
+    .unwrap();
+    git(directory.path(), &["commit", "-qam", "second"]);
+    std::fs::write(
+        directory.path().join("lib.rs"),
+        "fn first() {}\nfn second() {}\nfn third() {}\n",
+    )
+    .unwrap();
+    git(directory.path(), &["commit", "-qam", "third"]);
+
+    let output = run(directory.path(), &["--debug", "diff", "HEAD~2"]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Selected Git range: HEAD~2..HEAD"));
+    assert!(stdout.contains("Name: second"));
+    assert!(stdout.contains("Name: third"));
+}
+
+#[test]
 fn staged_cli_excludes_unstaged_files() {
     let directory = repository();
     std::fs::write(directory.path().join("staged.rs"), "fn staged() {}\n").unwrap();
