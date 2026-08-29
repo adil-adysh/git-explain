@@ -1309,7 +1309,7 @@ pub fn example_config() -> &'static str {
 # Defaults: compare against HEAD and include staged changes.
 # diff_target = "HEAD"
 # include_staged = true
-# Parsed but not yet implemented; default is false.
+# Untracked, non-ignored files are excluded by default.
 # include_untracked = false
 
 # Runtime-only overrides are not stored in TOML:
@@ -2261,6 +2261,7 @@ mod tests {
         ] {
             assert!(template.contains(field), "missing template field: {field}");
         }
+        assert!(!template.contains("not yet implemented"));
         let parsed: PartialConfig = toml::from_str(template).unwrap();
         assert!(parsed.model.is_none());
         assert!(parsed.profiles.is_empty());
