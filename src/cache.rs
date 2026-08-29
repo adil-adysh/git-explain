@@ -13,7 +13,8 @@ use std::{
 };
 
 const SCHEMA: &str = "1";
-const PROMPT: &str = "explanation-prompt-v2";
+const PROMPT: &str = "explanation-prompt-v3";
+const RESPONSE_CONTRACT: &str = "structured-response-v2";
 
 #[derive(Clone)]
 pub struct ExplanationCache {
@@ -25,6 +26,7 @@ pub struct ExplanationCache {
 struct Identity<'a> {
     schema: &'static str,
     prompt: &'static str,
+    response_contract: &'static str,
     context_plan: &'static str,
     scope: &'static str,
     provider: &'a str,
@@ -100,6 +102,7 @@ impl ExplanationCache {
         let identity = Identity {
             schema: SCHEMA,
             prompt: PROMPT,
+            response_contract: RESPONSE_CONTRACT,
             context_plan: PLAN_VERSION,
             scope,
             provider: &model.provider,

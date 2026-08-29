@@ -354,7 +354,7 @@ impl OpenAiProvider {
         let task = if request.kind == ExplanationKind::Deep {
             "Return exactly one JSON object with one required string field: explanation. Give a focused, step-by-step teaching explanation of the changed source unit, adapting to its unit kind. Respect the deterministic Unit status when present: Added is newly introduced, Deleted has been removed and no longer exists, and Modified changed from its prior form. Do not review, suggest rewrites, or speculate about intent."
         } else if request.kind == ExplanationKind::Concepts {
-            "Return exactly one JSON object with required fields overview and annotations. This is a SOURCE CONCEPTS request: explain the language/framework concepts needed to understand this unit. Every annotation must have kind concept. Return as many distinct useful concepts as the source supports, up to the annotation limit; put each distinct concept in its own annotation and avoid combining unrelated concepts. Return at least one useful concept annotation when the source contains a non-trivial concept. Do not describe Git changes, do not review code, and do not invent concepts."
+            "Return exactly one JSON object with required fields overview and annotations. This is a SOURCE CONCEPTS request: explain the language/framework concepts needed to understand this unit. Every annotation must have kind concept. Return as many distinct useful concepts as the source supports, up to the annotation limit; put each distinct concept in its own annotation and avoid combining unrelated concepts. When relevant diff content is supplied, cover every supplied changed region when the annotation limit permits. Return at least one useful concept annotation when the source contains a non-trivial concept. Do not describe Git changes, do not review code, and do not invent concepts."
         } else if request.kind == ExplanationKind::Overview {
             "Return exactly one JSON object with required fields overview and annotations. Summarize what the complete source unit does in at most two sentences. Return annotations as an empty array. Do not discuss Git changes, teach concepts, review code, suggest rewrites, or speculate about intent."
         } else {
@@ -365,14 +365,24 @@ impl OpenAiProvider {
             .as_deref()
             .map(|text| format!("\n\nNORMAL OVERVIEW:\n{text}"))
             .unwrap_or_default();
+        let required_region_count = if request.concepts() && !request.diff.trim().is_empty() {
+            request
+                .regions
+                .len()
+                .min(self.explanation.max_annotations as usize) as u32
+        } else {
+            0
+        };
         let limit = if retry {
-            self.explanation.max_annotations.min(2)
+            self.explanation
+                .max_annotations
+                .min(2.max(required_region_count))
         } else {
             self.explanation.max_annotations
         };
         let task = if retry {
             if request.concepts() {
-                "Return one valid JSON object only. This is a source-concepts request: use only concept annotations and include at least one useful concept when applicable. Be concise and use no more than two annotations."
+                "Return one valid JSON object only. This is a source-concepts request: use only concept annotations, cover each supplied changed region when the annotation limit permits, and include at least one useful concept when applicable. Be concise and obey the annotation limit below."
             } else {
                 "Return one valid JSON object only. Be concise and use no more than two annotations."
             }
@@ -400,7 +410,7 @@ impl OpenAiProvider {
                 if request.deep {
                     deep_schema()
                 } else {
-                    normal_schema()
+                    normal_schema(request, limit)
                 }
             } else {
                 json!({"type": "json_object"})
@@ -445,7 +455,7 @@ impl OpenAiProvider {
         let raw_annotations = raw
             .annotations
             .context("normal response omitted annotations")?;
-        let annotations = raw_annotations
+        let mut annotations = raw_annotations
             .into_iter()
             .filter_map(|annotation| {
                 map_annotation(
@@ -455,14 +465,49 @@ impl OpenAiProvider {
                     !self.kind.is_llama_cpp(),
                 )
             })
-            .filter(|annotation| !request.concepts() || annotation.kind == "concept")
-            .take(self.explanation.max_annotations as usize)
+            .filter(|annotation| match request.kind {
+                ExplanationKind::Concepts => annotation.kind == "concept",
+                ExplanationKind::Changes => annotation.kind == "change",
+                _ => true,
+            })
             .collect::<Vec<_>>();
+        annotations.sort_by(|left, right| {
+            (left.start_line, left.end_line, &left.kind, &left.text).cmp(&(
+                right.start_line,
+                right.end_line,
+                &right.kind,
+                &right.text,
+            ))
+        });
+        annotations.dedup_by(|left, right| {
+            left.start_line == right.start_line
+                && left.end_line == right.end_line
+                && left.kind == right.kind
+                && left.text == right.text
+        });
+        annotations.truncate(self.explanation.max_annotations as usize);
         let annotations = if request.kind == ExplanationKind::Overview {
             vec![]
         } else {
             annotations
         };
+        if request.concepts() && annotations.is_empty() {
+            bail!("concept response omitted useful concept annotations");
+        }
+        if request.concepts()
+            && !request.diff.trim().is_empty()
+            && request.regions.len() <= self.explanation.max_annotations as usize
+        {
+            let missing = request.regions.iter().any(|region| {
+                !annotations.iter().any(|annotation| {
+                    annotation.start_line == region.start_line
+                        && annotation.end_line == region.end_line
+                })
+            });
+            if missing {
+                bail!("concept response did not cover every changed region");
+            }
+        }
         Ok(UnitExplanation {
             overview: truncate_words(&truncate_sentences(&strip_reasoning(&overview), 2), 80),
             annotations,
@@ -636,8 +681,25 @@ fn strip_reasoning_sections(raw: &str) -> String {
     result.trim().to_string()
 }
 
-fn normal_schema() -> Value {
-    json!({"type":"json_schema","json_schema":{"name":"git_explain_normal","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["overview","annotations"],"properties":{"overview":{"type":"string"},"annotations":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["region","kind","text"],"properties":{"region":{"type":"integer","minimum":1},"kind":{"type":"string","enum":["change","concept","flow","context"]},"text":{"type":"string"}}}}}}}})
+fn normal_schema(request: &ExplanationRequest, annotation_limit: u32) -> Value {
+    let region_ids = request
+        .regions
+        .iter()
+        .map(|region| region.id)
+        .collect::<Vec<_>>();
+    let kinds = match request.kind {
+        ExplanationKind::Concepts => json!(["concept"]),
+        ExplanationKind::Changes => json!(["change"]),
+        _ => json!(["change", "concept", "flow", "context"]),
+    };
+    let (minimum, maximum) = if request.kind == ExplanationKind::Overview {
+        (0, 0)
+    } else if request.kind == ExplanationKind::Concepts {
+        (1, annotation_limit)
+    } else {
+        (0, annotation_limit)
+    };
+    json!({"type":"json_schema","json_schema":{"name":"git_explain_normal","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["overview","annotations"],"properties":{"overview":{"type":"string"},"annotations":{"type":"array","minItems":minimum,"maxItems":maximum,"items":{"type":"object","additionalProperties":false,"required":["region","kind","text"],"properties":{"region":{"type":"integer","enum":region_ids},"kind":{"type":"string","enum":kinds},"text":{"type":"string","minLength":1}}}}}}}})
 }
 fn deep_schema() -> Value {
     json!({"type":"json_schema","json_schema":{"name":"git_explain_deep","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["explanation"],"properties":{"explanation":{"type":"string"}}}}})
@@ -1245,6 +1307,81 @@ mod tests {
             .unwrap()
             .contains("Deleted has been removed and no longer exists"));
     }
+
+    #[test]
+    fn concepts_schema_constrains_kind_regions_and_cardinality() {
+        let mut request = request(false);
+        request.kind = ExplanationKind::Concepts;
+        request.regions.push(ExplanationRegion {
+            id: 2,
+            start_line: 2,
+            end_line: 2,
+            source: "other();".into(),
+        });
+        let value = serde_json::to_value(provider("llama_cpp").build_request(&request)).unwrap();
+        let annotations =
+            &value["response_format"]["json_schema"]["schema"]["properties"]["annotations"];
+        assert_eq!(annotations["minItems"], 1);
+        assert_eq!(annotations["maxItems"], 3);
+        assert_eq!(
+            annotations["items"]["properties"]["kind"]["enum"],
+            json!(["concept"])
+        );
+        assert_eq!(
+            annotations["items"]["properties"]["region"]["enum"],
+            json!([1, 2])
+        );
+    }
+
+    #[test]
+    fn concepts_reject_empty_and_incomplete_changed_region_coverage() {
+        let p = provider("llama_cpp");
+        let mut request = request(false);
+        request.kind = ExplanationKind::Concepts;
+        assert!(p
+            .parse_response(r#"{"overview":"Short.","annotations":[]}"#, &request)
+            .unwrap_err()
+            .to_string()
+            .contains("omitted useful concept"));
+
+        request.regions.push(ExplanationRegion {
+            id: 2,
+            start_line: 2,
+            end_line: 2,
+            source: "other();".into(),
+        });
+        assert!(p
+            .parse_response(
+                r#"{"overview":"Short.","annotations":[{"region":1,"kind":"concept","text":"One concept."}]}"#,
+                &request,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("every changed region"));
+    }
+
+    #[test]
+    fn annotations_are_sorted_and_exact_duplicates_are_removed() {
+        let p = provider("llama_cpp");
+        let mut request = request(false);
+        request.kind = ExplanationKind::Concepts;
+        request.diff.clear();
+        request.regions.push(ExplanationRegion {
+            id: 2,
+            start_line: 2,
+            end_line: 2,
+            source: "other();".into(),
+        });
+        let parsed = p
+            .parse_response(
+                r#"{"overview":"Short.","annotations":[{"region":2,"kind":"concept","text":"Second."},{"region":1,"kind":"concept","text":"First."},{"region":1,"kind":"concept","text":"First."}]}"#,
+                &request,
+            )
+            .unwrap();
+        assert_eq!(parsed.annotations.len(), 2);
+        assert_eq!(parsed.annotations[0].text, "First.");
+        assert_eq!(parsed.annotations[1].text, "Second.");
+    }
     #[test]
     fn llama_deep_request_is_separate_and_enables_reasoning() {
         let value =
@@ -1424,7 +1561,7 @@ mod tests {
         let r = request(false);
         let parsed = p
             .parse_response(
-                r#"{"overview":"Before <think>secret</think> after.","annotations":[{"region":1,"kind":"context","text":"Visible <|thinking|>hidden</|thinking|> text."}]}"#,
+            r#"{"overview":"Before <think>secret</think> after.","annotations":[{"region":1,"kind":"change","text":"Visible <|thinking|>hidden</|thinking|> text."}]}"#,
                 &r,
             )
             .unwrap();
