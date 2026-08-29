@@ -1220,6 +1220,8 @@ fn error_exit_code(error: &anyhow::Error) -> i32 {
         || details.contains("unknown model profile")
         || details.contains("configuration error:")
         || details.contains("invalid repository path")
+        || details.contains("No files matched the selected file or directory paths")
+        || details.contains("selected path '")
     {
         2
     } else if details.contains("daemon") || details.contains("bind loopback") {

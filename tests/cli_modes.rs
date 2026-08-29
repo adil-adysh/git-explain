@@ -190,3 +190,37 @@ fn diff_paths_are_relative_to_a_nested_invocation_directory() {
     assert!(stdout.contains("Name: nested_file"));
     assert!(!stdout.contains("Name: root_file"));
 }
+
+#[test]
+fn invalid_revision_and_file_selection_use_input_error_exit_code() {
+    let directory = repository();
+    std::fs::write(directory.path().join("lib.rs"), "fn value() {}\n").unwrap();
+    git(directory.path(), &["add", "."]);
+    git(directory.path(), &["commit", "-qm", "base"]);
+
+    let invalid_revision = run(directory.path(), &["--debug", "diff", "does-not-exist"]);
+    assert_eq!(invalid_revision.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&invalid_revision.stderr)
+        .contains("requested Git revision could not be resolved"));
+
+    let missing_file = run(directory.path(), &["--debug", "file", "--", "missing.rs"]);
+    assert_eq!(missing_file.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing_file.stderr)
+        .contains("No files matched the selected file or directory paths"));
+
+    let outside = run(
+        directory.path(),
+        &["--debug", "file", "--", "..\\outside.rs"],
+    );
+    assert_eq!(outside.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&outside.stderr).contains("escapes the Git worktree"));
+}
+
+#[test]
+fn explanation_command_outside_repository_uses_input_error_exit_code() {
+    let directory = tempdir().unwrap();
+    let output = run(directory.path(), &["--debug", "diff"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("This command must be run inside a Git repository"));
+}
