@@ -351,9 +351,9 @@ impl OpenAiProvider {
             .collect::<Vec<_>>()
             .join("\n\n");
         let task = if request.deep {
-            "Return exactly one JSON object with one required string field: explanation. Give a focused, step-by-step teaching explanation of the changed source unit, adapting to its unit kind. Do not review, suggest rewrites, or speculate about intent."
+            "Return exactly one JSON object with one required string field: explanation. Give a focused, step-by-step teaching explanation of the changed source unit, adapting to its unit kind. Respect the deterministic Unit status when present: Added is newly introduced, Deleted has been removed and no longer exists, and Modified changed from its prior form. Do not review, suggest rewrites, or speculate about intent."
         } else {
-            "Return exactly one JSON object with required fields overview and annotations. Keep overview to at most two sentences. Select only the configured number of regions that materially help understanding. Explain the changed source unit according to its unit kind. Do not provide a tutorial, repeat the overview, explain trivial syntax, review code, suggest rewrites, or speculate about intent."
+            "Return exactly one JSON object with required fields overview and annotations. Keep overview to at most two sentences. Select only the configured number of regions that materially help understanding. Explain the changed source unit according to its unit kind. Respect the deterministic Unit status when present: Added is newly introduced, Deleted has been removed and no longer exists, and Modified changed from its prior form. Do not provide a tutorial, repeat the overview, explain trivial syntax, review code, suggest rewrites, or speculate about intent."
         };
         let prior = request
             .prior_explanation
@@ -1204,6 +1204,10 @@ mod tests {
                 ["required"],
             json!(["region", "kind", "text"])
         );
+        assert!(value["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Deleted has been removed and no longer exists"));
     }
     #[test]
     fn llama_deep_request_is_separate_and_enables_reasoning() {
