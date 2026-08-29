@@ -2,7 +2,7 @@ use crate::{
     cache::ExplanationCache,
     change_set::{ChangeSet, FileChange, SemanticUnitChange},
     config::{ExplanationConfig, ReaderConfig, ResolvedProfile},
-    model::{ExplanationRequest, UnitExplanation},
+    model::{ExplanationRegion, ExplanationRequest, UnitExplanation},
 };
 
 pub fn hydrate(
@@ -54,12 +54,59 @@ pub fn request_for(
         diff: change.diff.clone(),
         language: unit.language.clone(),
         git_context,
-        regions: vec![],
+        regions: explanation_regions(
+            unit,
+            change.after.is_some().then(|| {
+                file.patch
+                    .as_ref()
+                    .map(|patch| patch.ranges.as_slice())
+                    .unwrap_or(&[])
+            }),
+        ),
         prior_explanation: deep
             .then_some(change.explanation.overview.clone())
             .filter(|value| !value.is_empty()),
         deep,
     }
+}
+
+pub(crate) fn explanation_regions(
+    unit: &crate::change_set::SemanticUnit,
+    changed_ranges: Option<&[crate::change_set::LineRange]>,
+) -> Vec<ExplanationRegion> {
+    let source_lines: Vec<_> = unit.source.lines().collect();
+    let mut regions = changed_ranges
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|range| {
+            let start = range.start.max(unit.location.start_line);
+            let end = range.end.min(unit.location.end_line);
+            (start <= end).then_some((start, end))
+        })
+        .enumerate()
+        .map(|(index, (start, end))| {
+            let relative_start = start - unit.location.start_line + 1;
+            let relative_end = end - unit.location.start_line + 1;
+            ExplanationRegion {
+                id: index + 1,
+                start_line: relative_start,
+                end_line: relative_end,
+                source: source_lines
+                    .get(relative_start.saturating_sub(1)..relative_end.min(source_lines.len()))
+                    .unwrap_or(&[])
+                    .join("\n"),
+            }
+        })
+        .collect::<Vec<_>>();
+    if regions.is_empty() {
+        regions.push(ExplanationRegion {
+            id: 1,
+            start_line: 1,
+            end_line: source_lines.len().max(1),
+            source: unit.source.clone(),
+        });
+    }
+    regions
 }
 pub fn apply(change: &mut SemanticUnitChange, result: UnitExplanation, deep: bool) {
     if deep {
@@ -127,5 +174,56 @@ mod tests {
         );
         assert_eq!(change.explanation.overview, "New overview");
         assert!(change.deep_explanation.is_none());
+    }
+
+    #[test]
+    fn changed_file_lines_become_unit_relative_annotation_regions() {
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "inspect".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "lib.rs".into(),
+                start_line: 10,
+                end_line: 12,
+            },
+            source: "fn inspect() {\n    changed();\n}".into(),
+            language: "Rust".into(),
+        };
+
+        let regions = explanation_regions(
+            &unit,
+            Some(&[crate::change_set::LineRange { start: 11, end: 11 }]),
+        );
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].start_line, 2);
+        assert_eq!(regions[0].end_line, 2);
+        assert_eq!(regions[0].source, "    changed();");
+    }
+
+    #[test]
+    fn units_without_changed_line_ranges_remain_annotatable() {
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "removed".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "lib.rs".into(),
+                start_line: 20,
+                end_line: 21,
+            },
+            source: "fn removed() {\n}".into(),
+            language: "Rust".into(),
+        };
+
+        let regions = explanation_regions(&unit, None);
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!((regions[0].start_line, regions[0].end_line), (1, 2));
     }
 }

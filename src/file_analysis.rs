@@ -138,7 +138,7 @@ pub fn request_for(
             revision.unwrap_or("working tree"),
             unit.location.path.display()
         ),
-        regions: vec![],
+        regions: crate::runtime::explanation_regions(unit, None),
         prior_explanation,
         deep,
     }
