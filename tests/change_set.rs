@@ -377,6 +377,40 @@ fn binary_and_mode_only_changes_are_deterministic_and_not_explainable() {
 }
 
 #[test]
+fn binary_metadata_survives_add_delete_and_pure_rename() {
+    let dir = repo();
+    std::fs::write(dir.path().join("old.bin"), [0_u8, 255, 1, 2]).unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "add binary"]);
+
+    let analyzer = RepositoryAnalyzer::new(dir.path(), config(dir.path()));
+    let added = analyzer
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    assert_eq!(added.files[0].kind, FileChangeKind::Added);
+    assert!(added.files[0].binary);
+    assert_eq!(added.explainable_changes().count(), 0);
+
+    git(dir.path(), &["mv", "old.bin", "new.bin"]);
+    git(dir.path(), &["commit", "-qm", "rename binary"]);
+    let renamed = analyzer
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    assert_eq!(renamed.files[0].kind, FileChangeKind::Renamed);
+    assert!(renamed.files[0].binary);
+    assert_eq!(renamed.explainable_changes().count(), 0);
+
+    git(dir.path(), &["rm", "new.bin"]);
+    git(dir.path(), &["commit", "-qm", "delete binary"]);
+    let deleted = analyzer
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    assert_eq!(deleted.files[0].kind, FileChangeKind::Deleted);
+    assert!(deleted.files[0].binary);
+    assert_eq!(deleted.explainable_changes().count(), 0);
+}
+
+#[test]
 fn type_changes_are_deterministic_and_not_semantically_parsed() {
     let dir = repo();
     std::fs::write(dir.path().join("typed.rs"), "fn before() {}\n").unwrap();
