@@ -5,8 +5,8 @@ use crate::{
     cli::DaemonAction,
     config::{ConfigLoader, ExplanationConfig, ReaderConfig, ResolvedProfile},
     model::{
-        user_facing_error, ExplanationProvider, ExplanationRequest, UnitExplanation,
-        UserFacingError,
+        user_facing_error, ExplanationKind, ExplanationProvider, ExplanationRequest,
+        UnitExplanation, UserFacingError,
     },
     runtime,
     snapshot::SnapshotGeneration,
@@ -38,7 +38,10 @@ use tokio::sync::{Notify, RwLock, Semaphore};
 
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_PORT: u16 = 8192;
-const MAX_INFERENCE_REQUESTS: usize = 2;
+// One request at a time is deliberate: the primary target is a local GPU
+// with roughly 8 GiB of VRAM, and separate on-demand requests must not create
+// concurrent model runners that exhaust it.
+const MAX_INFERENCE_REQUESTS: usize = 1;
 const MAX_SESSIONS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -450,6 +453,22 @@ async fn run(port: u16) -> Result<()> {
         .route("/api/sessions/{session}/changes", get(change_set_json))
         .route("/sessions/{id}", get(session_page))
         .route("/api/sessions/{session}/units/{id}/explain", post(explain))
+        .route(
+            "/api/sessions/{session}/units/{id}/overview",
+            post(overview),
+        )
+        .route(
+            "/api/sessions/{session}/units/{id}/overview/regenerate",
+            post(overview_regenerate),
+        )
+        .route(
+            "/api/sessions/{session}/units/{id}/concepts",
+            post(concepts),
+        )
+        .route(
+            "/api/sessions/{session}/units/{id}/concepts/regenerate",
+            post(concepts_regenerate),
+        )
         .route("/api/sessions/{session}/units/{id}/deep", post(deep))
         .route(
             "/api/sessions/{session}/units/{id}/regenerate",
@@ -798,33 +817,61 @@ async fn explain(
     State(state): State<Arc<DaemonState>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(session, id, false, false, body, state).await
+    generate(session, id, ExplanationKind::Changes, false, body, state).await
+}
+async fn overview(
+    Path((session, id)): Path<(String, String)>,
+    State(state): State<Arc<DaemonState>>,
+    body: Option<Json<SnapshotRequest>>,
+) -> Json<serde_json::Value> {
+    generate(session, id, ExplanationKind::Overview, false, body, state).await
+}
+async fn overview_regenerate(
+    Path((session, id)): Path<(String, String)>,
+    State(state): State<Arc<DaemonState>>,
+    body: Option<Json<SnapshotRequest>>,
+) -> Json<serde_json::Value> {
+    generate(session, id, ExplanationKind::Overview, true, body, state).await
+}
+async fn concepts(
+    Path((session, id)): Path<(String, String)>,
+    State(state): State<Arc<DaemonState>>,
+    body: Option<Json<SnapshotRequest>>,
+) -> Json<serde_json::Value> {
+    generate(session, id, ExplanationKind::Concepts, false, body, state).await
+}
+async fn concepts_regenerate(
+    Path((session, id)): Path<(String, String)>,
+    State(state): State<Arc<DaemonState>>,
+    body: Option<Json<SnapshotRequest>>,
+) -> Json<serde_json::Value> {
+    generate(session, id, ExplanationKind::Concepts, true, body, state).await
 }
 async fn deep(
     Path((session, id)): Path<(String, String)>,
     State(state): State<Arc<DaemonState>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(session, id, true, false, body, state).await
+    generate(session, id, ExplanationKind::Deep, false, body, state).await
 }
 async fn regenerate(
     Path((session, id)): Path<(String, String)>,
     State(state): State<Arc<DaemonState>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(session, id, false, true, body, state).await
+    generate(session, id, ExplanationKind::Changes, true, body, state).await
 }
 async fn deep_regenerate(
     Path((session, id)): Path<(String, String)>,
     State(state): State<Arc<DaemonState>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(session, id, true, true, body, state).await
+    generate(session, id, ExplanationKind::Deep, true, body, state).await
 }
 async fn generate(
     session_id: String,
     id: String,
-    deep: bool,
+    kind: ExplanationKind,
     regenerate: bool,
     body: Option<Json<SnapshotRequest>>,
     state: Arc<DaemonState>,
@@ -855,7 +902,11 @@ async fn generate(
                 serde_json::json!({"ok":false,"code":"no_explanation_required","error":"This semantic unit is unchanged and requires no model explanation.","retryable":false}),
             );
         }
-        runtime::request_for(file, item, &changes.context, deep)
+        if kind == ExplanationKind::Concepts {
+            runtime::concept_request_for(file, item, &changes.context)
+        } else {
+            runtime::request_for_kind(file, item, &changes.context, kind)
+        }
     };
     let key = ExplanationCache::change_key(
         &request,
@@ -867,8 +918,8 @@ async fn generate(
         if let Some(cache) = &session.cache {
             if let Ok(Some(json)) = cache.get(&key) {
                 if let Ok(e) = serde_json::from_str::<UnitExplanation>(&json) {
-                    if update_if_current(&state, &session, &unit_id, e.clone(), deep).await {
-                        return Json(runtime::result(e, true, deep));
+                    if update_if_current(&state, &session, &unit_id, e.clone(), kind).await {
+                        return Json(runtime::result(e, true, kind));
                     }
                     return stale_session();
                 }
@@ -890,8 +941,8 @@ async fn generate(
                     &serde_json::to_string(&e).unwrap(),
                 );
             }
-            if update_if_current(&state, &session, &unit_id, e.clone(), deep).await {
-                Json(runtime::result(e, false, deep))
+            if update_if_current(&state, &session, &unit_id, e.clone(), kind).await {
+                Json(runtime::result(e, false, kind))
             } else {
                 stale_session()
             }
@@ -974,7 +1025,7 @@ async fn update_if_current(
     session: &Arc<RepositorySession>,
     id: &SemanticChangeId,
     e: UnitExplanation,
-    deep: bool,
+    kind: ExplanationKind,
 ) -> bool {
     let Some(active) = current(state, &session.id.0).await else {
         return false;
@@ -983,7 +1034,7 @@ async fn update_if_current(
         return false;
     }
     if let Some(item) = session.change_set.lock().unwrap().find_change_mut(id) {
-        runtime::apply(item, e, deep);
+        runtime::apply_kind(item, e, kind);
         true
     } else {
         false
@@ -1331,6 +1382,7 @@ mod tests {
             git_context: String::new(),
             regions: vec![],
             prior_explanation: None,
+            kind: crate::model::ExplanationKind::Changes,
             deep: false,
         };
         let first_state = state.clone();

@@ -11,6 +11,21 @@ pub struct ExplanationRegion {
     pub source: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExplanationKind {
+    Overview,
+    Changes,
+    Concepts,
+    Deep,
+}
+
+impl ExplanationKind {
+    pub const fn is_deep(self) -> bool {
+        matches!(self, Self::Deep)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ExplanationRequest {
     pub source_unit: String,
@@ -21,7 +36,14 @@ pub struct ExplanationRequest {
     pub git_context: String,
     pub regions: Vec<ExplanationRegion>,
     pub prior_explanation: Option<String>,
+    pub kind: ExplanationKind,
     pub deep: bool,
+}
+
+impl ExplanationRequest {
+    pub fn concepts(&self) -> bool {
+        self.kind == ExplanationKind::Concepts
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Annotation {

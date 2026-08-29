@@ -308,7 +308,9 @@ pub struct SemanticUnitChange {
     pub before: Option<SemanticUnit>,
     pub after: Option<SemanticUnit>,
     pub diff: String,
+    pub overview_explanation: UnitExplanation,
     pub explanation: UnitExplanation,
+    pub concept_explanation: UnitExplanation,
     pub deep_explanation: Option<String>,
 }
 impl SemanticUnitChange {

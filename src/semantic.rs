@@ -119,7 +119,17 @@ fn match_units(
                 before,
                 after,
                 diff: diff.clone(),
+                overview_explanation: UnitExplanation {
+                    overview: String::new(),
+                    annotations: vec![],
+                    deep: None,
+                },
                 explanation: UnitExplanation {
+                    overview: String::new(),
+                    annotations: vec![],
+                    deep: None,
+                },
+                concept_explanation: UnitExplanation {
                     overview: String::new(),
                     annotations: vec![],
                     deep: None,

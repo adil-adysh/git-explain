@@ -29,6 +29,7 @@ struct Identity<'a> {
     provider: &'a str,
     model: &'a str,
     mode: &'static str,
+    explanation_kind: crate::model::ExplanationKind,
     generation: &'a GenerationConfig,
     reader: &'a ReaderConfig,
     explanation: &'a ExplanationConfig,
@@ -90,7 +91,7 @@ impl ExplanationCache {
         reader: &ReaderConfig,
         explanation: &ExplanationConfig,
     ) -> String {
-        let generation = if request.deep {
+        let generation = if request.kind.is_deep() {
             &model.deep
         } else {
             &model.normal
@@ -101,7 +102,12 @@ impl ExplanationCache {
             scope,
             provider: &model.provider,
             model: &model.model,
-            mode: if request.deep { "deep" } else { "normal" },
+            mode: if request.kind.is_deep() {
+                "deep"
+            } else {
+                "normal"
+            },
+            explanation_kind: request.kind,
             generation,
             reader,
             explanation,
@@ -144,7 +150,7 @@ impl ExplanationCache {
         response: &str,
     ) -> Result<()> {
         let db = self.db.lock().unwrap();
-        db.execute("INSERT INTO explanations(key,mode,provider,model,language,unit_kind,unit_name,prompt_version,response_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(key) DO UPDATE SET response_json=excluded.response_json,created_at=CURRENT_TIMESTAMP", params![key, if request.deep {"deep"} else {"normal"}, model.provider, model.model, request.language, request.unit_kind, request.unit_name, PROMPT, response])?;
+        db.execute("INSERT INTO explanations(key,mode,provider,model,language,unit_kind,unit_name,prompt_version,response_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(key) DO UPDATE SET response_json=excluded.response_json,created_at=CURRENT_TIMESTAMP", params![key, format!("{:?}", request.kind).to_lowercase(), model.provider, model.model, request.language, request.unit_kind, request.unit_name, PROMPT, response])?;
         Ok(())
     }
     pub fn count(&self) -> Result<u64> {
@@ -236,6 +242,7 @@ mod tests {
                 source: "fn load() {}".into(),
             }],
             prior_explanation: None,
+            kind: crate::model::ExplanationKind::Changes,
             deep: false,
         };
         (cache, model, reader, explanation, request)
@@ -264,6 +271,7 @@ mod tests {
             ExplanationCache::change_key(&changed, &model, &reader, &explanation)
         );
         let mut deep = request;
+        deep.kind = crate::model::ExplanationKind::Deep;
         deep.deep = true;
         assert_ne!(
             base,
@@ -284,11 +292,34 @@ mod tests {
             )
             .unwrap();
         let mut deep = normal;
+        deep.kind = crate::model::ExplanationKind::Deep;
         deep.deep = true;
         let deep_key = ExplanationCache::change_key(&deep, &model, &reader, &explanation);
         assert_ne!(normal_key, deep_key);
         assert!(cache.get(&deep_key).unwrap().is_none());
         assert_eq!(cache.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn every_explanation_kind_has_an_independent_cache_key() {
+        let (_, model, reader, explanation, mut request) = setup();
+        let mut keys = std::collections::BTreeSet::new();
+        for kind in [
+            crate::model::ExplanationKind::Overview,
+            crate::model::ExplanationKind::Changes,
+            crate::model::ExplanationKind::Concepts,
+            crate::model::ExplanationKind::Deep,
+        ] {
+            request.kind = kind;
+            request.deep = kind.is_deep();
+            keys.insert(ExplanationCache::change_key(
+                &request,
+                &model,
+                &reader,
+                &explanation,
+            ));
+        }
+        assert_eq!(keys.len(), 4);
     }
 
     #[test]

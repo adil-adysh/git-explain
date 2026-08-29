@@ -1,7 +1,7 @@
 use crate::{
     cache::ExplanationCache,
     config::{ExplanationConfig, ReaderConfig, ResolvedProfile},
-    model::{ExplanationRequest, UnitExplanation},
+    model::{ExplanationKind, ExplanationRequest, UnitExplanation},
     semantic::SemanticDocument,
 };
 use sha2::{Digest, Sha256};
@@ -12,6 +12,7 @@ pub struct FileAnalysis {
     pub revision: Option<String>,
     pub documents: Vec<SemanticDocument>,
     pub explanations: BTreeMap<String, UnitExplanation>,
+    pub concept_explanations: BTreeMap<String, UnitExplanation>,
     pub deep_explanations: BTreeMap<String, String>,
 }
 
@@ -77,6 +78,21 @@ impl FileAnalysis {
         for (id, value) in normal {
             self.apply(&id, value, false);
         }
+        let mut concepts = vec![];
+        for document in &self.documents {
+            for unit in &document.units {
+                let request = concept_request_for(unit, self.revision.as_deref());
+                let key = ExplanationCache::snapshot_key(&request, model, reader, explanation);
+                if let Ok(Some(json)) = cache.get(&key) {
+                    if let Ok(value) = serde_json::from_str::<UnitExplanation>(&json) {
+                        concepts.push((unit_key(unit), value));
+                    }
+                }
+            }
+        }
+        for (id, value) in concepts {
+            self.apply_concepts(&id, value);
+        }
         let mut deep = vec![];
         for document in &self.documents {
             for unit in &document.units {
@@ -119,6 +135,14 @@ impl FileAnalysis {
         }
         true
     }
+
+    pub fn apply_concepts(&mut self, id: &str, result: UnitExplanation) -> bool {
+        if self.find_unit(id).is_none() {
+            return false;
+        }
+        self.concept_explanations.insert(id.into(), result);
+        true
+    }
 }
 
 pub fn request_for(
@@ -140,8 +164,25 @@ pub fn request_for(
         ),
         regions: crate::runtime::explanation_regions(unit, None),
         prior_explanation,
+        kind: if deep {
+            ExplanationKind::Deep
+        } else {
+            ExplanationKind::Overview
+        },
         deep,
     }
+}
+
+pub fn concept_request_for(
+    unit: &crate::change_set::SemanticUnit,
+    revision: Option<&str>,
+) -> ExplanationRequest {
+    let mut request = request_for(unit, revision, false, None);
+    request.kind = ExplanationKind::Concepts;
+    request
+        .git_context
+        .push_str("\nExplanation focus: concepts");
+    request
 }
 
 pub fn unit_key(unit: &crate::change_set::SemanticUnit) -> String {
@@ -172,6 +213,7 @@ mod tests {
             revision: None,
             documents: vec![document],
             explanations: Default::default(),
+            concept_explanations: Default::default(),
             deep_explanations: BTreeMap::from([(id.clone(), "Old detail".into())]),
         };
 
@@ -185,5 +227,20 @@ mod tests {
             false,
         ));
         assert!(!analysis.deep_explanations.contains_key(&id));
+    }
+
+    #[test]
+    fn concept_request_uses_the_complete_file_unit_as_regions() {
+        let source = crate::change_set::SourceFile {
+            path: "lib.rs".into(),
+            content: "fn inspect() {\n    changed();\n}".into(),
+        };
+        let document = crate::semantic::extract_document(&source).unwrap();
+        let request = concept_request_for(&document.units[0], None);
+        assert!(request.diff.is_empty());
+        assert_eq!(request.regions.len(), 1);
+        assert_eq!(request.regions[0].start_line, 1);
+        assert_eq!(request.regions[0].end_line, 3);
+        assert!(request.concepts());
     }
 }

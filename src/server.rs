@@ -3,7 +3,7 @@ use crate::{
     change_set::{ChangeSet, SemanticChangeId},
     config::{ExplanationConfig, ReaderConfig, ResolvedProfile, ServerConfig},
     file_analysis::{self, FileAnalysis},
-    model::{user_facing_error, ExplanationProvider, UnitExplanation},
+    model::{user_facing_error, ExplanationKind, ExplanationProvider, UnitExplanation},
     runtime,
     snapshot::SnapshotGeneration,
     web,
@@ -62,6 +62,16 @@ pub async fn serve(
         .route("/", get(index))
         .route("/api/changes", get(changes))
         .route("/api/units/{id}/explain", post(explain))
+        .route("/api/units/{id}/overview", post(overview))
+        .route(
+            "/api/units/{id}/overview/regenerate",
+            post(overview_regenerate),
+        )
+        .route("/api/units/{id}/concepts", post(diff_concepts))
+        .route(
+            "/api/units/{id}/concepts/regenerate",
+            post(diff_concepts_regenerate),
+        )
         .route("/api/units/{id}/deep", post(deep))
         .route("/api/units/{id}/deep/regenerate", post(deep_regenerate))
         .route("/api/units/{id}/regenerate", post(regenerate))
@@ -99,6 +109,11 @@ pub async fn serve_file(
     let app = Router::new()
         .route("/", get(file_index))
         .route("/api/file-units/{id}/explain", post(file_explain))
+        .route("/api/file-units/{id}/concepts", post(file_concepts))
+        .route(
+            "/api/file-units/{id}/concepts/regenerate",
+            post(file_concepts_regenerate),
+        )
         .route("/api/file-units/{id}/deep", post(file_deep))
         .route("/api/file-units/{id}/regenerate", post(file_regenerate))
         .route(
@@ -124,34 +139,47 @@ async fn file_explain(
     Path(id): Path<String>,
     State(state): State<Arc<FileStateData>>,
 ) -> Json<serde_json::Value> {
-    generate_file(id, false, false, state).await
+    generate_file(id, false, false, false, state).await
+}
+async fn file_concepts(
+    Path(id): Path<String>,
+    State(state): State<Arc<FileStateData>>,
+) -> Json<serde_json::Value> {
+    generate_file(id, false, false, true, state).await
+}
+async fn file_concepts_regenerate(
+    Path(id): Path<String>,
+    State(state): State<Arc<FileStateData>>,
+) -> Json<serde_json::Value> {
+    generate_file(id, false, true, true, state).await
 }
 
 async fn file_deep(
     Path(id): Path<String>,
     State(state): State<Arc<FileStateData>>,
 ) -> Json<serde_json::Value> {
-    generate_file(id, true, false, state).await
+    generate_file(id, true, false, false, state).await
 }
 
 async fn file_regenerate(
     Path(id): Path<String>,
     State(state): State<Arc<FileStateData>>,
 ) -> Json<serde_json::Value> {
-    generate_file(id, false, true, state).await
+    generate_file(id, false, true, false, state).await
 }
 
 async fn file_deep_regenerate(
     Path(id): Path<String>,
     State(state): State<Arc<FileStateData>>,
 ) -> Json<serde_json::Value> {
-    generate_file(id, true, true, state).await
+    generate_file(id, true, true, false, state).await
 }
 
 async fn generate_file(
     id: String,
     deep: bool,
     regenerate: bool,
+    concepts: bool,
     state: Arc<FileStateData>,
 ) -> Json<serde_json::Value> {
     let request = {
@@ -169,7 +197,11 @@ async fn generate_file(
                     .map(|value| value.overview.clone())
             })
             .flatten();
-        file_analysis::request_for(unit, analysis.revision.as_deref(), deep, prior)
+        if concepts {
+            file_analysis::concept_request_for(unit, analysis.revision.as_deref())
+        } else {
+            file_analysis::request_for(unit, analysis.revision.as_deref(), deep, prior)
+        }
     };
     let key =
         ExplanationCache::snapshot_key(&request, &state.model, &state.reader, &state.explanation);
@@ -177,12 +209,20 @@ async fn generate_file(
         if let Some(cache) = &state.cache {
             if let Ok(Some(json)) = cache.get(&key) {
                 if let Ok(result) = serde_json::from_str::<UnitExplanation>(&json) {
-                    state
-                        .analysis
-                        .lock()
-                        .unwrap()
-                        .apply(&id, result.clone(), deep);
-                    return Json(runtime::result(result, true, deep));
+                    if concepts {
+                        state
+                            .analysis
+                            .lock()
+                            .unwrap()
+                            .apply_concepts(&id, result.clone());
+                    } else {
+                        state
+                            .analysis
+                            .lock()
+                            .unwrap()
+                            .apply(&id, result.clone(), deep);
+                    }
+                    return Json(runtime::result(result, true, request.kind));
                 }
             }
         }
@@ -197,12 +237,20 @@ async fn generate_file(
                     &serde_json::to_string(&result).unwrap(),
                 );
             }
-            state
-                .analysis
-                .lock()
-                .unwrap()
-                .apply(&id, result.clone(), deep);
-            Json(runtime::result(result, false, deep))
+            if concepts {
+                state
+                    .analysis
+                    .lock()
+                    .unwrap()
+                    .apply_concepts(&id, result.clone());
+            } else {
+                state
+                    .analysis
+                    .lock()
+                    .unwrap()
+                    .apply(&id, result.clone(), deep);
+            }
+            Json(runtime::result(result, false, request.kind))
         }
         Err(error) => {
             let info = user_facing_error(&error);
@@ -223,32 +271,116 @@ async fn explain(
     State(state): State<Arc<StateData>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, false, false, body.map(|Json(value)| value), state).await
+    generate(
+        id,
+        ExplanationKind::Changes,
+        false,
+        body.map(|Json(value)| value),
+        state,
+    )
+    .await
+}
+async fn overview(
+    Path(id): Path<String>,
+    State(state): State<Arc<StateData>>,
+    body: Option<Json<SnapshotRequest>>,
+) -> Json<serde_json::Value> {
+    generate(
+        id,
+        ExplanationKind::Overview,
+        false,
+        body.map(|Json(value)| value),
+        state,
+    )
+    .await
+}
+async fn overview_regenerate(
+    Path(id): Path<String>,
+    State(state): State<Arc<StateData>>,
+    body: Option<Json<SnapshotRequest>>,
+) -> Json<serde_json::Value> {
+    generate(
+        id,
+        ExplanationKind::Overview,
+        true,
+        body.map(|Json(value)| value),
+        state,
+    )
+    .await
+}
+async fn diff_concepts(
+    Path(id): Path<String>,
+    State(state): State<Arc<StateData>>,
+    body: Option<Json<SnapshotRequest>>,
+) -> Json<serde_json::Value> {
+    generate(
+        id,
+        ExplanationKind::Concepts,
+        false,
+        body.map(|Json(value)| value),
+        state,
+    )
+    .await
+}
+async fn diff_concepts_regenerate(
+    Path(id): Path<String>,
+    State(state): State<Arc<StateData>>,
+    body: Option<Json<SnapshotRequest>>,
+) -> Json<serde_json::Value> {
+    generate(
+        id,
+        ExplanationKind::Concepts,
+        true,
+        body.map(|Json(value)| value),
+        state,
+    )
+    .await
 }
 async fn deep(
     Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, true, false, body.map(|Json(value)| value), state).await
+    generate(
+        id,
+        ExplanationKind::Deep,
+        false,
+        body.map(|Json(value)| value),
+        state,
+    )
+    .await
 }
 async fn deep_regenerate(
     Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, true, true, body.map(|Json(value)| value), state).await
+    generate(
+        id,
+        ExplanationKind::Deep,
+        true,
+        body.map(|Json(value)| value),
+        state,
+    )
+    .await
 }
 async fn regenerate(
     Path(id): Path<String>,
     State(state): State<Arc<StateData>>,
     body: Option<Json<SnapshotRequest>>,
 ) -> Json<serde_json::Value> {
-    generate(id, false, true, body.map(|Json(value)| value), state).await
+    generate(
+        id,
+        ExplanationKind::Changes,
+        true,
+        body.map(|Json(value)| value),
+        state,
+    )
+    .await
 }
 async fn generate(
     id: String,
-    deep: bool,
+    kind: ExplanationKind,
     regenerate: bool,
     body: Option<SnapshotRequest>,
     state: Arc<StateData>,
@@ -274,7 +406,7 @@ async fn generate(
         }
         (
             changes.generation,
-            runtime::request_for(file, change, &changes.context, deep),
+            runtime::request_for_kind(file, change, &changes.context, kind),
         )
     };
     let key =
@@ -283,8 +415,8 @@ async fn generate(
         if let Some(cache) = &state.cache {
             if let Ok(Some(json)) = cache.get(&key) {
                 if let Ok(result) = serde_json::from_str::<UnitExplanation>(&json) {
-                    if apply(&state, &id, generation, result.clone(), deep) {
-                        return Json(runtime::result(result, true, deep));
+                    if apply(&state, &id, generation, result.clone(), kind) {
+                        return Json(runtime::result(result, true, kind));
                     }
                     return stale();
                 }
@@ -301,8 +433,8 @@ async fn generate(
                     &serde_json::to_string(&result).unwrap(),
                 );
             }
-            if apply(&state, &id, generation, result.clone(), deep) {
-                Json(runtime::result(result, false, deep))
+            if apply(&state, &id, generation, result.clone(), kind) {
+                Json(runtime::result(result, false, kind))
             } else {
                 stale()
             }
@@ -320,7 +452,7 @@ fn apply(
     id: &SemanticChangeId,
     generation: SnapshotGeneration,
     result: UnitExplanation,
-    deep: bool,
+    kind: ExplanationKind,
 ) -> bool {
     let mut changes = state.change_set.lock().unwrap();
     if changes.generation != generation {
@@ -329,7 +461,7 @@ fn apply(
     let Some(change) = changes.find_change_mut(id) else {
         return false;
     };
-    runtime::apply(change, result, deep);
+    runtime::apply_kind(change, result, kind);
     true
 }
 fn stale() -> Json<serde_json::Value> {
@@ -399,6 +531,7 @@ mod tests {
                 revision: None,
                 documents: vec![document],
                 explanations: Default::default(),
+                concept_explanations: Default::default(),
                 deep_explanations: Default::default(),
             }),
             provider: provider.clone(),
@@ -408,19 +541,19 @@ mod tests {
             explanation: config.explanation,
         });
 
-        let first = generate_file(id.clone(), false, false, state.clone())
+        let first = generate_file(id.clone(), false, false, false, state.clone())
             .await
             .0;
         assert_eq!(first["cache_hit"], false);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
-        let cached = generate_file(id.clone(), false, false, state.clone())
+        let cached = generate_file(id.clone(), false, false, false, state.clone())
             .await
             .0;
         assert_eq!(cached["cache_hit"], true);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
-        let regenerated = generate_file(id, false, true, state).await.0;
+        let regenerated = generate_file(id, false, true, false, state).await.0;
         assert_eq!(regenerated["cache_hit"], false);
         assert_eq!(regenerated["overview"], "result 2");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
@@ -469,7 +602,9 @@ mod tests {
             explanation: config.explanation,
         });
 
-        let result = generate(id.0, false, false, None, state).await.0;
+        let result = generate(id.0, ExplanationKind::Changes, false, None, state)
+            .await
+            .0;
         assert_eq!(result["code"], "no_explanation_required");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     }

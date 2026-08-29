@@ -42,6 +42,7 @@ impl RepositoryAnalyzer {
             revision: resolved_revision,
             documents,
             explanations: Default::default(),
+            concept_explanations: Default::default(),
             deep_explanations: Default::default(),
         })
     }

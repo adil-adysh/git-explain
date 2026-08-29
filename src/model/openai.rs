@@ -351,10 +351,14 @@ impl OpenAiProvider {
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        let task = if request.deep {
+        let task = if request.kind == ExplanationKind::Deep {
             "Return exactly one JSON object with one required string field: explanation. Give a focused, step-by-step teaching explanation of the changed source unit, adapting to its unit kind. Respect the deterministic Unit status when present: Added is newly introduced, Deleted has been removed and no longer exists, and Modified changed from its prior form. Do not review, suggest rewrites, or speculate about intent."
+        } else if request.kind == ExplanationKind::Concepts {
+            "Return exactly one JSON object with required fields overview and annotations. This is a SOURCE CONCEPTS request: explain the language/framework concepts needed to understand this unit. Every annotation must have kind concept, and return at least one useful concept annotation when the source contains a non-trivial concept. Do not describe Git changes, do not review code, and do not invent concepts."
+        } else if request.kind == ExplanationKind::Overview {
+            "Return exactly one JSON object with required fields overview and annotations. Summarize what the complete source unit does in at most two sentences. Return annotations as an empty array. Do not discuss Git changes, teach concepts, review code, suggest rewrites, or speculate about intent."
         } else {
-            "Return exactly one JSON object with required fields overview and annotations. Keep overview to at most two sentences. Select only the configured number of regions that materially help understanding. Explain the changed source unit according to its unit kind. Respect the deterministic Unit status when present: Added is newly introduced, Deleted has been removed and no longer exists, and Modified changed from its prior form. Do not provide a tutorial, repeat the overview, explain trivial syntax, review code, suggest rewrites, or speculate about intent."
+            "Return exactly one JSON object with required fields overview and annotations. Explain only what changed. Attach change annotations to the supplied deterministic changed regions. Respect Unit status: Added is newly introduced, Deleted has been removed and no longer exists, and Modified changed from its prior form. Do not teach concepts, review code, suggest rewrites, or speculate about intent."
         };
         let prior = request
             .prior_explanation
@@ -367,7 +371,11 @@ impl OpenAiProvider {
             self.explanation.max_annotations
         };
         let task = if retry {
-            "Return one valid JSON object only. Be concise and use no more than two annotations."
+            if request.concepts() {
+                "Return one valid JSON object only. This is a source-concepts request: use only concept annotations and include at least one useful concept when applicable. Be concise and use no more than two annotations."
+            } else {
+                "Return one valid JSON object only. Be concise and use no more than two annotations."
+            }
         } else {
             task
         };
@@ -447,8 +455,14 @@ impl OpenAiProvider {
                     !self.kind.is_llama_cpp(),
                 )
             })
+            .filter(|annotation| !request.concepts() || annotation.kind == "concept")
             .take(self.explanation.max_annotations as usize)
-            .collect();
+            .collect::<Vec<_>>();
+        let annotations = if request.kind == ExplanationKind::Overview {
+            vec![]
+        } else {
+            annotations
+        };
         Ok(UnitExplanation {
             overview: truncate_words(&truncate_sentences(&strip_reasoning(&overview), 2), 80),
             annotations,
@@ -1195,6 +1209,11 @@ mod tests {
                 source: "changed();".into(),
             }],
             prior_explanation: None,
+            kind: if deep {
+                ExplanationKind::Deep
+            } else {
+                ExplanationKind::Changes
+            },
             deep,
         }
     }

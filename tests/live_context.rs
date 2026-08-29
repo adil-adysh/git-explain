@@ -168,6 +168,7 @@ fn tracker_request(source: &str) -> ExplanationRequest {
             source: "value + 1".into(),
         }],
         prior_explanation: None,
+        kind: git_explain::model::ExplanationKind::Changes,
         deep: false,
     }
 }
@@ -406,6 +407,7 @@ async fn live_llama_cpp_rejects_an_explanation_larger_than_its_fixed_context() {
                 source: large_body,
             }],
             prior_explanation: None,
+            kind: git_explain::model::ExplanationKind::Changes,
             deep: false,
         })
         .await
@@ -433,6 +435,7 @@ async fn live_llama_cpp_runs_a_small_git_explain_request() {
                 source: "value + 1".into(),
             }],
             prior_explanation: None,
+            kind: git_explain::model::ExplanationKind::Changes,
             deep: false,
         })
         .await

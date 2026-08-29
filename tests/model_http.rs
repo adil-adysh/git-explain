@@ -116,6 +116,7 @@ fn request(deep: bool) -> ExplanationRequest {
             source: "a + b".into(),
         }],
         prior_explanation: None,
+        kind: git_explain::model::ExplanationKind::Changes,
         deep,
     }
 }

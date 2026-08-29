@@ -2,7 +2,7 @@ use crate::{
     cache::ExplanationCache,
     change_set::{ChangeSet, FileChange, SemanticUnitChange},
     config::{ExplanationConfig, ReaderConfig, ResolvedProfile},
-    model::{ExplanationRegion, ExplanationRequest, UnitExplanation},
+    model::{ExplanationKind, ExplanationRegion, ExplanationRequest, UnitExplanation},
 };
 
 pub fn hydrate(
@@ -19,13 +19,24 @@ pub fn hydrate(
             if !change.kind.explainable() {
                 continue;
             }
-            for deep in [false, true] {
-                let request = request_for(&metadata, change, &context, deep);
+            for kind in [
+                ExplanationKind::Overview,
+                ExplanationKind::Changes,
+                ExplanationKind::Deep,
+            ] {
+                let request = request_for_kind(&metadata, change, &context, kind);
                 let key = ExplanationCache::change_key(&request, model, reader, explanation);
                 if let Ok(Some(json)) = cache.get(&key) {
                     if let Ok(result) = serde_json::from_str::<UnitExplanation>(&json) {
-                        apply(change, result, deep);
+                        apply_kind(change, result, kind);
                     }
+                }
+            }
+            let request = concept_request_for(&metadata, change, &context);
+            let key = ExplanationCache::change_key(&request, model, reader, explanation);
+            if let Ok(Some(json)) = cache.get(&key) {
+                if let Ok(result) = serde_json::from_str::<UnitExplanation>(&json) {
+                    change.concept_explanation = result;
                 }
             }
         }
@@ -36,6 +47,24 @@ pub fn request_for(
     change: &SemanticUnitChange,
     context: &crate::explain::AnalysisContext,
     deep: bool,
+) -> ExplanationRequest {
+    request_for_kind(
+        file,
+        change,
+        context,
+        if deep {
+            ExplanationKind::Deep
+        } else {
+            ExplanationKind::Changes
+        },
+    )
+}
+
+pub fn request_for_kind(
+    file: &FileChange,
+    change: &SemanticUnitChange,
+    context: &crate::explain::AnalysisContext,
+    kind: ExplanationKind,
 ) -> ExplanationRequest {
     let unit = change.active_unit();
     let mut git_context = context.prompt_context();
@@ -56,18 +85,35 @@ pub fn request_for(
         git_context,
         regions: explanation_regions(
             unit,
-            change.after.is_some().then(|| {
+            (kind != ExplanationKind::Overview && change.after.is_some()).then(|| {
                 file.patch
                     .as_ref()
                     .map(|patch| patch.ranges.as_slice())
                     .unwrap_or(&[])
             }),
         ),
-        prior_explanation: deep
+        prior_explanation: (kind == ExplanationKind::Deep)
             .then_some(change.explanation.overview.clone())
             .filter(|value| !value.is_empty()),
-        deep,
+        kind,
+        deep: kind == ExplanationKind::Deep,
     }
+}
+
+/// Build the source-oriented request used by the Concepts action. In diff
+/// mode, concepts use the same deterministic changed regions as the change
+/// explanation, with the complete active unit still available as context.
+pub fn concept_request_for(
+    file: &FileChange,
+    change: &SemanticUnitChange,
+    context: &crate::explain::AnalysisContext,
+) -> ExplanationRequest {
+    let mut request = request_for(file, change, context, false);
+    request.kind = ExplanationKind::Concepts;
+    request
+        .git_context
+        .push_str("\nExplanation focus: concepts");
+    request
 }
 
 pub(crate) fn explanation_regions(
@@ -108,18 +154,38 @@ pub(crate) fn explanation_regions(
     }
     regions
 }
+#[cfg(test)]
 pub fn apply(change: &mut SemanticUnitChange, result: UnitExplanation, deep: bool) {
-    if deep {
+    apply_kind(
+        change,
+        result,
+        if deep {
+            ExplanationKind::Deep
+        } else {
+            ExplanationKind::Changes
+        },
+    );
+}
+pub fn apply_kind(change: &mut SemanticUnitChange, result: UnitExplanation, kind: ExplanationKind) {
+    if kind == ExplanationKind::Deep {
         change.deep_explanation = result
             .deep
             .or((!result.overview.is_empty()).then_some(result.overview));
+    } else if kind == ExplanationKind::Concepts {
+        change.concept_explanation = result;
+    } else if kind == ExplanationKind::Overview {
+        change.overview_explanation = result;
     } else {
         change.explanation = result;
         change.deep_explanation = None;
     }
 }
-pub fn result(result: UnitExplanation, cache_hit: bool, deep: bool) -> serde_json::Value {
-    serde_json::json!({"ok":true,"cache_hit":cache_hit,"overview":result.overview,"annotations":result.annotations,"deep":result.deep,"mode":if deep {"deep"} else {"normal"}})
+pub fn result(
+    result: UnitExplanation,
+    cache_hit: bool,
+    kind: ExplanationKind,
+) -> serde_json::Value {
+    serde_json::json!({"ok":true,"cache_hit":cache_hit,"overview":result.overview,"annotations":result.annotations,"deep":result.deep,"mode":format!("{kind:?}").to_lowercase()})
 }
 
 #[cfg(test)]
@@ -155,8 +221,18 @@ mod tests {
             before: None,
             after: Some(unit),
             diff: String::new(),
+            overview_explanation: UnitExplanation {
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
             explanation: UnitExplanation {
                 overview: "Old overview".into(),
+                annotations: vec![],
+                deep: None,
+            },
+            concept_explanation: UnitExplanation {
+                overview: String::new(),
                 annotations: vec![],
                 deep: None,
             },

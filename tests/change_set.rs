@@ -74,7 +74,7 @@ fn pure_rename_is_a_file_change_with_preserved_semantics() {
     let html = git_explain::web::render(&changes);
     assert!(html.contains("Change summary"));
     assert!(html.contains("Previous path: old.rs"));
-    assert!(html.contains("Semantic units preserved"));
+    assert!(html.contains("Unchanged code sections"));
     assert!(html.contains("No semantic changes require explanation."));
     assert!(!html.contains("<article data-unit-id="));
 }
@@ -227,7 +227,7 @@ fn rename_plus_edit_preserves_other_units() {
     assert!(html.contains("Explain this code in depth"));
     assert!(html.contains("Read code as text"));
     assert!(html.contains("Show Git diff"));
-    assert!(html.contains("Reload updated snapshot"));
+    assert!(html.contains("Reload Git changes"));
     let debug = git_explain::explain::format_debug(&changes);
     assert!(debug.contains("Status: Renamed and modified"));
     assert!(debug.contains("Name: changed"));
@@ -240,14 +240,28 @@ fn rename_plus_edit_preserves_other_units() {
         .flat_map(|file| &mut file.semantic_changes)
         .find(|change| change.kind == SemanticUnitChangeKind::Modified)
         .unwrap();
-    change.explanation.overview = "Cached overview".into();
+    change.overview_explanation.overview = "Code overview".into();
+    change.explanation.overview = "Cached changes".into();
+    change.concept_explanation.overview = "Cached concepts".into();
     change.deep_explanation = Some("Cached detail".into());
     let cached_html = git_explain::web::render(&changes);
     assert!(cached_html.contains("Regenerate explanation"));
     assert!(cached_html.contains("Regenerate in-depth explanation"));
-    assert!(cached_html.contains("Cached overview"));
+    assert!(cached_html.contains(">Changes<"));
+    assert!(cached_html.contains("data-layer-state=\"overview\""));
+    assert!(cached_html.contains("data-layer-state=\"changes\""));
+    assert!(cached_html.contains("data-layer-state=\"concepts\""));
+    assert!(cached_html.contains("data-layer-state=\"deep\""));
+    assert!(cached_html.contains("Code overview"));
+    assert!(cached_html.contains("Cached changes"));
+    assert!(cached_html.contains("Cached concepts"));
     assert!(cached_html.contains("Cached detail"));
-    assert!(cached_html.contains("deepButton.dataset.endpoint"));
+    assert!(cached_html.contains("data-regenerate-endpoint"));
+    assert_eq!(cached_html.matches("<script").count(), 1);
+    assert_eq!(
+        cached_html.matches("<article data-unit-id=").count(),
+        cached_html.matches("class=\"source-code\"").count()
+    );
 }
 
 #[test]
