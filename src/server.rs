@@ -267,6 +267,11 @@ async fn generate(
                 serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available.","retryable":false}),
             );
         };
+        if !change.kind.explainable() {
+            return Json(
+                serde_json::json!({"ok":false,"code":"no_explanation_required","error":"This semantic unit is unchanged and requires no model explanation.","retryable":false}),
+            );
+        }
         (
             changes.generation,
             runtime::request_for(file, change, &changes.context, deep),
@@ -364,18 +369,22 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn file_generation_uses_snapshot_cache_unless_regenerated() {
-        let directory = tempdir().unwrap();
-        let config_path = directory.path().join("config.toml");
+    fn test_config(directory: &std::path::Path) -> crate::config::ResolvedConfig {
+        let config_path = directory.join("config.toml");
         std::fs::write(
             &config_path,
             "[model]\nprofile = \"test\"\n\n[profiles.test]\nprovider = \"openai_compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"test\"\n",
         )
         .unwrap();
-        let config = crate::config::ConfigLoader::with_paths(config_path, None)
+        crate::config::ConfigLoader::with_paths(config_path, None)
             .resolve(Some("test"))
-            .unwrap();
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn file_generation_uses_snapshot_cache_unless_regenerated() {
+        let directory = tempdir().unwrap();
+        let config = test_config(directory.path());
         let source = crate::change_set::SourceFile {
             path: "lib.rs".into(),
             content: "fn inspect() {}\n".into(),
@@ -415,5 +424,53 @@ mod tests {
         assert_eq!(regenerated["cache_hit"], false);
         assert_eq!(regenerated["overview"], "result 2");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn preserved_diff_unit_cannot_trigger_provider_inference() {
+        let directory = tempdir().unwrap();
+        let config = test_config(directory.path());
+        let source = crate::change_set::SourceFile {
+            path: "lib.rs".into(),
+            content: "fn inspect() {}\n".into(),
+        };
+        let document = crate::semantic::extract_document(&source).unwrap();
+        let semantic_changes =
+            crate::semantic::match_documents(Some(&document), Some(&document), String::new());
+        let id = semantic_changes[0].id.clone();
+        let provider = Arc::new(CountingProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let state = Arc::new(StateData {
+            change_set: Mutex::new(ChangeSet {
+                generation: SnapshotGeneration(1),
+                identity: crate::snapshot::SnapshotIdentity::WorkingTree {
+                    fingerprint: "test".into(),
+                },
+                context: crate::explain::AnalysisContext::working_tree(),
+                files: vec![crate::change_set::FileChange {
+                    old_path: Some("lib.rs".into()),
+                    new_path: Some("lib.rs".into()),
+                    kind: crate::change_set::FileChangeKind::Modified,
+                    similarity: None,
+                    old_mode: Some("100644".into()),
+                    new_mode: Some("100644".into()),
+                    binary: false,
+                    patch: None,
+                    before: Some(source.clone()),
+                    after: Some(source),
+                    semantic_changes,
+                }],
+            }),
+            provider: provider.clone(),
+            cache: None,
+            model: config.model,
+            reader: config.reader,
+            explanation: config.explanation,
+        });
+
+        let result = generate(id.0, false, false, None, state).await.0;
+        assert_eq!(result["code"], "no_explanation_required");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     }
 }

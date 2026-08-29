@@ -850,6 +850,11 @@ async fn generate(
                 serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available. Reload the page and try again.","retryable":false}),
             );
         };
+        if !item.kind.explainable() {
+            return Json(
+                serde_json::json!({"ok":false,"code":"no_explanation_required","error":"This semantic unit is unchanged and requires no model explanation.","retryable":false}),
+            );
+        }
         runtime::request_for(file, item, &changes.context, deep)
     };
     let key = ExplanationCache::change_key(
