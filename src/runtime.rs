@@ -68,8 +68,64 @@ pub fn apply(change: &mut SemanticUnitChange, result: UnitExplanation, deep: boo
             .or((!result.overview.is_empty()).then_some(result.overview));
     } else {
         change.explanation = result;
+        change.deep_explanation = None;
     }
 }
 pub fn result(result: UnitExplanation, cache_hit: bool, deep: bool) -> serde_json::Value {
     serde_json::json!({"ok":true,"cache_hit":cache_hit,"overview":result.overview,"annotations":result.annotations,"deep":result.deep,"mode":if deep {"deep"} else {"normal"}})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        change_set::{
+            SemanticChangeId, SemanticIdentity, SemanticUnit, SemanticUnitChangeKind,
+            SourceLocation,
+        },
+        language::SourceUnitKind,
+    };
+
+    #[test]
+    fn replacing_normal_explanation_invalidates_deep_result() {
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "inspect".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "lib.rs".into(),
+                start_line: 1,
+                end_line: 1,
+            },
+            source: "fn inspect() {}".into(),
+            language: "Rust".into(),
+        };
+        let mut change = SemanticUnitChange {
+            id: SemanticChangeId("id".into()),
+            kind: SemanticUnitChangeKind::Added,
+            before: None,
+            after: Some(unit),
+            diff: String::new(),
+            explanation: UnitExplanation {
+                overview: "Old overview".into(),
+                annotations: vec![],
+                deep: None,
+            },
+            deep_explanation: Some("Old detail".into()),
+        };
+
+        apply(
+            &mut change,
+            UnitExplanation {
+                overview: "New overview".into(),
+                annotations: vec![],
+                deep: None,
+            },
+            false,
+        );
+        assert_eq!(change.explanation.overview, "New overview");
+        assert!(change.deep_explanation.is_none());
+    }
 }

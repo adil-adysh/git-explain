@@ -207,7 +207,7 @@ fn rename_plus_edit_preserves_other_units() {
     .unwrap();
     git(dir.path(), &["add", "."]);
     git(dir.path(), &["commit", "-qm", "rename and edit"]);
-    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+    let mut changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
         .analyze_commit("HEAD", SnapshotGeneration(1))
         .unwrap();
     let file = &changes.files[0];
@@ -233,6 +233,21 @@ fn rename_plus_edit_preserves_other_units() {
     assert!(debug.contains("Name: changed"));
     assert!(debug.contains("Lines: 1-1"));
     assert!(debug.contains("fn changed() { let value = 2; }"));
+
+    let change = changes
+        .files
+        .iter_mut()
+        .flat_map(|file| &mut file.semantic_changes)
+        .find(|change| change.kind == SemanticUnitChangeKind::Modified)
+        .unwrap();
+    change.explanation.overview = "Cached overview".into();
+    change.deep_explanation = Some("Cached detail".into());
+    let cached_html = git_explain::web::render(&changes);
+    assert!(cached_html.contains("Regenerate explanation"));
+    assert!(cached_html.contains("Regenerate in-depth explanation"));
+    assert!(cached_html.contains("Cached overview"));
+    assert!(cached_html.contains("Cached detail"));
+    assert!(cached_html.contains("deepButton.dataset.endpoint"));
 }
 
 #[test]
