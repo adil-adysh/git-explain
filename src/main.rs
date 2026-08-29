@@ -58,14 +58,13 @@ async fn run() -> Result<()> {
             .ok()
             .and_then(|value| value.parse().ok());
         let port = if matches!(command.action, cli::DaemonAction::Start) {
-            Some(if let Some(port) = cli.port.or(environment_port) {
-                port
+            if let Some(port) = cli.port.or(environment_port) {
+                Some(port)
             } else {
-                ConfigLoader::for_context(None)?
-                    .application_config(None)?
-                    .server
-                    .port
-            })
+                let application = ConfigLoader::for_context(None)?.application_config(None)?;
+                (application.server_source != config::ConfigValueSource::Default)
+                    .then_some(application.server.port)
+            }
         } else {
             cli.port
         };
@@ -619,13 +618,20 @@ async fn run() -> Result<()> {
         )
         .await;
     }
+    let daemon_port = if let Some(port) = cli.port {
+        Some(port)
+    } else {
+        let application = loader.application_config(None)?;
+        (application.server_source != config::ConfigValueSource::Default)
+            .then_some(resolved.server.port)
+    };
     daemon::open_repository(
         &repo,
         selected_revision,
         selected_staged,
         &selected_paths,
         cli.profile.as_deref(),
-        Some(cli.port.unwrap_or(resolved.server.port)),
+        daemon_port,
     )
     .await
 }
