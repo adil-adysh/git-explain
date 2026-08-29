@@ -354,7 +354,7 @@ impl OpenAiProvider {
         let task = if request.kind == ExplanationKind::Deep {
             "Return exactly one JSON object with one required string field: explanation. Give a focused, step-by-step teaching explanation of the changed source unit, adapting to its unit kind. Respect the deterministic Unit status when present: Added is newly introduced, Deleted has been removed and no longer exists, and Modified changed from its prior form. Do not review, suggest rewrites, or speculate about intent."
         } else if request.kind == ExplanationKind::Concepts {
-            "Return exactly one JSON object with required fields overview and annotations. This is a SOURCE CONCEPTS request: explain the language/framework concepts needed to understand this unit. Every annotation must have kind concept, and return at least one useful concept annotation when the source contains a non-trivial concept. Do not describe Git changes, do not review code, and do not invent concepts."
+            "Return exactly one JSON object with required fields overview and annotations. This is a SOURCE CONCEPTS request: explain the language/framework concepts needed to understand this unit. Every annotation must have kind concept. Return as many distinct useful concepts as the source supports, up to the annotation limit; put each distinct concept in its own annotation and avoid combining unrelated concepts. Return at least one useful concept annotation when the source contains a non-trivial concept. Do not describe Git changes, do not review code, and do not invent concepts."
         } else if request.kind == ExplanationKind::Overview {
             "Return exactly one JSON object with required fields overview and annotations. Summarize what the complete source unit does in at most two sentences. Return annotations as an empty array. Do not discuss Git changes, teach concepts, review code, suggest rewrites, or speculate about intent."
         } else {
@@ -590,7 +590,10 @@ fn truncate_words(text: &str, max_words: usize) -> String {
 fn truncate_sentences(text: &str, max_sentences: usize) -> String {
     let mut sentences = 0;
     for (index, character) in text.char_indices() {
-        if matches!(character, '.' | '!' | '?') {
+        let next = text[index + character.len_utf8()..].chars().next();
+        let boundary = matches!(character, '!' | '?')
+            || (character == '.' && next.is_none_or(char::is_whitespace));
+        if boundary {
             sentences += 1;
             if sentences >= max_sentences {
                 return text[..=index].trim().to_string();
@@ -1435,6 +1438,17 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("malformed explanation JSON"));
+    }
+
+    #[test]
+    fn sentence_truncation_does_not_split_dotted_technical_names() {
+        assert_eq!(
+            truncate_sentences(
+                "Supports llama.cpp locally. It uses JSON. This sentence is extra.",
+                2
+            ),
+            "Supports llama.cpp locally. It uses JSON."
+        );
     }
 
     #[test]

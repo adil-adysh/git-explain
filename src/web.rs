@@ -337,8 +337,18 @@ fn rendered_source(source: &str, annotations: &[Annotation]) -> String {
                 escape(&lines[cursor..start].join("\n"))
             ))
         }
+        if end > cursor {
+            html.push_str(&format!(
+                "<pre><code>{}</code></pre>",
+                escape(&lines[cursor.max(start)..end].join("\n"))
+            ))
+        }
         if end > start {
-            html.push_str(&format!("<pre><code>{}</code></pre><section class=\"annotation explanation\"><h4>{}</h4><p>{}</p></section>",escape(&lines[start..end].join("\n")),escape(&a.kind),escape(&a.text)))
+            html.push_str(&format!(
+                "<section class=\"annotation explanation\"><h4>{}</h4><p>{}</p></section>",
+                escape(&a.kind),
+                escape(&a.text)
+            ))
         }
         cursor = cursor.max(end)
     }
@@ -375,6 +385,28 @@ mod tests {
                 && html.contains("Explains second")
                 && html.contains("third")
         )
+    }
+    #[test]
+    fn annotations_sharing_a_source_region_all_render_without_repeating_source() {
+        let html = rendered_source(
+            "first\nsecond\nthird",
+            &[
+                Annotation {
+                    start_line: 1,
+                    end_line: 3,
+                    kind: "concept".into(),
+                    text: "First concept".into(),
+                },
+                Annotation {
+                    start_line: 1,
+                    end_line: 3,
+                    kind: "concept".into(),
+                    text: "Second concept".into(),
+                },
+            ],
+        );
+        assert_eq!(html.matches("first\nsecond\nthird").count(), 1);
+        assert!(html.contains("First concept") && html.contains("Second concept"));
     }
     #[test]
     fn file_mode_has_one_source_and_no_changes_layer() {

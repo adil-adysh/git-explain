@@ -7,11 +7,12 @@
     const target = article.querySelector('.source-code');
     let cursor = 0, html = '';
     [...(annotations || [])].sort((a,b) => a.start_line - b.start_line).forEach(annotation => {
-      const start = Math.max(cursor, Math.min(lines.length, annotation.start_line - 1));
+      const start = Math.max(0, Math.min(lines.length, annotation.start_line - 1));
       const end = Math.max(start, Math.min(lines.length, annotation.end_line));
       if (start > cursor) html += '<pre><code>' + esc(lines.slice(cursor, start).join('\n')) + '</code></pre>';
-      if (end > start) html += '<pre><code>' + esc(lines.slice(start, end).join('\n')) + '</code></pre><section class="annotation explanation"><h4>' + esc(annotation.title || annotation.kind) + '</h4><p>' + esc(annotation.text) + '</p></section>';
-      cursor = end;
+      if (end > cursor) html += '<pre><code>' + esc(lines.slice(Math.max(cursor, start), end).join('\n')) + '</code></pre>';
+      if (end > start) html += '<section class="annotation explanation"><h4>' + esc(annotation.title || annotation.kind) + '</h4><p>' + esc(annotation.text) + '</p></section>';
+      cursor = Math.max(cursor, end);
     });
     if (cursor < lines.length) html += '<pre><code>' + esc(lines.slice(cursor).join('\n')) + '</code></pre>';
     target.innerHTML = html || '<pre><code>' + esc(lines.join('\n')) + '</code></pre>';
