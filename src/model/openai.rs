@@ -23,8 +23,8 @@ pub async fn discover_context_capacity(model: &ResolvedProfile) -> ContextCapaci
 }
 
 /// Discover capacity separately from whether the selected transport can alter
-/// it. In particular, Ollama's native diagnostic API is not an instruction to
-/// add non-standard fields to its OpenAI-compatible inference requests.
+/// it. Ollama uses its native API, including its verified request-scoped
+/// `options.num_ctx` control; generic compatible endpoints remain untouched.
 pub async fn discover_context_capabilities(model: &ResolvedProfile) -> ContextCapabilities {
     let kind = provider_kind_for_profile(model);
     let capacity = kind
@@ -213,8 +213,9 @@ impl ProviderKind {
     pub const fn context_control(self) -> ContextControl {
         match self {
             // llama.cpp configures --ctx-size when its server starts. Ollama's
-            // OpenAI-compatible endpoint has no request context-size option.
-            Self::LlamaCpp | Self::Ollama => ContextControl::FixedRuntime,
+            // native chat API accepts a request-scoped options.num_ctx value.
+            Self::LlamaCpp => ContextControl::FixedRuntime,
+            Self::Ollama => ContextControl::PerRequest,
             Self::OpenAiCompatible => ContextControl::Unknown,
         }
     }
@@ -235,7 +236,7 @@ impl ProviderKind {
     fn remediation_instruction(self, profile: &str, target: u32) -> String {
         match self {
             Self::Ollama => format!(
-                "\n\nConfigure Ollama with the recommended context, reload the model, then run:\ngit explain profile test {profile}"
+                "\n\nAllow git-explain to request this context by setting the profile cap, then run:\ngit explain profile edit {profile} --context-window {target}\ngit explain profile test {profile}"
             ),
             Self::LlamaCpp => format!(
                 "\n\nRestart llama.cpp with `--ctx-size {target}`, then run:\ngit explain profile test {profile}"
@@ -254,9 +255,9 @@ struct InferenceRequestOptions {
 
 impl InferenceRequestOptions {
     fn for_negotiation(negotiation: &ContextNegotiation) -> Self {
-        // This is deliberately the sole adapter boundary for a future verified
-        // request-scoped context option. Current OpenAI-compatible adapters do
-        // not serialize a non-standard context field.
+        // This is the sole adapter boundary for verified request-scoped
+        // context controls. Generic OpenAI-compatible adapters never serialize
+        // a non-standard context field.
         Self {
             requested_context: matches!(negotiation.control, ContextControl::PerRequest)
                 .then_some(negotiation.requested_context)
@@ -722,7 +723,7 @@ impl OpenAiProvider {
             plan.budget.input_budget, plan.estimated_input, request_options.requested_context,
         );
         let started = Instant::now();
-        let response = self.send_inference(&payload).await?;
+        let response = self.send_inference(&payload, request_options).await?;
         let choice = response
             .choices
             .first()
@@ -863,9 +864,15 @@ impl OpenAiProvider {
         );
     }
 
-    async fn send_inference(&self, payload: &Req) -> Result<Resp> {
+    async fn send_inference(
+        &self,
+        payload: &Req,
+        request_options: InferenceRequestOptions,
+    ) -> Result<Resp> {
         if matches!(self.kind, ProviderKind::Ollama) {
-            return self.send_ollama_json_request(payload).await;
+            return self
+                .send_ollama_json_request(payload, request_options)
+                .await;
         }
         let mut request = self
             .client
@@ -891,19 +898,22 @@ impl OpenAiProvider {
 
     fn serialize_inference_payload(&self, payload: &Req) -> Result<String> {
         if matches!(self.kind, ProviderKind::Ollama) {
-            return serde_json::to_string(&self.ollama_json_request(payload)?)
+            return serde_json::to_string(&self.ollama_json_request(payload, None)?)
                 .context("serialize Ollama JSON request");
         }
         serde_json::to_string(payload).context("serialize model request")
     }
 
-    fn ollama_json_request(&self, payload: &Req) -> Result<Value> {
+    fn ollama_json_request(&self, payload: &Req, requested_context: Option<u32>) -> Result<Value> {
         let mut options = serde_json::Map::new();
         if let Some(temperature) = payload.temperature {
             options.insert("temperature".into(), json!(temperature));
         }
         if let Some(max_tokens) = payload.max_tokens {
             options.insert("num_predict".into(), json!(max_tokens));
+        }
+        if let Some(context) = requested_context {
+            options.insert("num_ctx".into(), json!(context));
         }
         let format = payload.response_format["json_schema"]["schema"].clone();
         let schema_instruction = format!(
@@ -925,8 +935,12 @@ impl OpenAiProvider {
         }))
     }
 
-    async fn send_ollama_json_request(&self, payload: &Req) -> Result<Resp> {
-        let request_body = self.ollama_json_request(payload)?;
+    async fn send_ollama_json_request(
+        &self,
+        payload: &Req,
+        request_options: InferenceRequestOptions,
+    ) -> Result<Resp> {
+        let request_body = self.ollama_json_request(payload, request_options.requested_context)?;
         let mut request = self
             .client
             .post(format!("{}/api/chat", ollama_native_base(&self.base_url)))
@@ -1132,7 +1146,7 @@ mod tests {
         OpenAiProvider::from_config(
             ResolvedProfile {
                 provider: "openai_compatible".into(),
-                preset: name.eq("llama_cpp").then(|| "llama_cpp".into()),
+                preset: (!name.eq("openai_compatible")).then(|| name.into()),
                 base_url: "http://localhost:8080/v1".into(),
                 model: "test-model".into(),
                 api_key_env: None,
@@ -1251,15 +1265,31 @@ mod tests {
             ProviderKind::OpenAiCompatible.context_control(),
             ContextControl::Unknown
         );
+        assert_eq!(
+            ProviderKind::Ollama.context_control(),
+            ContextControl::PerRequest
+        );
         assert!(ProviderKind::Ollama
             .remediation_instruction("local", 16_384)
-            .contains("Configure Ollama"));
+            .contains("--context-window 16384"));
         assert!(ProviderKind::LlamaCpp
             .remediation_instruction("local", 16_384)
             .contains("--ctx-size 16384"));
         assert!(ProviderKind::OpenAiCompatible
             .remediation_instruction("local", 16_384)
             .contains("advisory"));
+    }
+
+    #[test]
+    fn ollama_serializes_the_negotiated_request_context() {
+        let provider = provider("ollama");
+        let payload = provider.build_request(&request(false));
+        let value = provider
+            .ollama_json_request(&payload, Some(16_384))
+            .unwrap();
+        assert_eq!(value["options"]["num_ctx"], 16_384);
+        assert_eq!(value["stream"], false);
+        assert!(value["format"].is_object());
     }
 
     #[test]

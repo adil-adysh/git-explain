@@ -816,12 +816,15 @@ fn render_context_recommendation(
         return output;
     }
     output.push_str(&format!("\n\nRequests tracked: {total}"));
+    let control = model::openai::context_control_for_profile(model);
+    let runtime_bound = (!matches!(control, context::ContextControl::PerRequest))
+        .then_some(capacity.runtime_allocated)
+        .flatten();
     for (label, records) in [("Normal", normal), ("Deep", deep)] {
         if records.is_empty() {
             continue;
         }
-        let recommendation =
-            local_context::recommend(&records, capacity.runtime_allocated, capacity.model_max);
+        let recommendation = local_context::recommend(&records, runtime_bound, capacity.model_max);
         output.push_str(&format!("\n\n{label}: {} requests", records.len()));
         if matches!(
             recommendation.state,
@@ -912,6 +915,12 @@ fn recommendation_bottleneck(
     }
     if capacity.profile_limit.is_some_and(|value| value < target) {
         return Some(format!("Profile context limit:\n{} tokens\n\nThe profile context limit is currently the bottleneck.", capacity.profile_limit.unwrap()));
+    }
+    if matches!(
+        model::openai::context_control_for_profile(model),
+        context::ContextControl::PerRequest
+    ) {
+        return None;
     }
     capacity.runtime_allocated.filter(|value| *value < target).map(|value| {
         let backend = model::openai::context_backend_name_for_profile(model);
@@ -1148,25 +1157,27 @@ async fn profile_test_success(
 ) -> String {
     let capabilities = model::openai::discover_context_capabilities(model).await;
     let capacity = &capabilities.capacity;
-    let effective = capacity.effective();
+    let per_request = matches!(capabilities.control, context::ContextControl::PerRequest);
+    let effective = if per_request {
+        [capacity.profile_limit, capacity.model_max]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or_else(|| capacity.effective().tokens)
+    } else {
+        capacity.effective().tokens
+    };
     let context = format!(
-        "\nContext:\n  Control: {}\n  Requested context: none (not supported by this transport)\n  Model maximum: {}\n  Runtime allocated: {}\n  git-explain limit: {}\n  Effective context: {} tokens ({:?})\n",
+        "\nContext:\n  Control: {}\n  Requested context: {}\n  Model maximum: {}\n  Runtime allocated: {}\n  git-explain limit: {}\n  Effective maximum: {} tokens\n",
         capabilities.control.description(),
+        if per_request { "selected per explanation" } else { "none (not supported by this transport)" },
         capacity.model_max.map_or_else(|| "unknown".into(), |value| format!("{value} tokens")),
         capacity.runtime_allocated.map_or_else(|| "unknown".into(), |value| format!("{value} tokens")),
         model.context_window.map_or_else(|| "automatic".into(), |value| format!("{value} tokens")),
-        effective.tokens,
-        effective.source,
+        effective,
     );
-    let remediation = if model.preset.as_deref() == Some("ollama")
-        && capacity.runtime_allocated == Some(4096)
-    {
-        "\nOllama currently allocated 4096 tokens. This can be too small for larger explanations. Increase Ollama's context allocation, reload the model, then run this test again. `context_window` only caps git-explain's budget; it does not reconfigure Ollama.\n"
-    } else {
-        ""
-    };
     format!(
-        "Profile: {name}\n\nProvider: {}\nPreset: {}\nEndpoint: reachable\nAuthentication: {}\nModel: {}\nModel availability: {availability}\n{context}{remediation}\nProfile is ready.\n",
+        "Profile: {name}\n\nProvider: {}\nPreset: {}\nEndpoint: reachable\nAuthentication: {}\nModel: {}\nModel availability: {availability}\n{context}\nProfile is ready.\n",
         display_provider_name(&model.provider),
         model.preset.as_deref().map(display_preset_name).unwrap_or("<none>"),
         if model.api_key_env.is_some() { "accepted" } else { "not required" },
@@ -1205,7 +1216,7 @@ fn user_facing_error(error: &anyhow::Error) -> String {
         || details.contains("maximum context")
     {
         return format!(
-            "The configured model context is too small for this explanation.\n\n{details}\n\nFor Ollama, run `git explain profile test <name>` to inspect the runtime allocation, then increase Ollama's context and reload the model."
+            "The configured model context is too small for this explanation.\n\n{details}\n\nFor Ollama, run `git explain profile test <name>` and raise the profile's `--context-window` cap if the model supports a larger request."
         );
     }
     if details.contains("connect")
@@ -1461,7 +1472,7 @@ mod profile_error_tests {
     }
 
     #[test]
-    fn context_recommendation_reports_runtime_bottleneck() {
+    fn ollama_context_recommendation_ignores_previous_runtime_size() {
         let dir = tempdir().unwrap();
         let tracker = local_context::LocalContextTracker::at(dir.path().join("history.json"));
         for _ in 0..10 {
@@ -1476,7 +1487,8 @@ mod profile_error_tests {
             render_context_recommendation("ollama", &ollama_profile(), &capacity, &tracker);
         assert!(output.contains("Recommended context:\n16384 tokens"));
         assert!(output.contains("p95 ideal required context: 12000 tokens"));
-        assert!(output.contains("The Ollama runtime context is currently the bottleneck."));
+        assert!(!output.contains("runtime context is currently the bottleneck"));
+        assert!(output.contains("--context-window 16384"));
     }
 
     #[test]

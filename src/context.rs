@@ -1,7 +1,8 @@
 //! Provider-independent context capacity, budgeting, and prompt planning.
 //!
-//! A configured profile limit is a git-explain budgeting cap. It never changes
-//! the model server's allocation.
+//! A configured profile limit is a git-explain budgeting cap. Adapters with a
+//! verified per-request control may request a smaller safe window within it;
+//! fixed-runtime adapters never change the server allocation.
 
 use crate::config::GenerationConfig;
 
@@ -141,7 +142,7 @@ pub fn calculate_context_requirement(
 }
 
 /// Select the smallest safe window. A profile context value remains an upper
-/// bound, never an exact request or a request to reconfigure a server.
+/// bound; per-request adapters may request a rounded safe value beneath it.
 pub fn negotiate_context(
     capabilities: &ContextCapabilities,
     requirement: ContextRequirement,
