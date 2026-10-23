@@ -123,7 +123,7 @@ Generation fields are optional. An omitted field is omitted from the HTTP reques
 
 ## Context management
 
-Before each explanation, git-explain serializes the full prospective inference payload (system and user messages, roles, schema, template options, source, diff, and metadata) and estimates its input tokens. It then calculates `required = estimated input + configured max response tokens + 96 protocol tokens + max(384, 1/12 of the pre-margin total)`. It uses a deterministic conservative estimator for generic OpenAI-compatible endpoints. If the first focused prompt cannot fit, it makes one concise re-plan; if that also cannot fit, it stops before inference with the available and required budgets instead of sending an oversized request.
+Before each explanation, git-explain serializes the full prospective inference payload (system and user messages, roles, schema, template options, source, diff, and metadata) and estimates its input tokens. It then calculates `required = estimated input + configured max response tokens + 96 protocol tokens + max(384, 1/12 of the pre-margin total)`. It uses a deterministic conservative estimator for generic OpenAI-compatible endpoints. If the prompt cannot fit, it stops before generation with the available and required budgets instead of sending an oversized request. Each Generate action makes at most one text-generation attempt; invalid output or source evidence returns an error and requires an explicit retry.
 
 `context_window` is an optional profile cap for git-explain's budgeting. For Ollama, it also caps the native per-request context selected by git-explain; fixed-runtime backends are never reconfigured. Set or clear it with:
 

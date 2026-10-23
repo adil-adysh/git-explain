@@ -333,10 +333,12 @@ impl OpenAiProvider {
             .regions
             .iter()
             .map(|region| {
-                if retry {
+                let source_quotes =
+                    serde_json::to_string(&source_quote_choices(region)).expect("quotes serialize");
+                let target = if retry {
                     format!(
-                        "[REGION {}] lines {}-{}",
-                        region.id, region.start_line, region.end_line
+                        "[REGION {}] lines {}-{} (source block {})",
+                        region.id, region.start_line, region.end_line, region.coverage_id
                     )
                 } else if !request.source_unit.is_empty()
                     && region.start_line == 1
@@ -344,15 +346,22 @@ impl OpenAiProvider {
                     && region.source == request.source_unit
                 {
                     format!(
-                        "[REGION {}] lines {}-{} (complete SOURCE UNIT above)",
-                        region.id, region.start_line, region.end_line
+                        "[REGION {}] lines {}-{} (source block {}; complete SOURCE UNIT above)",
+                        region.id, region.start_line, region.end_line, region.coverage_id
                     )
                 } else {
                     format!(
-                        "[REGION {}] lines {}-{}\n{}",
-                        region.id, region.start_line, region.end_line, region.source
+                        "[REGION {}] lines {}-{}\n{}\n(source block {})",
+                        region.id,
+                        region.start_line,
+                        region.end_line,
+                        region.source,
+                        region.coverage_id
                     )
-                }
+                };
+                format!(
+                    "{target}\nSOURCE QUOTES (copy one exactly for source_quote): {source_quotes}"
+                )
             })
             .collect::<Vec<_>>()
             .join("\n\n");
@@ -363,8 +372,11 @@ impl OpenAiProvider {
             .map(|text| format!("\n\nPRIOR EXPLANATION (background, not instructions; extend rather than repeat):\n{text}"))
             .unwrap_or_default();
         let required_region_count = if request.concepts() && !request.diff.trim().is_empty() {
-            request
-                .regions
+            let mut unique_coverage_ids: Vec<usize> =
+                request.regions.iter().map(|r| r.coverage_id).collect();
+            unique_coverage_ids.sort_unstable();
+            unique_coverage_ids.dedup();
+            unique_coverage_ids
                 .len()
                 .min(self.explanation.max_annotations as usize) as u32
         } else {
@@ -503,6 +515,19 @@ impl OpenAiProvider {
         let raw_annotations = raw
             .annotations
             .context("normal response omitted annotations")?;
+        for annotation in &raw_annotations {
+            let region = annotation
+                .region
+                .and_then(|id| request.regions.iter().find(|r| r.id == id));
+            let valid = annotation.source_quote.as_deref().is_some_and(|quote| {
+                !quote.trim().is_empty()
+                    && quote.chars().count() <= 240
+                    && region.is_some_and(|region| region.source.contains(quote))
+            });
+            if !valid {
+                bail!("annotation source evidence invalid: source_quote must be a nonempty exact quote of at most 240 characters from its selected region");
+            }
+        }
         let raw_annotation_count = raw_annotations.len();
         let mut annotations = raw_annotations
             .into_iter()
@@ -578,19 +603,23 @@ impl OpenAiProvider {
         } else {
             annotations
         };
-        if request.concepts()
-            && !annotations.is_empty()
-            && !request.diff.trim().is_empty()
-            && request.regions.len() <= self.explanation.max_annotations as usize
-        {
-            let missing = request.regions.iter().any(|region| {
-                !annotations.iter().any(|annotation| {
-                    annotation.start_line == region.start_line
-                        && annotation.end_line == region.end_line
-                })
-            });
-            if missing {
-                bail!("concept response did not cover every changed region");
+        if request.concepts() && !annotations.is_empty() && !request.diff.trim().is_empty() {
+            let mut group_ids: Vec<usize> = request.regions.iter().map(|r| r.coverage_id).collect();
+            group_ids.sort_unstable();
+            group_ids.dedup();
+            if group_ids.len() <= self.explanation.max_annotations as usize {
+                let missing = group_ids.iter().any(|&group_id| {
+                    !annotations.iter().any(|annotation| {
+                        request.regions.iter().any(|region| {
+                            region.coverage_id == group_id
+                                && annotation.start_line == region.start_line
+                                && annotation.end_line == region.end_line
+                        })
+                    })
+                });
+                if missing {
+                    bail!("concept response did not cover every changed region");
+                }
             }
         }
         Ok(UnitExplanation {
@@ -682,6 +711,7 @@ struct RawResponse {
 struct RawAnnotation {
     title: Option<String>,
     region: Option<usize>,
+    source_quote: Option<String>,
     kind: Option<String>,
     text: String,
 }
@@ -764,6 +794,29 @@ fn strip_reasoning_sections(raw: &str) -> String {
     result.trim().to_string()
 }
 
+// Bound the evidence catalog while keeping every choice an exact substring.
+// Copying a listed line avoids lossy reformatting of multiline source.
+fn source_quote_choices(region: &ExplanationRegion) -> Vec<String> {
+    let mut quotes = Vec::new();
+    for line in region
+        .source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let quote: String = line.chars().take(160).collect();
+        if !quotes.contains(&quote) {
+            quotes.push(quote);
+        }
+    }
+    if quotes.len() > 8 {
+        let last = quotes.pop().expect("nonempty quotes");
+        quotes.truncate(7);
+        quotes.push(last);
+    }
+    quotes
+}
+
 fn normal_schema(request: &ExplanationRequest, annotation_limit: u32) -> Value {
     let region_ids = request
         .regions
@@ -780,11 +833,29 @@ fn normal_schema(request: &ExplanationRequest, annotation_limit: u32) -> Value {
     } else {
         (0, annotation_limit)
     };
-    let mut schema = json!({"type":"json_schema","json_schema":{"name":"git_explain_normal","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["overview","annotations"],"properties":{"overview":{"type":"string"},"annotations":{"type":"array","minItems":minimum,"maxItems":maximum,"items":{"type":"object","additionalProperties":false,"required":["region","kind","text"],"properties":{"region":{"type":"integer","enum":region_ids},"kind":{"type":"string","enum":kinds},"text":{"type":"string","minLength":1}}}}}}}});
+    let mut schema = json!({"type":"json_schema","json_schema":{"name":"git_explain_normal","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["overview","annotations"],"properties":{"overview":{"type":"string"},"annotations":{"type":"array","minItems":minimum,"maxItems":maximum,"items":{"type":"object","additionalProperties":false,"required":["region","kind","source_quote","text"],"properties":{"source_quote":{"type":"string","minLength":1,"maxLength":240},"region":{"type":"integer","enum":region_ids},"kind":{"type":"string","enum":kinds},"text":{"type":"string","minLength":1}}}}}}}});
     if request.concepts() {
         let item = &mut schema["json_schema"]["schema"]["properties"]["annotations"]["items"];
-        item["required"] = json!(["region", "kind", "title", "text"]);
+        item["required"] = json!(["region", "kind", "title", "source_quote", "text"]);
         item["properties"]["title"] = json!({"type":"string", "minLength":1});
+    }
+    let item = &mut schema["json_schema"]["schema"]["properties"]["annotations"]["items"];
+    let variants: Vec<_> = request
+        .regions
+        .iter()
+        .filter_map(|region| {
+            let quotes = source_quote_choices(region);
+            if quotes.is_empty() {
+                return None;
+            }
+            let mut variant = item.clone();
+            variant["properties"]["region"]["enum"] = json!([region.id]);
+            variant["properties"]["source_quote"]["enum"] = json!(quotes);
+            Some(variant)
+        })
+        .collect();
+    if !variants.is_empty() {
+        *item = json!({"anyOf": variants});
     }
     schema
 }
@@ -801,24 +872,9 @@ impl ExplanationProvider for OpenAiProvider {
         if !crate::language::contains_meaningful_source(&request.source_unit) {
             bail!("refusing to explain whitespace-only source");
         }
-        match self.explain_once(&request, false, false).await {
-            Ok(result) => Ok(result),
-            Err(error) if is_local_context_error(&error) => {
-                eprintln!("context requirement cannot fit; retrying once with a concise request");
-                self.explain_once(&request, true, false).await
-            }
-            Err(error) if is_provider_context_error(&error) => {
-                eprintln!(
-                    "provider reported context overflow; retrying once with a concise request"
-                );
-                self.explain_once(&request, true, true).await
-            }
-            Err(error) if is_retryable_structured_error(&error) => {
-                eprintln!("structured model output invalid; retrying once with a concise request");
-                self.explain_once(&request, true, false).await
-            }
-            Err(error) => Err(error),
-        }
+        // One explicit action makes one generation attempt. Invalid output and
+        // context failures return to the caller without hidden model retries.
+        self.explain_once(&request, false, false).await
     }
 }
 impl OpenAiProvider {
@@ -861,21 +917,19 @@ impl OpenAiProvider {
         let negotiation = match negotiate_context(&capabilities, requirement.clone()) {
             Ok(negotiation) => negotiation,
             Err(error) => {
-                if retry {
-                    self.track_context_failure(
-                        request,
-                        &capabilities,
-                        &requirement,
-                        ideal_required_context,
-                        retry,
-                        previous_provider_overflow,
-                        true,
-                        false,
-                        false,
-                        None,
-                        None,
-                    );
-                }
+                self.track_context_failure(
+                    request,
+                    &capabilities,
+                    &requirement,
+                    ideal_required_context,
+                    retry,
+                    previous_provider_overflow,
+                    true,
+                    false,
+                    false,
+                    None,
+                    None,
+                );
                 return Err(error);
             }
         };
@@ -889,7 +943,25 @@ impl OpenAiProvider {
             plan.budget.input_budget, plan.estimated_input, request_options.requested_context,
         );
         let started = Instant::now();
-        let response = self.send_inference(&payload, request_options).await?;
+        let response = match self.send_inference(&payload, request_options).await {
+            Ok(response) => response,
+            Err(error) => {
+                self.track_context_failure(
+                    request,
+                    &capabilities,
+                    &negotiation.requirement,
+                    ideal_required_context,
+                    retry,
+                    previous_provider_overflow,
+                    false,
+                    is_context_text(&format!("{error:#}")),
+                    false,
+                    None,
+                    Some(started.elapsed().as_millis() as u64),
+                );
+                return Err(error);
+            }
+        };
         let choice = response
             .choices
             .first()
@@ -938,21 +1010,19 @@ impl OpenAiProvider {
         }) {
             Ok(explanation) => explanation,
             Err(error) => {
-                if retry {
-                    self.track_context_failure(
-                        request,
-                        &capabilities,
-                        &negotiation.requirement,
-                        ideal_required_context,
-                        retry,
-                        previous_provider_overflow,
-                        false,
-                        false,
-                        false,
-                        response.usage.as_ref(),
-                        Some(started.elapsed().as_millis() as u64),
-                    );
-                }
+                self.track_context_failure(
+                    request,
+                    &capabilities,
+                    &negotiation.requirement,
+                    ideal_required_context,
+                    retry,
+                    previous_provider_overflow,
+                    false,
+                    false,
+                    false,
+                    response.usage.as_ref(),
+                    Some(started.elapsed().as_millis() as u64),
+                );
                 return Err(error);
             }
         };
@@ -1007,10 +1077,8 @@ impl OpenAiProvider {
             .post(format!("{}/api/chat", ollama_native_base(&self.base_url)))
             .json(&json!({
                 "model": self.model,
-                "messages": [{"role": "user", "content": "Reply with OK."}],
+                "messages": [],
                 "stream": false,
-                "think": false,
-                "options": {"num_predict": 1},
             }));
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key);
@@ -1272,32 +1340,12 @@ fn ollama_native_base(base_url: &str) -> &str {
     base_url.trim_end_matches('/').trim_end_matches("/v1")
 }
 
-fn is_provider_context_error(error: &anyhow::Error) -> bool {
-    let text = format!("{error:#}").to_ascii_lowercase();
-    !text.contains("context budget exceeded") && is_context_text(&text)
-}
-
 fn is_context_text(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     text.contains("context length")
         || text.contains("maximum context")
         || text.contains("prompt is too long")
         || text.contains("request too large")
-}
-
-fn is_local_context_error(error: &anyhow::Error) -> bool {
-    format!("{error:#}").contains("context requirement ")
-        || format!("{error:#}").contains("context budget exceeded before inference")
-}
-
-fn is_retryable_structured_error(error: &anyhow::Error) -> bool {
-    let text = format!("{error:#}");
-    text.contains("malformed explanation JSON")
-        || text.contains("invalid structured model content")
-        || text.contains("response truncated")
-        || text.contains("empty content")
-        || text.contains("omitted overview")
-        || text.contains("omitted explanation")
 }
 
 #[cfg(test)]
@@ -1370,6 +1418,7 @@ mod tests {
             git_context: "Change source: working tree".into(),
             regions: vec![ExplanationRegion {
                 id: 1,
+                coverage_id: 1,
                 start_line: 1,
                 end_line: 1,
                 source: "changed();".into(),
@@ -1430,12 +1479,12 @@ mod tests {
             " unicode CASE folding allocation ",
         ] {
             let raw = json!({"overview":"Normalize an identifier.", "annotations":[{
-                "region":1,"kind":"concept","title":"Unicode case folding allocation","text":text
+                "region":1,"source_quote":"changed();","kind":"concept","title":"Unicode case folding allocation","text":text
             }]})
             .to_string();
             assert!(p.parse_response(&raw, &r).is_err());
         }
-        assert!(p.parse_response(r#"{"overview":"Normalize an identifier.","annotations":[{"region":1,"kind":"concept","title":"Conditional mapping","text":"The predicate controls whether a tuple enters the resulting iterator."}]}"#, &r).is_ok());
+        assert!(p.parse_response(r#"{"overview":"Normalize an identifier.","annotations":[{"region":1,"source_quote":"changed();","kind":"concept","title":"Conditional mapping","text":"The predicate controls whether a tuple enters the resulting iterator."}]}"#, &r).is_ok());
     }
 
     #[test]
@@ -1537,7 +1586,7 @@ mod tests {
             .is_err());
         r.kind = ExplanationKind::Concepts;
         r.deep = false;
-        assert!(p.parse_response(r#"{"overview":"Concept.","annotations":[{"region":1,"kind":"concept","text":"A useful lesson."}]}"#, &r).is_err());
+        assert!(p.parse_response(r#"{"overview":"Concept.","annotations":[{"region":1,"source_quote":"changed();","kind":"concept","text":"A useful lesson."}]}"#, &r).is_err());
     }
 
     #[test]
@@ -1663,6 +1712,7 @@ mod tests {
             r.source_unit = "fn context_budget_probe() { inspect(); }".into();
             r.regions = vec![ExplanationRegion {
                 id: 9,
+                coverage_id: 9,
                 start_line: 1,
                 end_line: 1,
                 source: r.source_unit.clone(),
@@ -1670,8 +1720,9 @@ mod tests {
             for retry in [false, true] {
                 let payload = p.build_request_with_retry(&r, retry);
                 let prompt = &payload.messages[1].content;
-                assert_eq!(prompt.matches(&r.source_unit).count(), 1);
+                assert_eq!(prompt.matches(&r.source_unit).count(), 2);
                 assert!(prompt.contains("[REGION 9] lines 1-1"));
+                assert!(prompt.contains("source block 9"));
                 if !retry {
                     assert!(prompt.contains("complete SOURCE UNIT above"));
                 }
@@ -1686,14 +1737,20 @@ mod tests {
         r.source_unit = "first();\nsecond();".into();
         r.regions = vec![ExplanationRegion {
             id: 7,
+            coverage_id: 7,
             start_line: 2,
             end_line: 2,
             source: "second();".into(),
         }];
-        let payload = p.build_request(&r);
-        assert!(payload.messages[1]
-            .content
-            .contains("[REGION 7] lines 2-2\nsecond();"));
+        for retry in [false, true] {
+            let payload = p.build_request_with_retry(&r, retry);
+            assert!(payload.messages[1].content.contains("source block 7"));
+            if !retry {
+                assert!(payload.messages[1]
+                    .content
+                    .contains("[REGION 7] lines 2-2\nsecond();"));
+            }
+        }
     }
 
     #[test]
@@ -1755,8 +1812,8 @@ mod tests {
         );
         assert_eq!(
             value["response_format"]["json_schema"]["schema"]["properties"]["annotations"]["items"]
-                ["required"],
-            json!(["region", "kind", "text"])
+                ["anyOf"][0]["required"],
+            json!(["region", "kind", "source_quote", "text"])
         );
         assert!(value["messages"][1]["content"]
             .as_str()
@@ -1770,6 +1827,7 @@ mod tests {
         request.kind = ExplanationKind::Concepts;
         request.regions.push(ExplanationRegion {
             id: 2,
+            coverage_id: 2,
             start_line: 2,
             end_line: 2,
             source: "other();".into(),
@@ -1780,12 +1838,17 @@ mod tests {
         assert_eq!(annotations["minItems"], 0);
         assert_eq!(annotations["maxItems"], 3);
         assert_eq!(
-            annotations["items"]["properties"]["kind"]["enum"],
+            annotations["items"]["anyOf"][0]["properties"]["kind"]["enum"],
             json!(["concept"])
         );
         assert_eq!(
-            annotations["items"]["properties"]["region"]["enum"],
-            json!([1, 2])
+            annotations["items"]["anyOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|variant| variant["properties"]["region"]["enum"][0].clone())
+                .collect::<Vec<_>>(),
+            vec![json!(1), json!(2)]
         );
     }
 
@@ -1805,13 +1868,14 @@ mod tests {
 
         request.regions.push(ExplanationRegion {
             id: 2,
+            coverage_id: 2,
             start_line: 2,
             end_line: 2,
             source: "other();".into(),
         });
         assert!(p
             .parse_response(
-                r#"{"overview":"Short.","annotations":[{"region":1,"kind":"concept","title":"Filtering","text":"One concept."}]}"#,
+                r#"{"overview":"Short.","annotations":[{"region":1,"source_quote":"changed();","kind":"concept","title":"Filtering","text":"One concept."}]}"#,
                 &request,
             )
             .unwrap_err()
@@ -1827,19 +1891,137 @@ mod tests {
         request.diff.clear();
         request.regions.push(ExplanationRegion {
             id: 2,
+            coverage_id: 2,
             start_line: 2,
             end_line: 2,
             source: "other();".into(),
         });
         let parsed = p
             .parse_response(
-                r#"{"overview":"Short.","annotations":[{"region":2,"kind":"concept","title":"Second concept","text":"Second."},{"region":1,"kind":"concept","title":"First concept","text":"First."},{"region":1,"kind":"concept","title":"First concept","text":"First."}]}"#,
+                r#"{"overview":"Short.","annotations":[{"region":2,"source_quote":"other();","kind":"concept","title":"Second concept","text":"Second."},{"region":1,"source_quote":"changed();","kind":"concept","title":"First concept","text":"First."},{"region":1,"source_quote":"changed();","kind":"concept","title":"First concept","text":"First."}]}"#,
                 &request,
             )
             .unwrap();
         assert_eq!(parsed.annotations.len(), 2);
         assert_eq!(parsed.annotations[0].text, "First.");
         assert_eq!(parsed.annotations[1].text, "Second.");
+    }
+
+    #[test]
+    fn concepts_group_coverage_satisfied_by_single_fine_target_in_same_coverage_group() {
+        let p = provider("llama_cpp");
+        let mut request = request(false);
+        request.kind = ExplanationKind::Concepts;
+        request.regions = vec![
+            ExplanationRegion {
+                id: 1,
+                coverage_id: 1,
+                start_line: 1,
+                end_line: 6,
+                source: "first".into(),
+            },
+            ExplanationRegion {
+                id: 2,
+                coverage_id: 1,
+                start_line: 7,
+                end_line: 7,
+                source: "second".into(),
+            },
+            ExplanationRegion {
+                id: 3,
+                coverage_id: 1,
+                start_line: 8,
+                end_line: 10,
+                source: "third".into(),
+            },
+        ];
+        let parsed = p
+            .parse_response(
+                r#"{"overview":"Overview.","annotations":[{"region":2,"source_quote":"second","kind":"concept","title":"Error Chaining","text":"Uses anyhow."}]}"#,
+                &request,
+            )
+            .unwrap();
+        assert_eq!(parsed.annotations.len(), 1);
+        assert_eq!(parsed.annotations[0].start_line, 7);
+        assert_eq!(parsed.annotations[0].end_line, 7);
+    }
+
+    #[test]
+    fn concepts_allow_max_annotations_one_for_group_with_many_candidates() {
+        let mut p = provider("llama_cpp");
+        p.explanation.max_annotations = 1;
+        let mut request = request(false);
+        request.kind = ExplanationKind::Concepts;
+        request.regions = vec![
+            ExplanationRegion {
+                id: 1,
+                coverage_id: 1,
+                start_line: 1,
+                end_line: 6,
+                source: "first".into(),
+            },
+            ExplanationRegion {
+                id: 2,
+                coverage_id: 1,
+                start_line: 7,
+                end_line: 7,
+                source: "second".into(),
+            },
+        ];
+        let parsed = p
+            .parse_response(
+                r#"{"overview":"Overview.","annotations":[{"region":1,"source_quote":"first","kind":"concept","title":"Table test","text":"Array loop."}]}"#,
+                &request,
+            )
+            .unwrap();
+        assert_eq!(parsed.annotations.len(), 1);
+    }
+
+    #[test]
+    fn multiple_distinct_concepts_may_legitimately_share_one_target() {
+        let p = provider("llama_cpp");
+        let mut request = request(false);
+        request.kind = ExplanationKind::Concepts;
+        request.regions = vec![ExplanationRegion {
+            id: 1,
+            coverage_id: 1,
+            start_line: 7,
+            end_line: 7,
+            source: "let err = user_facing_error(...);".into(),
+        }];
+        let parsed = p
+            .parse_response(
+                r#"{"overview":"Overview.","annotations":[{"region":1,"source_quote":"user_facing_error","kind":"concept","title":"Context Chaining","text":"Adds context."},{"region":1,"source_quote":"user_facing_error","kind":"concept","title":"Classification","text":"Extracts user-facing error."}]}"#,
+                &request,
+            )
+            .unwrap();
+        assert_eq!(parsed.annotations.len(), 2);
+        assert_eq!(
+            parsed.annotations[0].title.as_deref(),
+            Some("Context Chaining")
+        );
+        assert_eq!(
+            parsed.annotations[1].title.as_deref(),
+            Some("Classification")
+        );
+        assert_eq!(parsed.annotations[0].start_line, 7);
+        assert_eq!(parsed.annotations[1].start_line, 7);
+    }
+
+    #[test]
+    fn annotations_with_out_of_range_region_ids_are_rejected() {
+        let p = provider("llama_cpp");
+        let mut request = request(false);
+        request.kind = ExplanationKind::Concepts;
+        let error = p
+            .parse_response(
+                r#"{"overview":"Overview.","annotations":[{"region":99,"source_quote":"changed();","kind":"concept","title":"Unknown","text":"Invalid."}]}"#,
+                &request,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("annotation source evidence invalid"));
     }
     #[test]
     fn llama_deep_request_is_separate_and_enables_reasoning() {
@@ -1988,7 +2170,7 @@ mod tests {
     fn region_annotations_map_and_reasoning_is_removed() {
         let p = provider("llama_cpp");
         let r = request(false);
-        let parsed = p.parse_response(r#"{"overview":"Short.","annotations":[{"region":1,"kind":"change","text":"<think>bad</think>Explain it."}]}"#, &r).unwrap();
+        let parsed = p.parse_response(r#"{"overview":"Short.","annotations":[{"region":1,"source_quote":"changed();","kind":"change","text":"<think>bad</think>Explain it."}]}"#, &r).unwrap();
         assert_eq!(parsed.annotations[0].start_line, 1);
         assert_eq!(parsed.annotations[0].end_line, 1);
         assert_eq!(parsed.annotations[0].text, "Explain it.");
@@ -2019,7 +2201,7 @@ mod tests {
         let r = request(false);
         let parsed = p
             .parse_response(
-            r#"{"overview":"Before <think>secret</think> after.","annotations":[{"region":1,"kind":"change","text":"Visible <|thinking|>hidden</|thinking|> text."}]}"#,
+            r#"{"overview":"Before <think>secret</think> after.","annotations":[{"region":1,"source_quote":"changed();","kind":"change","text":"Visible <|thinking|>hidden</|thinking|> text."}]}"#,
                 &r,
             )
             .unwrap();
@@ -2072,15 +2254,137 @@ mod tests {
     }
 
     #[test]
-    fn provider_context_errors_are_distinct_from_local_preflight_errors() {
-        assert!(is_provider_context_error(&anyhow::anyhow!(
-            "model response (HTTP 400): maximum context length exceeded"
-        )));
-        assert!(!is_provider_context_error(&anyhow::anyhow!(
-            "context budget exceeded before inference"
-        )));
-        assert!(is_local_context_error(&anyhow::anyhow!(
-            "context requirement 8192 tokens exceeds fixed/available context 4096 tokens"
-        )));
+    fn grounding_requires_evidence_from_the_selected_region() {
+        let p = provider("llama_cpp");
+        let mut r = request(false);
+        r.kind = ExplanationKind::Changes;
+        r.source_unit =
+            "assert!(!error.retryable);\nassert!(error.message.contains(\"context allocation\"));"
+                .into();
+        r.regions = vec![
+            ExplanationRegion {
+                id: 1,
+                coverage_id: 1,
+                start_line: 1,
+                end_line: 1,
+                source: "assert!(!error.retryable);".into(),
+            },
+            ExplanationRegion {
+                id: 2,
+                coverage_id: 1,
+                start_line: 2,
+                end_line: 2,
+                source: "assert!(error.message.contains(\"context allocation\"));".into(),
+            },
+        ];
+        for quote in [
+            None,
+            Some(""),
+            Some(" "),
+            Some("!error.retryable"),
+            Some("invented()"),
+        ] {
+            let mut annotation =
+                json!({"region":2,"kind":"change","text":"Checks message content."});
+            if let Some(quote) = quote {
+                annotation["source_quote"] = json!(quote);
+            }
+            let raw = json!({"overview":"Tests errors.","annotations":[annotation]}).to_string();
+            assert!(
+                p.parse_response(&raw, &r).is_err(),
+                "accepted invalid evidence: {quote:?}"
+            );
+        }
+        let raw = json!({"overview":"Tests errors.","annotations":[{"region":2,"kind":"change","source_quote":"error.message.contains(\"context allocation\")","text":"Checks message content."}]}).to_string();
+        assert!(p.parse_response(&raw, &r).is_ok());
+    }
+
+    #[test]
+    fn grounding_quotes_preserve_multiline_unicode_and_enforce_length() {
+        let p = provider("llama_cpp");
+        let mut r = request(false);
+        let source = format!("let café = [\n    1,\n    2,\n];\n// {}", "é".repeat(241));
+        r.regions[0].source = source.clone();
+        r.source_unit = source;
+        for (quote, accepted) in [
+            ("let café = [\n    1,", true),
+            (&"é".repeat(240), true),
+            (&"é".repeat(241), false),
+        ] {
+            let raw = json!({"overview":"Builds an array.","annotations":[{"region":1,"kind":"change","source_quote":quote,"text":"Initializes the array."}]}).to_string();
+            assert_eq!(p.parse_response(&raw, &r).is_ok(), accepted);
+        }
+    }
+
+    #[test]
+    fn source_quote_catalog_is_bounded_and_exact() {
+        let mut r = request(false);
+        r.regions[0].source = (0..20)
+            .map(|index| format!("let line_{index} = \"{}\";", "é".repeat(300)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let quotes = source_quote_choices(&r.regions[0]);
+        assert_eq!(quotes.len(), 8);
+        assert!(quotes
+            .iter()
+            .all(|quote| quote.chars().count() <= 160 && r.regions[0].source.contains(quote)));
+        assert!(quotes.first().unwrap().contains("line_0"));
+        assert!(quotes.last().unwrap().contains("line_19"));
+    }
+
+    #[test]
+    fn annotation_schema_pairs_each_region_with_its_own_quotes() {
+        let mut r = request(false);
+        r.regions[0].source = "first();".into();
+        r.regions.push(ExplanationRegion {
+            id: 2,
+            coverage_id: 1,
+            start_line: 2,
+            end_line: 2,
+            source: "second();".into(),
+        });
+        let schema = normal_schema(&r, 3);
+        let variants = schema["json_schema"]["schema"]["properties"]["annotations"]["items"]
+            ["anyOf"]
+            .as_array()
+            .expect("one branch per region");
+        assert_eq!(variants.len(), 2);
+        for (index, quote) in ["first();", "second();"].iter().enumerate() {
+            assert_eq!(
+                variants[index]["properties"]["region"]["enum"],
+                json!([index + 1])
+            );
+            assert_eq!(
+                variants[index]["properties"]["source_quote"]["enum"],
+                json!([quote])
+            );
+            assert_eq!(variants[index]["additionalProperties"], false);
+        }
+    }
+
+    #[test]
+    fn grounding_contract_scopes_claims_and_does_not_invent_deep_values() {
+        let p = provider("llama_cpp");
+        let r = request(false);
+        let payload = p.build_request(&r);
+        let item = &payload.response_format["json_schema"]["schema"]["properties"]["annotations"]
+            ["items"]["anyOf"][0];
+        assert!(item["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("source_quote")));
+        assert!(payload.messages[1]
+            .content
+            .contains("only the selected region"));
+        assert!(item["properties"]["source_quote"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("changed();")));
+        assert!(payload.messages[1].content.contains("SOURCE QUOTES"));
+        let deep = p.build_request(&request(true));
+        assert!(deep.messages[1]
+            .content
+            .contains("Do not invent object layouts"));
+        assert!(deep.messages[1].content.contains("unseen helpers"));
     }
 }

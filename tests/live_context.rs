@@ -165,6 +165,7 @@ fn tracker_request(source: &str) -> ExplanationRequest {
         git_context: "Change source: live Ollama tracker test".into(),
         regions: vec![ExplanationRegion {
             id: 1,
+            coverage_id: 1,
             start_line: 1,
             end_line: 1,
             source: "value + 1".into(),
@@ -406,6 +407,7 @@ async fn live_llama_cpp_rejects_an_explanation_larger_than_its_fixed_context() {
             git_context: "Change source: live fixed-runtime test".into(),
             regions: vec![ExplanationRegion {
                 id: 1,
+                coverage_id: 1,
                 start_line: 1,
                 end_line: 1_200,
                 source: large_body,
@@ -436,6 +438,7 @@ async fn live_llama_cpp_runs_a_small_git_explain_request() {
             git_context: "Change source: live provider test".into(),
             regions: vec![ExplanationRegion {
                 id: 1,
+                coverage_id: 1,
                 start_line: 1,
                 end_line: 1,
                 source: "value + 1".into(),

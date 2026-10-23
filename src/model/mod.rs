@@ -4,9 +4,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExplanationRegion {
     pub id: usize,
+    pub coverage_id: usize,
     pub start_line: usize,
     pub end_line: usize,
     pub source: String,
@@ -102,7 +103,8 @@ pub fn user_facing_error(error: &anyhow::Error) -> UserFacingError {
             retryable: true,
         };
     }
-    if text.contains("context budget exceeded")
+    if text.contains("context requirement ")
+        || text.contains("context budget exceeded")
         || text.contains("context length")
         || text.contains("maximum context")
         || text.contains("prompt is too long")
@@ -157,6 +159,13 @@ pub fn user_facing_error(error: &anyhow::Error) -> UserFacingError {
             message:
                 "The configured model is not available on the model server. Check the model name.",
             retryable: false,
+        };
+    }
+    if text.contains("annotation source evidence invalid") {
+        return UserFacingError {
+            code: "model_evidence_invalid",
+            message: "The explanation did not match the selected source. Generate it again to try a new explanation.",
+            retryable: true,
         };
     }
     UserFacingError { code: "model_failed", message: "The model could not generate an explanation. Check the model server logs and try again.", retryable: true }

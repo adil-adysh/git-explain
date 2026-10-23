@@ -181,6 +181,7 @@ pub fn concept_request_for(
 ) -> ExplanationRequest {
     let mut request = request_for(unit, revision, false, None);
     request.kind = ExplanationKind::Concepts;
+    request.regions = crate::runtime::annotation_regions(unit, None);
     request
         .git_context
         .push_str("\nExplanation focus: concepts");

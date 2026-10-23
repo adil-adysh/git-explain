@@ -1,7 +1,7 @@
 use crate::{
     change_set::{ChangeSet, FileChangeKind, SemanticUnitChangeKind},
     file_analysis::{unit_key, FileAnalysis},
-    runtime::explanation_regions,
+    runtime::annotation_regions,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -221,7 +221,7 @@ impl Workspace {
                 sec_hasher.update(unit.source.as_bytes());
                 let section_id = format!("{:x}", sec_hasher.finalize());
 
-                let regions = explanation_regions(unit, None);
+                let regions = annotation_regions(unit, None);
                 let valid_annotation_regions = regions
                     .into_iter()
                     .map(|r| AnnotationRegion {
@@ -454,7 +454,7 @@ impl Workspace {
                 sec_hasher.update(unit.source.as_bytes());
                 let section_id = format!("{:x}", sec_hasher.finalize());
 
-                let regions = explanation_regions(
+                let regions = annotation_regions(
                     unit,
                     (change.after.is_some()).then(|| {
                         file.patch

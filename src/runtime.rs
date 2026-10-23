@@ -82,18 +82,44 @@ pub fn request_for_kind(
         source_unit: unit.source.clone(),
         unit_name: unit.identity.qualified_name.clone(),
         unit_kind: format!("{:?}", unit.identity.kind),
-        diff: change.diff.clone(),
+        // A file-wide patch can contain unrelated additions/deletions. A section
+        // with only one revision has no replacement relationship to those units.
+        diff: match (change.before.as_ref(), change.after.as_ref()) {
+            (None, Some(after)) => after
+                .source
+                .lines()
+                .map(|line| format!("+{line}\n"))
+                .collect(),
+            (Some(before), None) => before
+                .source
+                .lines()
+                .map(|line| format!("-{line}\n"))
+                .collect(),
+            _ => change.diff.clone(),
+        },
         language: unit.language.clone(),
         git_context,
-        regions: explanation_regions(
-            unit,
-            (kind != ExplanationKind::Overview && change.after.is_some()).then(|| {
-                file.patch
-                    .as_ref()
-                    .map(|patch| patch.ranges.as_slice())
-                    .unwrap_or(&[])
-            }),
-        ),
+        regions: if matches!(kind, ExplanationKind::Changes | ExplanationKind::Concepts) {
+            annotation_regions(
+                unit,
+                change.after.as_ref().map(|_| {
+                    file.patch
+                        .as_ref()
+                        .map(|patch| patch.ranges.as_slice())
+                        .unwrap_or(&[])
+                }),
+            )
+        } else {
+            explanation_regions(
+                unit,
+                (kind != ExplanationKind::Overview && change.after.is_some()).then(|| {
+                    file.patch
+                        .as_ref()
+                        .map(|patch| patch.ranges.as_slice())
+                        .unwrap_or(&[])
+                }),
+            )
+        },
         prior_explanation: (kind == ExplanationKind::Deep)
             .then_some(change.explanation.overview.clone())
             .filter(|value| !value.is_empty()),
@@ -110,8 +136,7 @@ pub fn concept_request_for(
     change: &SemanticUnitChange,
     context: &crate::explain::AnalysisContext,
 ) -> ExplanationRequest {
-    let mut request = request_for(file, change, context, false);
-    request.kind = ExplanationKind::Concepts;
+    let mut request = request_for_kind(file, change, context, ExplanationKind::Concepts);
     request
         .git_context
         .push_str("\nExplanation focus: concepts");
@@ -137,6 +162,7 @@ pub(crate) fn explanation_regions(
             let relative_end = end - unit.location.start_line + 1;
             ExplanationRegion {
                 id: index + 1,
+                coverage_id: index + 1,
                 start_line: relative_start,
                 end_line: relative_end,
                 source: source_lines
@@ -149,12 +175,198 @@ pub(crate) fn explanation_regions(
     if regions.is_empty() {
         regions.push(ExplanationRegion {
             id: 1,
+            coverage_id: 1,
             start_line: 1,
             end_line: source_lines.len().max(1),
             source: unit.source.clone(),
         });
     }
     regions
+}
+
+fn parser_for_language(language: &str) -> Option<tree_sitter::Parser> {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = match language {
+        "Rust" => tree_sitter_rust::LANGUAGE.into(),
+        "Python" => tree_sitter_python::LANGUAGE.into(),
+        "Go" => tree_sitter_go::LANGUAGE.into(),
+        "Java" => tree_sitter_java::LANGUAGE.into(),
+        "C#" => tree_sitter_c_sharp::LANGUAGE.into(),
+        "JavaScript" => tree_sitter_javascript::LANGUAGE.into(),
+        "TypeScript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "C++" => tree_sitter_cpp::LANGUAGE.into(),
+        "C" => tree_sitter_c::LANGUAGE.into(),
+        _ => return None,
+    };
+    parser.set_language(&lang).ok()?;
+    Some(parser)
+}
+
+fn collect_statement_starts(node: tree_sitter::Node, out: &mut Vec<usize>) {
+    let parent_kind = node.parent().map(|p| p.kind()).unwrap_or("");
+    let is_container = matches!(
+        parent_kind,
+        "block"
+            | "compound_statement"
+            | "statement_block"
+            | "statement_list"
+            | "declaration_list"
+            | "class_body"
+            | "field_declaration_list"
+    ) || parent_kind.ends_with("_block")
+        || parent_kind.ends_with("_body");
+
+    if is_container && node.is_named() && !node.kind().contains("comment") {
+        let start_line = node.start_position().row + 1;
+        out.push(start_line);
+    }
+
+    // Keep multiline expressions intact, including closures nested inside them.
+    if matches!(
+        node.kind(),
+        "array_expression"
+            | "call_expression"
+            | "arguments"
+            | "closure_expression"
+            | "arrow_function"
+            | "lambda"
+            | "lambda_expression"
+            | "array"
+            | "list"
+            | "tuple"
+            | "object"
+            | "argument_list"
+            | "initializer_list"
+    ) || node.kind().contains("string")
+    {
+        return;
+    }
+    for child in node.children(&mut node.walk()) {
+        collect_statement_starts(child, out);
+    }
+}
+
+pub(crate) fn annotation_regions(
+    unit: &crate::change_set::SemanticUnit,
+    changed_ranges: Option<&[crate::change_set::LineRange]>,
+) -> Vec<ExplanationRegion> {
+    let mut coarse_regions = explanation_regions(unit, changed_ranges);
+    coarse_regions.sort_by_key(|region| (region.start_line, region.end_line));
+    let mut normalized: Vec<ExplanationRegion> = Vec::new();
+    for region in coarse_regions {
+        if let Some(previous) = normalized.last_mut() {
+            if region.start_line <= previous.end_line {
+                previous.end_line = previous.end_line.max(region.end_line);
+                continue;
+            }
+        }
+        normalized.push(region);
+    }
+    let lines: Vec<_> = unit.source.lines().collect();
+    for (index, region) in normalized.iter_mut().enumerate() {
+        region.id = index + 1;
+        region.coverage_id = index + 1;
+        region.source = lines
+            .get(region.start_line.saturating_sub(1)..region.end_line.min(lines.len()))
+            .unwrap_or(&[])
+            .join("\n");
+    }
+    let coarse_regions = normalized;
+    let Some(mut parser) = parser_for_language(&unit.language) else {
+        return coarse_regions;
+    };
+    let Some(tree) = parser.parse(&unit.source, None) else {
+        return coarse_regions;
+    };
+
+    if tree.root_node().has_error() {
+        return coarse_regions;
+    }
+    let mut statement_starts = Vec::new();
+    collect_statement_starts(tree.root_node(), &mut statement_starts);
+    statement_starts.sort_unstable();
+    statement_starts.dedup();
+
+    let source_lines: Vec<_> = unit.source.lines().collect();
+    let mut fine_regions = Vec::new();
+    let mut next_id = 1;
+
+    for coarse in coarse_regions {
+        let in_range: Vec<usize> = statement_starts
+            .iter()
+            .copied()
+            .filter(|&l| l >= coarse.start_line && l <= coarse.end_line)
+            .collect();
+
+        if in_range.is_empty() {
+            fine_regions.push(ExplanationRegion {
+                id: next_id,
+                coverage_id: coarse.coverage_id,
+                start_line: coarse.start_line,
+                end_line: coarse.end_line,
+                source: coarse.source,
+            });
+            next_id += 1;
+            continue;
+        }
+
+        let first_start = coarse.start_line;
+        let mut cut_starts = vec![first_start];
+        for &s in &in_range[1..] {
+            if s > first_start && s <= coarse.end_line {
+                cut_starts.push(s);
+            }
+        }
+        cut_starts.dedup();
+
+        let mut slices = Vec::new();
+        for i in 0..cut_starts.len() {
+            let start = cut_starts[i];
+            let end = if i + 1 < cut_starts.len() {
+                cut_starts[i + 1] - 1
+            } else {
+                coarse.end_line
+            };
+            if start <= end {
+                slices.push((start, end));
+            }
+        }
+
+        while slices.len() > 16 {
+            let mut min_idx = 0;
+            let mut min_span = usize::MAX;
+            for i in 0..slices.len() - 1 {
+                let span = slices[i + 1].1 - slices[i].0;
+                if span < min_span {
+                    min_span = span;
+                    min_idx = i;
+                }
+            }
+            let merged = (slices[min_idx].0, slices[min_idx + 1].1);
+            slices.remove(min_idx + 1);
+            slices[min_idx] = merged;
+        }
+
+        for (start, end) in slices {
+            fine_regions.push(ExplanationRegion {
+                id: next_id,
+                coverage_id: coarse.coverage_id,
+                start_line: start,
+                end_line: end,
+                source: source_lines
+                    .get(start.saturating_sub(1)..end.min(source_lines.len()))
+                    .unwrap_or(&[])
+                    .join("\n"),
+            });
+            next_id += 1;
+        }
+    }
+
+    if fine_regions.is_empty() {
+        explanation_regions(unit, changed_ranges)
+    } else {
+        fine_regions
+    }
 }
 #[cfg(test)]
 pub fn apply(change: &mut SemanticUnitChange, result: UnitExplanation, deep: bool) {
@@ -200,6 +412,75 @@ mod tests {
         },
         language::SourceUnitKind,
     };
+
+    fn annotation_test_unit(source: &str) -> SemanticUnit {
+        SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "fixture".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "fixture.rs".into(),
+                start_line: 1,
+                end_line: source.lines().count(),
+            },
+            source: source.into(),
+            language: "Rust".into(),
+        }
+    }
+
+    #[test]
+    fn annotation_regions_fall_back_for_syntax_errors() {
+        let unit = annotation_test_unit("fn incomplete( {\n    first();\n    second();\n}");
+        let regions = annotation_regions(&unit, None);
+        assert_eq!(regions.len(), 1);
+        assert_eq!((regions[0].start_line, regions[0].end_line), (1, 4));
+        assert_eq!(regions[0].source, unit.source);
+    }
+
+    #[test]
+    fn annotation_regions_normalize_overlaps_and_input_order() {
+        let mut unit = annotation_test_unit(
+            "fn stable() {\n    first();\n    second();\n    third();\n    fourth();\n}",
+        );
+        unit.location.start_line = 10;
+        unit.location.end_line = 15;
+        let ranges = [
+            crate::change_set::LineRange { start: 10, end: 13 },
+            crate::change_set::LineRange { start: 12, end: 15 },
+        ];
+        let regions = annotation_regions(&unit, Some(&ranges));
+        let reversed = annotation_regions(&unit, Some(&[ranges[1].clone(), ranges[0].clone()]));
+        assert_eq!(regions, reversed);
+        assert_eq!(
+            regions
+                .iter()
+                .map(|r| (r.id, r.coverage_id, r.start_line, r.end_line))
+                .collect::<Vec<_>>(),
+            vec![(1, 1, 1, 2), (2, 1, 3, 3), (3, 1, 4, 4), (4, 1, 5, 6)]
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .map(|r| r.source.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            unit.source
+        );
+    }
+
+    #[test]
+    fn annotation_regions_preserve_multiline_expressions_with_nested_blocks() {
+        for source in [
+            "fn nested_array() {\n    let callbacks = [\n        || {\n            first();\n            second();\n        },\n    ];\n    consume(callbacks);\n}",
+            "fn nested_call() {\n    consume(\n        || {\n            first();\n            second();\n        },\n    );\n    finish();\n}",
+        ] {
+            let regions = annotation_regions(&annotation_test_unit(source), None);
+            assert_eq!(regions.iter().map(|r| (r.start_line, r.end_line)).collect::<Vec<_>>(),
+                vec![(1, 7), (8, 9)], "{source}");
+        }
+    }
 
     #[test]
     fn replacing_normal_explanation_invalidates_deep_result() {
@@ -307,5 +588,308 @@ mod tests {
 
         assert_eq!(regions.len(), 1);
         assert_eq!((regions[0].start_line, regions[0].end_line), (1, 2));
+    }
+
+    #[test]
+    fn whole_added_function_has_distinct_statement_bounded_targets() {
+        let source = "fn test_synthetic() {\n    for message in [\n        \"first\",\n        \"second\",\n        \"third\",\n    ] {\n        let error = construct_error(message);\n        assert_eq!(error.code, \"failure\");\n        assert!(!error.retryable);\n        assert!(error.message.contains(\"detail\"));\n    }\n}";
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "test_synthetic".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "lib.rs".into(),
+                start_line: 1,
+                end_line: 12,
+            },
+            source: source.into(),
+            language: "Rust".into(),
+        };
+        let change = SemanticUnitChange {
+            id: SemanticChangeId("id".into()),
+            kind: SemanticUnitChangeKind::Added,
+            before: None,
+            after: Some(unit.clone()),
+            diff: format!("-fn unrelated_deleted() {{}}\n+{source}"),
+            overview_explanation: UnitExplanation {
+                teaching: None,
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
+            explanation: UnitExplanation {
+                teaching: None,
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
+            concept_explanation: UnitExplanation {
+                teaching: None,
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
+            deep_explanation: None,
+        };
+        let file = FileChange {
+            old_path: None,
+            new_path: Some(std::path::PathBuf::from("lib.rs")),
+            kind: crate::change_set::FileChangeKind::Added,
+            similarity: None,
+            old_mode: None,
+            new_mode: None,
+            binary: false,
+            patch: Some(crate::change_set::FilePatch {
+                ranges: vec![crate::change_set::LineRange { start: 1, end: 12 }],
+                text: source.into(),
+            }),
+            before: None,
+            after: None,
+            semantic_changes: vec![],
+        };
+        let context = crate::explain::AnalysisContext::working_tree();
+        let request = request_for_kind(&file, &change, &context, ExplanationKind::Changes);
+        assert!(!request.diff.contains("unrelated_deleted"));
+        assert!(request.diff.contains("+fn test_synthetic"));
+        let bounds: Vec<_> = request
+            .regions
+            .iter()
+            .map(|r| (r.start_line, r.end_line))
+            .collect();
+        assert_eq!(bounds, vec![(1, 6), (7, 7), (8, 8), (9, 9), (10, 12)]);
+    }
+
+    #[test]
+    fn partial_hunk_never_includes_unchanged_lines() {
+        let source = "fn test_synthetic() {\n    for message in [\n        \"first\",\n        \"second\",\n        \"third\",\n    ] {\n        let error = construct_error(message);\n        assert_eq!(error.code, \"failure\");\n        assert!(!error.retryable);\n        assert!(error.message.contains(\"detail\"));\n    }\n}";
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "test_synthetic".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "lib.rs".into(),
+                start_line: 1,
+                end_line: 12,
+            },
+            source: source.into(),
+            language: "Rust".into(),
+        };
+        let change = SemanticUnitChange {
+            id: SemanticChangeId("id".into()),
+            kind: SemanticUnitChangeKind::Modified,
+            before: Some(unit.clone()),
+            after: Some(unit.clone()),
+            diff: String::new(),
+            overview_explanation: UnitExplanation {
+                teaching: None,
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
+            explanation: UnitExplanation {
+                teaching: None,
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
+            concept_explanation: UnitExplanation {
+                teaching: None,
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
+            deep_explanation: None,
+        };
+        let file = FileChange {
+            old_path: Some(std::path::PathBuf::from("lib.rs")),
+            new_path: Some(std::path::PathBuf::from("lib.rs")),
+            kind: crate::change_set::FileChangeKind::Modified,
+            similarity: None,
+            old_mode: None,
+            new_mode: None,
+            binary: false,
+            patch: Some(crate::change_set::FilePatch {
+                ranges: vec![crate::change_set::LineRange { start: 7, end: 9 }],
+                text: String::new(),
+            }),
+            before: None,
+            after: None,
+            semantic_changes: vec![],
+        };
+        let context = crate::explain::AnalysisContext::working_tree();
+        let request = request_for_kind(&file, &change, &context, ExplanationKind::Changes);
+        for region in &request.regions {
+            assert!(
+                region.start_line >= 7,
+                "start_line {} < 7",
+                region.start_line
+            );
+            assert!(region.end_line <= 9, "end_line {} > 9", region.end_line);
+        }
+    }
+
+    #[test]
+    fn file_concepts_full_source_has_fine_targets() {
+        let source = "fn test_synthetic() {\n    for message in [\n        \"first\",\n        \"second\",\n        \"third\",\n    ] {\n        let error = construct_error(message);\n        assert_eq!(error.code, \"failure\");\n        assert!(!error.retryable);\n        assert!(error.message.contains(\"detail\"));\n    }\n}";
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "test_synthetic".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "lib.rs".into(),
+                start_line: 1,
+                end_line: 12,
+            },
+            source: source.into(),
+            language: "Rust".into(),
+        };
+        let request = crate::file_analysis::concept_request_for(&unit, None);
+        assert_eq!(request.kind, ExplanationKind::Concepts);
+        let bounds: Vec<_> = request
+            .regions
+            .iter()
+            .map(|r| (r.start_line, r.end_line))
+            .collect();
+        assert_eq!(bounds, vec![(1, 6), (7, 7), (8, 8), (9, 9), (10, 12)]);
+        for region in &request.regions {
+            assert_eq!(region.coverage_id, 1);
+        }
+    }
+
+    #[test]
+    fn deleted_unit_uses_fine_source_targets() {
+        let source = "fn deleted_func() {\n    first();\n    second();\n}";
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "deleted_func".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "lib.rs".into(),
+                start_line: 10,
+                end_line: 13,
+            },
+            source: source.into(),
+            language: "Rust".into(),
+        };
+        let change = SemanticUnitChange {
+            id: SemanticChangeId("id".into()),
+            kind: SemanticUnitChangeKind::Deleted,
+            before: Some(unit.clone()),
+            after: None,
+            diff: format!("-{source}\n+fn unrelated_added() {{}}"),
+            overview_explanation: UnitExplanation {
+                teaching: None,
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
+            explanation: UnitExplanation {
+                teaching: None,
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
+            concept_explanation: UnitExplanation {
+                teaching: None,
+                overview: String::new(),
+                annotations: vec![],
+                deep: None,
+            },
+            deep_explanation: None,
+        };
+        let file = FileChange {
+            old_path: Some(std::path::PathBuf::from("lib.rs")),
+            new_path: None,
+            kind: crate::change_set::FileChangeKind::Deleted,
+            similarity: None,
+            old_mode: None,
+            new_mode: None,
+            binary: false,
+            patch: None,
+            before: None,
+            after: None,
+            semantic_changes: vec![],
+        };
+        let context = crate::explain::AnalysisContext::working_tree();
+        let request = request_for_kind(&file, &change, &context, ExplanationKind::Changes);
+        assert!(!request.diff.contains("unrelated_added"));
+        assert!(request.diff.contains("-fn deleted_func"));
+        assert_eq!(request.source_unit, source);
+        assert_eq!(
+            request
+                .regions
+                .iter()
+                .map(|r| (r.start_line, r.end_line))
+                .collect::<Vec<_>>(),
+            vec![(1, 2), (3, 4)]
+        );
+    }
+
+    #[test]
+    fn unsupported_language_falls_back_to_coarse_regions() {
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "test".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "test.xyz".into(),
+                start_line: 1,
+                end_line: 3,
+            },
+            source: "unsupported syntax\nline 2\nline 3".into(),
+            language: "UnknownLanguage".into(),
+        };
+        let regions = annotation_regions(
+            &unit,
+            Some(&[crate::change_set::LineRange { start: 1, end: 3 }]),
+        );
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].start_line, 1);
+        assert_eq!(regions[0].end_line, 3);
+    }
+
+    #[test]
+    fn subdivision_cap_limits_to_sixteen_targets() {
+        let mut source = String::from("fn many_statements() {\n");
+        for i in 0..30 {
+            source.push_str(&format!("    let var_{i} = {i};\n"));
+        }
+        source.push_str("}\n");
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "many_statements".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "lib.rs".into(),
+                start_line: 1,
+                end_line: 32,
+            },
+            source,
+            language: "Rust".into(),
+        };
+        let regions = annotation_regions(
+            &unit,
+            Some(&[crate::change_set::LineRange { start: 1, end: 32 }]),
+        );
+        assert!(regions.len() <= 16, "regions.len() was {}", regions.len());
+        assert!(regions.len() > 1);
+        assert_eq!(regions.first().unwrap().start_line, 1);
+        assert_eq!(regions.last().unwrap().end_line, 32);
+        for i in 0..regions.len() - 1 {
+            assert_eq!(regions[i].end_line + 1, regions[i + 1].start_line);
+            assert_eq!(regions[i + 1].id, regions[i].id + 1);
+        }
     }
 }

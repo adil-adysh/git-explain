@@ -13,8 +13,8 @@ use std::{
 };
 
 const SCHEMA: &str = "1";
-pub const PROMPT: &str = "explanation-prompt-v15";
-pub const RESPONSE_CONTRACT: &str = "structured-response-v5";
+pub const PROMPT: &str = "explanation-prompt-v19";
+pub const RESPONSE_CONTRACT: &str = "structured-response-v9";
 
 #[derive(Clone)]
 pub struct ExplanationCache {
@@ -49,6 +49,7 @@ struct Identity<'a> {
 #[derive(Clone, Debug, Serialize)]
 struct RegionIdentity {
     id: usize,
+    coverage_id: usize,
     start: usize,
     end: usize,
     source: String,
@@ -130,6 +131,7 @@ impl ExplanationCache {
                 .iter()
                 .map(|r| RegionIdentity {
                     id: r.id,
+                    coverage_id: r.coverage_id,
                     start: r.start_line,
                     end: r.end_line,
                     source: r.source.clone(),
@@ -246,6 +248,7 @@ mod tests {
             git_context: "working tree".into(),
             regions: vec![ExplanationRegion {
                 id: 1,
+                coverage_id: 1,
                 start_line: 1,
                 end_line: 1,
                 source: "fn load() {}".into(),
@@ -307,6 +310,26 @@ mod tests {
         assert_ne!(normal_key, deep_key);
         assert!(cache.get(&deep_key).unwrap().is_none());
         assert_eq!(cache.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn cache_key_changes_for_region_coverage_id_and_target_bounds() {
+        let (_, model, reader, explanation, request) = setup();
+        let base = ExplanationCache::change_key(&request, &model, &reader, &explanation);
+
+        let mut changed_coverage = request.clone();
+        changed_coverage.regions[0].coverage_id = 99;
+        assert_ne!(
+            base,
+            ExplanationCache::change_key(&changed_coverage, &model, &reader, &explanation)
+        );
+
+        let mut changed_bounds = request.clone();
+        changed_bounds.regions[0].end_line = 2;
+        assert_ne!(
+            base,
+            ExplanationCache::change_key(&changed_bounds, &model, &reader, &explanation)
+        );
     }
 
     #[test]

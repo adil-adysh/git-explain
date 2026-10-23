@@ -13,19 +13,35 @@ const releaseHeld = () => { holding = false; held.splice(0).forEach(send => send
 
 const annotation = (region, kind = 'concept', text = `Concept for region ${region}.`) =>
   ({ region, kind, title: kind === 'concept' ? `Concept ${region}` : undefined, text });
-const regionIds = body => body?.response_format?.json_schema?.schema?.properties
-  ?.annotations?.items?.properties?.region?.enum || [1];
+const annotationVariants = body => {
+  const item = body?.response_format?.json_schema?.schema?.properties?.annotations?.items;
+  return item?.anyOf || (item ? [item] : []);
+};
+const regionIds = body => annotationVariants(body).flatMap(item => item.properties?.region?.enum || []);
 const validContent = body => {
   const schema = body?.response_format?.json_schema?.schema;
   if (schema?.properties?.purpose) return JSON.stringify({purpose:'Understand this code.',walkthrough:['Follow the source in order.'],boundaries:['This section alone does not establish wider behavior.'],example:'For this example, follow the shown input through the code.'});
   if (schema?.properties?.explanation) return JSON.stringify({ explanation: 'Detailed teaching for this code.' });
   const regions = regionIds(body);
-  const kinds = schema?.properties?.annotations?.items?.properties?.kind?.enum || ['concept'];
+  const kinds = annotationVariants(body)[0]?.properties?.kind?.enum || ['concept'];
   const maximum = schema?.properties?.annotations?.maxItems ?? regions.length;
   return JSON.stringify({
     overview: 'Deterministic concepts for this code.',
     annotations: regions.slice(0, maximum).map(region => annotation(region, kinds[0])),
   });
+};
+const withEvidence = (body, content) => {
+  let value;
+  try { value = JSON.parse(content); } catch { return content; }
+  const prompt = body.messages?.find(message => message.role === 'user')?.content || '';
+  const source = prompt.split('SOURCE UNIT:\n')[1]?.split('\n\nDETERMINISTIC SOURCE REGIONS')[0]?.split('\n') || [];
+  for (const item of value.annotations || []) {
+    const bounds = prompt.match(new RegExp(`\\[REGION ${item.region}\\] lines (\\d+)-(\\d+)`));
+    const line = bounds ? source.slice(Number(bounds[1]) - 1, Number(bounds[2])).find(line => line.trim()) : '';
+    item.source_quote = [...(line || '')].slice(0, 200).join('');
+    if (scenario === 'invalid_evidence_then_valid' && calls === 1) item.source_quote = 'invented_source()';
+  }
+  return JSON.stringify(value);
 };
 const contentFor = (body, attempt) => {
   const regions = regionIds(body);
@@ -84,7 +100,7 @@ const server = http.createServer((request, response) => {
       active--;
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({
-        choices: [{ finish_reason: 'stop', message: { content: contentFor(body, attempt) } }],
+        choices: [{ finish_reason: 'stop', message: { content: withEvidence(body, contentFor(body, attempt)) } }],
         usage: { prompt_tokens: 100, completion_tokens: 40 },
       }));
     };
