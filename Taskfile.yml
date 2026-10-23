@@ -10,16 +10,35 @@ tasks:
       - task: check
 
   check:
-    desc: Run formatting, tests, and whitespace checks.
+    desc: Check frontend, Rust formatting, tests, and whitespace.
     cmds:
+      - task: frontend-check
       - cargo fmt -- --check
       - cargo test
       - git diff --check
 
+  frontend-install:
+    desc: Install locked frontend build dependencies (Node 24 recommended).
+    cmds:
+      - npm --prefix frontend ci
+
+  frontend-build:
+    desc: Rebuild the frontend bundle embedded in Rust binaries.
+    cmds:
+      - npm --prefix frontend run build
+
+  frontend-check:
+    desc: Check Svelte/TypeScript and rebuild the bundled assets.
+    cmds:
+      - npm --prefix frontend run check
+      - task: frontend-build
+
   build:
     aliases: [build-dev]
-    desc: Build the development binary.
+    desc: Install locked frontend dependencies, rebuild the UI, and build the development binary.
     cmds:
+      - task: frontend-install
+      - task: frontend-build
       - cargo build
 
   test-browser:
@@ -28,8 +47,10 @@ tasks:
       - npm run test:browser
 
   build-release:
-    desc: Build the optimized release binary.
+    desc: Install locked frontend dependencies, rebuild the UI, and build the optimized release binary.
     cmds:
+      - task: frontend-install
+      - task: frontend-build
       - cargo build --release
 
   test-live-ollama:
@@ -49,7 +70,7 @@ tasks:
 
   install:
     aliases: [install-release]
-    desc: Build and install the release binary into the user-local Git bin directory.
+    desc: Rebuild the UI and release binary, then install into the user-local Git bin directory.
     cmds:
       - task: build-release
       - task: _install-binary
@@ -58,7 +79,7 @@ tasks:
           FORCE: '{{.FORCE}}'
 
   install-dev:
-    desc: Build and install the development binary into the user-local Git bin directory.
+    desc: Rebuild the UI and development binary, then install into the user-local Git bin directory.
     cmds:
       - task: build
       - task: _install-binary

@@ -1,6 +1,6 @@
 # Validation, test matrix and release acceptance
 
-> **Status:** Proposed release test plan. Applies to the entire migration; **not** evidence the tests currently pass.
+> **Status:** Active test plan for default UI (`/` standalone, `/sessions/{id}` daemon; `/workspace` aliases; `/legacy` fallbacks). Manual NVDA testing and native zoom checks are explicitly deferred, not passed.
 >
 > Related: [screens](screens.md), [interaction contract](interaction-accessibility.md), [architecture](architecture-api.md), [phases](implementation-plan.md).
 
@@ -19,12 +19,12 @@ Test standalone file, standalone diff and daemon session modes; APIs and capabil
 | ID | Steps | Expected outcome |
 | --- | --- | --- |
 | E2E-01 | Open app with a many-file fixture | Small shell; repository context and file index; no source for unselected sections; no model requests |
-| E2E-02 | Select `src/server.rs` | Lists **all discovered** code-section metadata in source order, changed and unchanged where applicable; Reader prompts for a section |
-| E2E-03 | Select `generate_file` with keyboard | Only selected source fetched; Reader h2 focus; file identity, section name and position announced once |
+| E2E-02 | Select `src/server.rs` | Lists all discovered code sections in source order; automatically selects first section (or restores last-read section in workspace), fetches only that section's source, focuses Reader heading once ready, adds one history entry with section; no model requests (empty files have no source; invalid/stale explicit section IDs error) |
+| E2E-03 | Select `generate_file` section with keyboard | Only selected source fetched; Reader h2 focus once source ready; file identity, section name and position announced once; zero inference |
 | E2E-04 | Select another function then Browser Back | Original function, view and valid cached source restored; zero inference |
 | E2E-05 | Filter sections so current selection is hidden | Reader retains current section labeled outside filter; Next/Previous disabled; Clear restores list |
 | E2E-06 | Use Previous/Next at file boundaries | Stops/disabled; does not switch file; label indicates intended target within same file |
-| E2E-07 | Focus Overview tab; arrow to Deep; press Enter | Arrow focus only; Enter activates Deep; cache check allowed; no generation until Generate |
+| E2E-07 | Focus Overview tab; arrow to Deep; press Enter | Arrow focus only; Enter activates Deep in client state; zero network requests and no generation until Generate |
 | E2E-08 | Generate Overview; navigate away during request | Current selection stays correct; result stored under original section/policy/snapshot; no duplicate |
 | E2E-09 | Generate Deep without prerequisite; regenerate prerequisite | Documented prerequisite sequence under explicit action; invalidates dependent variants only, no cross-policy result loss |
 | E2E-10 | Change section-wide language help; keep view-specific focus override | Field-wise precedence visible; only affected section/views change pending policy; existing explanation remains labeled with old policy |
@@ -38,6 +38,10 @@ Test standalone file, standalone diff and daemon session modes; APIs and capabil
 | E2E-18 | File mode: inspect Overview/Concepts/Deep | No Changes tab; Deep uses actual Overview prerequisite |
 | E2E-19 | Daemon: close/reopen session then follow stale deep link | Explicit expired/invalid session handling; no mixing data across sessions |
 | E2E-20 | Increase zoom/force colors and navigate complete workflow | No loss of functionality/focus, status not color-only, no horizontal page-level clipping |
+| E2E-21 | Generate every available view, reload with Deep selected, then switch through all views | Every saved result is restored on section selection; tabs make zero requests and no additional model calls; file mode omits Changes |
+| E2E-22 | Generate Concepts while the model is held, activate Overview, then release; fail Concepts regeneration | Completion preserves Overview selection and leaves its source unannotated; Concepts retains its result on failure; error stays scoped to Concepts |
+| E2E-23 | Generate Changes/Concepts, follow an annotation, switch to Overview and back, then select an unchanged section | Annotation links focus the shared source; active view alone controls highlights; unchanged diff sections expose reading without generation |
+| E2E-24 | Generate Changes, enable plain source, follow an annotation, open Git diff and previous source | Annotation focuses the plain-source field; current and previous code retain correct revisions; one active source container; no extra model calls |
 
 ## Explicit inference/cost assertions
 
@@ -46,7 +50,7 @@ Instrument the model provider or generation endpoint and assert **zero calls** f
 - Select file / expand file / filter sections.
 - Select section / Previous/Next / Back/Forward.
 - Read/copy source / show Git diff.
-- Change explanation tab, even to Deep.
+- Change explanation tab, even to Deep (tab selection is client-side navigation with zero network requests and zero inference).
 - Change learning profile, session or local overrides.
 - Open/close Personalization, Settings or Help.
 - Save feedback or learning config.
@@ -71,12 +75,14 @@ Assert **exactly the expected authorized generation sequence** when Generate or 
 
 ## Keyboard and screen-reader checklist
 
+> **Note:** Manual NVDA testing is explicitly deferred (scheduled for later, NOT passed). Checkboxes remain unverified pending manual testing.
+
 Manually test with **NVDA + Windows + Edge**, and keyboard-only without NVDA. Additional Chromium/browser checks recommended.
 
 - [ ] Skip-to-main, application navigation and Explorer/Reader landmarks are discoverable.
 - [ ] One main landmark and sensible headings; heading navigation reports context correctly.
 - [ ] File entries announce name, change status, and number of sections.
-- [ ] Selecting file makes the section list discoverable without forcing a source load.
+- [ ] Selecting file automatically selects first section (or restores last-read section) and focuses Reader heading once source ready; initial app loads only metadata; zero inference.
 - [ ] Selecting a section focuses named Reader heading exactly once; repeated async state changes do not steal focus.
 - [ ] Source can be read line by line, including indentation and punctuation as configured in NVDA.
 - [ ] Only one of highlighted/plain-text source representations is exposed at once.
@@ -95,6 +101,8 @@ Manually test with **NVDA + Windows + Edge**, and keyboard-only without NVDA. Ad
 Capture test steps, NVDA spoken output summary, expected-vs-actual and severity for failures. Test with NVDA in both browse and focus modes. Do not assume passing automation proves screen-reader usability.
 
 ## Visual and responsive checklist
+
+> **Note:** Native zoom checks and visual high-contrast manual verification are explicitly deferred, NOT passed.
 
 - [ ] Light, dark, system, high contrast and forced-colors styles have readable contrast and visible focus.
 - [ ] Focus outline and selected-item indicator are distinguishable.
@@ -144,15 +152,17 @@ Treat these as targets, not measurements or universal hard SLAs. Track regressio
 
 ## Release gate
 
-Release can be approved only when:
+The new UI is the default interface (`/` standalone, `/sessions/{id}` daemon; `/workspace` aliases). Legacy code and safeguards are retained at `/legacy` and `/sessions/{id}/legacy` until stabilization.
+
+Release/cutover acceptance:
 1. Every critical E2E scenario above passes, with any deferrals explicitly accepted.
 2. No P0/P1 accessibility, source identity, policy identity or inference-trigger regression remains.
-3. Manual NVDA/Edge main workflows pass and their results are recorded.
+3. Manual NVDA/Edge main workflows and native zoom checks are explicitly deferred for later validation (not passed).
 4. Target metrics or approved evidence-based alternatives pass on documented hardware; no unacceptable baseline regression.
 5. Static assets are bundled, secure, and run from the distribution binary without Node/npm.
 6. Existing file/diff/daemon modes and learning generation are behaviorally compatible.
 7. Browser profile save does not destroy comments or lose concurrent config writes.
 8. Feature inventory matches shipped screens and documentation.
-9. The legacy renderer removal has a rollback/test plan.
+9. Legacy renderer is retained as fallback at `/legacy` and `/sessions/{id}/legacy` until stabilization; safeguards and fallback pathways are verified.
 
 If any gate fails, do not erase the old implementation solely to meet a migration date.

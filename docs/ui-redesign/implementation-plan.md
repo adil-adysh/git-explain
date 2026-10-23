@@ -1,5 +1,8 @@
 # Phased Svelte 5 implementation plan
 
+> Implementation note (2026-10-23): the user explicitly requested the new UI as default and deferred manual NVDA/zoom testing. Default cutover therefore proceeds as an accepted exception to the original manual release gate. Legacy remains available at explicit fallback routes during stabilization. See [current evidence](acceptance-record.md). Historical task checkboxes below describe the original plan; current completion is tracked separately.
+
+
 > **Status:** Proposed execution plan, 2026-10-23. No implementation has been started by this documentation change.
 >
 > Follow [screen specs](screens.md), [interaction contract](interaction-accessibility.md), [API/architecture](architecture-api.md) and [test plan](test-plan.md). Deliver **small, independently reviewable PRs**. Do not deploy the entire redesign as one large rewrite.

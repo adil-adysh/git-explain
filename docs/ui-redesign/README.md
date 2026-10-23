@@ -1,6 +1,6 @@
 # Svelte 5 accessible workspace: specification index
 
-> **Status:** Proposed design, 2026-10-23. **Not implemented.** This is a reviewable frontend migration contract, not a claim about current UI behavior.
+> **Status:** Implemented workspace, 2026-10-23. The user requested default cutover with manual NVDA and native zoom testing deferred. See [acceptance evidence and limitations](acceptance-record.md); deferred checks are not passing claims.
 >
 > **Scope:** `git explain file`, `git explain diff`, and daemon-backed repository sessions. Preserve CLI/debug workflows.
 
@@ -12,7 +12,7 @@ Replace the current eager, server-rendered collection of every source section wi
 2. **What am I looking at?** Source/diff and its current explanation view.
 3. **What will this action do?** Navigation and settings never initiate model inference; only an explicit Generate/Regenerate action does.
 
-**Primary mental model:** **Choose a file → see all code sections in that file → select one → read code → choose an explanation view.** A user should not have to traverse the full source of other files to do this.
+**Primary mental model:** **Choose a file → read its first or last-read code section → choose another section or an explanation view.** The complete ordered section list remains available. A user should not have to traverse the full source of other files to do this.
 
 ## Navigation map
 

@@ -15,7 +15,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, Json},
     routing::{get, post},
@@ -58,6 +58,7 @@ struct Metadata {
 pub struct RepositorySessionId(pub String);
 
 struct RepositorySession {
+    workspace: std::sync::OnceLock<crate::workspace::Workspace>,
     learning: LearningRuntime,
     id: RepositorySessionId,
     repo_root: PathBuf,
@@ -471,7 +472,29 @@ async fn run(port: u16) -> Result<()> {
         .route("/api/repos/refresh", post(refresh))
         .route("/api/sessions/{session}/snapshot", get(snapshot_status))
         .route("/api/sessions/{session}/changes", get(change_set_json))
-        .route("/sessions/{id}", get(session_page))
+        .route(
+            "/api/sessions/{session}/ui/v1/workspace",
+            get(workspace_summary),
+        )
+        .route("/api/sessions/{session}/ui/v1/index", get(workspace_index))
+        .route(
+            "/api/sessions/{session}/ui/v1/sections/{id}",
+            get(workspace_section),
+        )
+        .route("/sessions/{id}", get(crate::workspace_assets::shell))
+        .route("/sessions/{id}/legacy", get(session_page))
+        .route(
+            "/sessions/{id}/workspace",
+            get(crate::workspace_assets::shell),
+        )
+        .route(
+            "/ui-assets/workspace.js",
+            get(crate::workspace_assets::script),
+        )
+        .route(
+            "/ui-assets/workspace.css",
+            get(crate::workspace_assets::style),
+        )
         .route("/api/sessions/{session}/units/{id}/explain", post(explain))
         .route(
             "/api/sessions/{session}/units/{id}/overview",
@@ -762,6 +785,7 @@ fn build_session_from_analyzer(
         config.learning_selection.clone(),
     )?;
     Ok(Arc::new(RepositorySession {
+        workspace: Default::default(),
         learning,
         id,
         repo_root: root,
@@ -788,6 +812,72 @@ fn new_id() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn session_workspace(session: &RepositorySession) -> &crate::workspace::Workspace {
+    session.workspace.get_or_init(|| {
+        crate::workspace::Workspace::from_diff(&session.change_set.lock().unwrap())
+            .with_context(&session.id.0)
+    })
+}
+async fn workspace_summary(
+    Path(id): Path<String>,
+    State(state): State<Arc<DaemonState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(session) = current(&state, &id).await else {
+        return crate::workspace_api::error(
+            StatusCode::GONE,
+            "session_expired",
+            "This repository session has expired. Reopen it with git explain diff.",
+            false,
+        );
+    };
+    (
+        StatusCode::OK,
+        Json(crate::workspace_api::summary(
+            session_workspace(&session),
+            Some(&id),
+            &session.model,
+            &crate::workspace_api::repository_label(&session.repo_root),
+        )),
+    )
+}
+async fn workspace_index(
+    Path(id): Path<String>,
+    State(state): State<Arc<DaemonState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(session) = current(&state, &id).await else {
+        return crate::workspace_api::error(
+            StatusCode::GONE,
+            "session_expired",
+            "This repository session has expired. Reopen it with git explain diff.",
+            false,
+        );
+    };
+    (
+        StatusCode::OK,
+        Json(crate::workspace_api::index(
+            session_workspace(&session),
+            Some(&id),
+            &session.model,
+            &crate::workspace_api::repository_label(&session.repo_root),
+        )),
+    )
+}
+async fn workspace_section(
+    Path((id, section)): Path<(String, String)>,
+    Query(query): Query<crate::workspace_api::SectionQuery>,
+    State(state): State<Arc<DaemonState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(session) = current(&state, &id).await else {
+        return crate::workspace_api::error(
+            StatusCode::GONE,
+            "session_expired",
+            "This repository session has expired. Reopen it with git explain diff.",
+            false,
+        );
+    };
+    crate::workspace_api::section(session_workspace(&session), &section, query)
 }
 
 async fn session_page(
@@ -1511,6 +1601,7 @@ mod tests {
             release: Notify::new(),
         });
         let session = Arc::new(RepositorySession {
+            workspace: Default::default(),
             learning: LearningRuntime::new(
                 config.paths.clone(),
                 config.reader.clone(),

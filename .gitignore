@@ -1,6 +1,7 @@
 # Rust build output
 /target/
 /node_modules/
+/frontend/node_modules/
 /test-results/
 /playwright-report/
 

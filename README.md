@@ -6,6 +6,14 @@ Explanations are on demand. Overview, Changes, Concepts, and Deep are separate r
 
 ## Quick start
 
+The accessible workspace is the default browser UI for file, diff and daemon
+sessions. Selecting a file opens its first code section, or restores the last
+section read in that file during this workspace session. Explanations remain
+explicit. The previous UI is available at `/legacy` (standalone) or
+`/sessions/<session-id>/legacy` (daemon). The `/workspace` URL aliases remain
+supported. Manual NVDA and browser zoom testing is deferred by user decision;
+see the [acceptance record](docs/ui-redesign/acceptance-record.md).
+
 From inside a Git repository, create the documented starter configuration:
 
 ```text
@@ -222,9 +230,17 @@ Options:   -m -> --model      -u -> --base-url
 
 The endpoint and runtime options `--model-port`, `--api-key-env`, `--provider`, `--profile`, `--port`, and `--direct` remain long-only.
 
-Run `task check` before contributing.
+For frontend development, use Node 24 and run `task frontend-install` once.
+`task frontend-check` checks Svelte/TypeScript and rebuilds `frontend/dist`.
+Commit the rebuilt bundle together with frontend source changes. Rust embeds
+these assets, so `cargo build` and installed binaries need no Node runtime.
+`task build`, `task build-release`, `task install`, and `task install-dev`
+require Node and npm: they run `npm ci` for the frontend, rebuild its embedded
+bundle, then compile Rust. Installation copies the resulting binary only after
+both builds succeed.
+`task check` runs frontend checks, Rust formatting/tests and whitespace checks.
 
-## Proposed accessible Svelte 5 workspace (design only)
+## Accessible Svelte 5 workspace migration
 
 A screen-reader- and keyboard-first redesign is specified in
 [docs/ui-redesign/README.md](docs/ui-redesign/README.md), with
@@ -234,9 +250,10 @@ A screen-reader- and keyboard-first redesign is specified in
 [a phased implementation plan](docs/ui-redesign/implementation-plan.md), and
 [acceptance tests](docs/ui-redesign/test-plan.md).
 
-**These documents describe proposed work, not the current browser implementation.**
+The [implementation ledger](docs/ui-redesign/implementation-status.md) distinguishes
+implemented work from outstanding acceptance gates. The legacy UI remains available.
 The redesign prioritizes a lightweight startup; selecting a file reveals its
-complete code-section index; individual source and cached explanations load
+complete code-section index and opens its first or last-read section; individual source and cached explanations load
 on demand; explanation kinds use direct tabs; personal learning profiles live
 under Personalization while section/view overrides remain accessible in the
 Reader. Navigation never implicitly invokes the model.

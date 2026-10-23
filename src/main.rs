@@ -21,6 +21,9 @@ mod server;
 mod snapshot;
 mod terminal;
 mod web;
+mod workspace;
+mod workspace_api;
+mod workspace_assets;
 
 use analyzer::RepositoryAnalyzer;
 use anyhow::{Context, Result};
@@ -569,6 +572,7 @@ async fn run() -> Result<()> {
             None
         };
         return server::serve_file(
+            workspace_api::repository_label(&repo),
             analysis,
             provider,
             server_config,
@@ -1317,6 +1321,7 @@ async fn run_direct(
         None
     };
     server::serve(
+        workspace_api::repository_label(&repo),
         snapshot,
         provider,
         server,

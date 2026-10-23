@@ -1,6 +1,6 @@
 # Screen-by-screen UI/UX specification
 
-> **Status:** Proposed; this file defines target behavior, not current implementation. See [overview](README.md) and [interaction contract](interaction-accessibility.md).
+> **Status:** Active default UI (`/` standalone, `/sessions/{id}` daemon; `/workspace` aliases). Legacy fallback retained at `/legacy` and `/sessions/{id}/legacy` until stabilization. Manual NVDA and native zoom checks are explicitly deferred, not passed. See [overview](README.md) and [interaction contract](interaction-accessibility.md).
 >
 > All example names and responses are illustrative; actual displayed values must come from the current repository snapshot.
 
@@ -8,7 +8,7 @@
 
 | Screen / surface | Entry | Primary job | Exit / next action |
 | --- | --- | --- | --- |
-| 0. Workspace startup | Browser opens a standalone/daemon URL | Establish repository, revision and usable navigation | Explore or an actionable recovery |
+| 0. Workspace startup | Browser opens default standalone (`/`) or daemon (`/sessions/{id}`) URL | Establish repository, revision and usable navigation | Explore or an actionable recovery |
 | 1. Explore / file list | Top-level Explore link | Choose file in repository context | Display chosen file's complete code-section index |
 | 2. Explore / selected file | Choose file | Scan/filter **all discovered code sections** | Select one code section |
 | 3. Reader / selected section | Choose section | Read selected source and diff | Choose explanation kind or another section |
@@ -24,13 +24,13 @@ Top-level navigation uses **links**, not an ARIA tab widget. Only explanation-ki
 
 ## 0. Workspace startup
 
-**Purpose:** Show the interface promptly, even if Git analysis has not completed.
+**Purpose:** Show the interface promptly, even if Git analysis has not completed. Default URLs are `/` for standalone and `/sessions/{id}` for daemon (`/workspace` and `/sessions/{id}/workspace` remain supported aliases; `/legacy` and `/sessions/{id}/legacy` provide fallback to the legacy UI).
 
 **Structure:** Application header (name, selected repo/session, revision), top-level Explore / Personalization / Settings links; primary loading message; optional recent context for daemon; explicit help.
 
 **Behavior:**
 - Ship a small bundled HTML/JS/CSS shell from Axum; no external CDN, Node runtime or model endpoint required to display it.
-- Request lightweight workspace metadata and the initial file index. Do not restore results or resolve policies for every section.
+- Request lightweight workspace metadata and the initial file index. Initial app loads only metadata, not source. Do not restore results or resolve policies for every section.
 - When there is no valid session, show a named empty state and a path back to the daemon-supported open/reopen workflow; do not invent an in-browser repository chooser for standalone CLI mode.
 - Show revision, working tree or comparison identifier only after it is known; do not substitute `main` or guess a commit.
 - If repository analysis takes time, show a polite status, not an indefinitely spinning empty page. Error provides Retry and diagnostics.
@@ -55,16 +55,16 @@ Explorer (navigation landmark)                Reader (main landmark)
   - src/learning.rs — Modified
   - src/web.rs — Unchanged
   ...
-  [Code sections for selected file]          [Select a code section to begin]
+  [Code sections for selected file]          [Code section source / diff]
 ```
 
 **Behavior:**
 - File list includes appropriate supported files for the mode and indicates added/modified/deleted/renamed/copied/unchanged as actual analysis permits. Unsupported or binary files get textual reason or are clearly excluded with counts; never promise a section list for unsupported content.
-- Selecting a file updates Explorer selection, URL and **code-section index only**. Do **not** fetch every source body or auto-select/generate an explanation.
-- The Reader either retains a valid previously selected section in that file or shows “Select a code section”; never display source from a different file under the new file heading.
+- Selecting a file automatically selects its first code section (or restores the last-read section for that file within the current immutable workspace); empty files have no source; invalid or stale explicit section IDs remain errors. Fetches only that selected section's source; no model generation on file selection or section restoration. Adds one history entry including the selected section.
+- The Reader displays the selected code section's source; never display source from a different file under the new file heading. Empty files display an explicit empty state with no source.
 - In daemon mode a refresh may update paths/status; preserve selection by stable identity when possible, otherwise select no section and explain.
 - Files may be searched and filtered; show result count and Clear filter; no hidden navigation based solely on color.
-- **Focus:** activating a file moves focus to “Code sections in [path]” heading once its index is ready, or retains focus on the file control with an adjacent concise loading status. Exact consistent choice must be validated with NVDA before release.
+- **Focus:** activating a file moves focus to the Reader section heading once source is ready. Manual NVDA verification is explicitly deferred.
 - **Empty:** “No supported files”, “No matches”, “Not analyzed yet”, and “Failed to load files” are separate states.
 
 **Accessible labels:** “src/server.rs, modified, 12 code sections” rather than icons only.
@@ -123,7 +123,7 @@ Code sections in src/server.rs (12)
 - **Concepts:** targeted knowledge and annotations; valid empty result can state “No additional concepts needed”.
 - **Deep:** detailed, source-grounded teaching. Prerequisite is actual Overview in file mode, actual Changes in diff mode.
 
-**Component:** genuine ARIA tablist with Overview, Changes where eligible, Concepts, Deep. **No Previous/Next explanation buttons.** Manual activation: Left/Right, Home/End move focus only; Enter/Space activate. Clicking/activating tab may load cached data, **never infer**.
+**Component:** genuine ARIA tablist with Overview, Changes where eligible, Concepts, Deep. **No Previous/Next explanation buttons.** Manual activation: Left/Right, Home/End move focus only; Enter/Space activate. Selecting or activating a tab is strictly client-side navigation: it performs **no network request** and **no model inference**, switching views using local client state. Only explicit user activation of Generate or Regenerate initiates inference.
 
 **Panel status machine:** not generated → checking saved result → ready/cached OR missing → user Generate → queued/generating → ready OR error; separate stale and policy-mismatch states. “Generated under different settings” preserves old explanation with its true policy instead of relabeling.
 
@@ -225,4 +225,4 @@ Desktop: Explorer left, selected Reader right. Logical DOM order starts with glo
 
 ## Explicitly deferred
 
-Continuous multi-section reader; cross-file Next/Previous; automatic scrolling highlight following source annotations; custom shortcuts; per-explanation model selection; in-browser credential editing; full IDE/editor. These are not part of first-release acceptance unless separate approved designs and tests are added.
+Manual NVDA verification and native zoom checks are explicitly deferred (scheduled for later, not passed). Continuous multi-section reader; cross-file Next/Previous; automatic scrolling highlight following source annotations; custom shortcuts; per-explanation model selection; in-browser credential editing; full IDE/editor. Legacy code and safeguards are retained at `/legacy` and `/sessions/{id}/legacy` until stabilization.

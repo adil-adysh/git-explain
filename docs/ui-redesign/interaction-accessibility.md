@@ -1,12 +1,12 @@
 # Interaction, focus and accessibility contract
 
-> **Status:** Proposed implementation contract. Applies to every screen in [screens.md](screens.md), every responsive layout and both standalone and daemon modes.
+> **Status:** Active default contract (`/` standalone, `/sessions/{id}` daemon; `/workspace` aliases). Legacy fallback retained at `/legacy` and `/sessions/{id}/legacy` until stabilization. Manual NVDA and native zoom checks are explicitly deferred, not passed. Applies to every screen in [screens.md](screens.md), every responsive layout and both standalone and daemon modes.
 
 ## Non-negotiable rules
 
-1. **Navigation is not generation.** File/section selection, filters, browser history, view tabs, appearance/profile changes, cache lookups and source prefetch must not contact the model endpoint. Only an explicit Generate/Regenerate gesture may start inference (Deep may perform its documented prerequisite sequence as part of that one explicit action).
+1. **Navigation is not generation.** File/section selection, filters, browser history, view tabs, appearance/profile changes, cache lookups and source prefetch must not contact the model endpoint. Selecting or activating an explanation tab is strictly client navigation and performs no network request and no inference. Only an explicit Generate/Regenerate gesture may start inference (Deep may perform its documented prerequisite sequence as part of that one explicit action).
 2. **Focus is not selection.** For files, focus can travel without selecting; for explanation tabs, arrow keys move focus while Enter/Space activates.
-3. **Exactly one selected file and zero or one selected section.** Reader must never display a different section under the active file heading.
+3. **Exactly one selected file and zero or one selected section.** Reader must never display a different section under the active file heading. Selecting a file automatically selects its first code section (or restores the last-read section for that file within the current immutable workspace); empty files have no source.
 4. **No silent context switch.** Previous/Next sections stop at the current file boundary. Filter changes do not jump to a different section. Changing top-level destinations preserves Explore state.
 5. **Native semantics first.** Navigation via links, actions via buttons, fields with labels, summaries via headings/lists. Avoid invented keybindings and custom ARIA tree.
 6. **One concise live status region.** No hundreds of `role=status` elements; permanent error messages are discoverable on their own headings.
@@ -48,7 +48,7 @@ This is illustrative DOM, not code to copy verbatim. Heading levels must reflect
 | Explorer search | Typing, Esc if opted in | Filter; Esc may clear only when documented and must not break expected browser behavior |
 | Explanation tablist | Left/Right Arrow | Move focus to previous/next tab, wrapping, with **no activation** |
 | Explanation tablist | Home / End | Move focus to first/last tab |
-| Explanation tablist | Enter / Space | Activate focused tab; cache read allowed; model call forbidden |
+| Explanation tablist | Enter / Space | Activate focused tab in client state; network request and model call forbidden |
 | Explanation tablist | Tab | Leave tablist for active tab panel / first focusable control |
 | Source block | Standard selection and scroll keys | Read/copy text; no trapped arrows or custom editor mode |
 | Customize disclosure | Enter / Space | Native `summary` open/close |
@@ -63,7 +63,7 @@ This is illustrative DOM, not code to copy verbatim. Heading levels must reflect
 | Trigger | Immediately after | On completion | On failure |
 | --- | --- | --- | --- |
 | Open app | Normal document/skip link | No automatic movement due to index completion | Error accessible by heading/live alert when necessary |
-| Select file | Preserve focus on link or move to named section-list heading per tested consistent design | “Code sections in …” becomes discoverable | Focus stays recoverable; Retry present |
+| Select file | Automatically selects first section (or restores last-read section in workspace); loads metadata and only selected source | Focus moves to Reader section heading once source is ready; adds one history entry with section | Focus stays recoverable; Retry present; invalid/stale explicit section ID yields error |
 | Select section | Keep a stable focus reference while loading; Reader can show loading state | Focus selected Reader heading **once**, for explicit selection | Focus error heading once, with Retry, not a dead control |
 | Previous/Next | Same as section selection | Heading says section name, position and file | Focus error heading |
 | Activate explanation tab | Focus stays on selected tab | Panel updates; focus stays on tab | Status announced; tab stays focused |
@@ -78,8 +78,10 @@ This is illustrative DOM, not code to copy verbatim. Heading levels must reflect
 
 ## File vs section selection
 
-- Selecting **file** updates the navigation list, **not** an implicit first-section source load. If a valid remembered selection in that file exists, it can be restored on browser-history navigation, not on every new file click.
-- Selecting **section** loads only that section.
+- Initial app load retrieves only metadata (file and section index), not source.
+- Selecting a **file** automatically selects its first code section, or restores the last-read section for that file within the current immutable workspace. Empty files have no source and display an empty state. Invalid or stale explicit section IDs remain errors.
+- Selecting a file loads only that selected section's source; it triggers zero model generation and adds one browser history entry including the selected section. Once the source is ready, focus moves to the Reader heading once.
+- Selecting an explicit **section** loads only that section's source; zero inference.
 - If a filter excludes the selected section, keep its Reader visible and label “Not in current filter”. Previous/Next disabled until the user selects a visible section or clears filter.
 - When no filters exclude it, Previous/Next traverses the visible current-file list only. Disable at both ends. Label section destination via accessible name or `aria-describedby`.
 - The underlying source order and list membership are defined by the backend snapshot. Avoid sorting by translated/localized displayed labels.
@@ -90,7 +92,7 @@ This is illustrative DOM, not code to copy verbatim. Heading levels must reflect
 - Tabs are buttons with `role="tab"`, `aria-selected`, `aria-controls`, roving `tabindex`. Active panel has `role="tabpanel"` + `aria-labelledby`.
 - Arrow keys only move focus; Enter/Space activates. This prevents network latency from hijacking arrows.
 - `Changes` is omitted or disabled with explanation in contexts where it is not supported; file mode never presents a working Changes tab.
-- Selecting a tab may issue a **cached-result lookup** for just that view/policy/section; never send a generation request.
+- Selecting or activating a tab is strictly client navigation and performs **no network request** and **no model inference**; views switch using in-memory state.
 - Explain that changing preferences does not mutate existing generated text and may cause another cache variant to become relevant.
 - Keep panel content in the normal reading order, with a focusable panel when required by the pattern.
 - No Previous/Next explanation buttons, and no auto-slide/carousel model.
@@ -99,13 +101,16 @@ References: [APG Tabs](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/), [manual 
 
 ## URLs, navigation and persistence
 
-**Proposed conceptual route model** (final shape depends on existing CLI/daemon mounting):
-- `/sessions/:id/explore?file=<opaque-key>&section=<opaque-key>&view=overview`
-- `/sessions/:id/personalization`
-- `/sessions/:id/settings`
-- Standalone routes under local root equivalent to these logical destinations.
+**Default routes, supported aliases and legacy fallback:**
+- Standalone default: `/` (supported alias: `/workspace`; legacy fallback: `/legacy`).
+- Daemon default: `/sessions/:id` (supported alias: `/sessions/:id/workspace`; legacy fallback: `/sessions/:id/legacy`).
+- Deep links / sub-routes:
+  - Standalone: `/?file=<opaque-key>&section=<opaque-key>&view=overview`
+  - Daemon: `/sessions/:id?file=<opaque-key>&section=<opaque-key>&view=overview`
+  - Top-level destinations: `/personalization`, `/settings` (standalone) or `/sessions/:id/personalization`, `/sessions/:id/settings` (daemon).
+- Legacy renderer code and safeguards are retained until stabilization.
 
-Do **not** place raw local filesystem paths, source code, credentials, control tokens, unsaved preferences or model prompts into shareable URL parameters. Encode/decode stable opaque identifiers. Validate any incoming route against the current snapshot. Use browser `pushState` for deliberate section/destination navigation; use `replaceState` for non-historical changes like filter query when appropriate. Tab selection history behavior must be deterministic: prefer `replaceState` for transient view selection so Back traverses code sections and destinations rather than every explanation tab; preserve deep-link capability.
+Do **not** place raw local filesystem paths, source code, credentials, control tokens, unsaved preferences or model prompts into shareable URL parameters. Encode/decode stable opaque identifiers. Validate any incoming route against the current snapshot. Selecting a file adds one history entry (`pushState`) including the selected section. Use browser `pushState` for deliberate section/destination navigation; use `replaceState` for non-historical changes like filter query when appropriate. Tab selection history behavior must be deterministic: prefer `replaceState` for transient view selection so Back traverses code sections and destinations rather than every explanation tab; preserve deep-link capability.
 
 State lifetime:
 - In URL: destination, selected file/section, active view when safe.
@@ -139,7 +144,7 @@ Visual two columns must remain a coherent DOM sequence: header → Explorer → 
 
 ## Screen-reader test baseline
 
-Manual matrix: NVDA + Windows + Edge (Chromium), plus at least one additional Chromium-based browser; test browse mode and focus mode. Review keyboard-only without screen reader separately. Automated axe/Playwright checks cannot prove spoken announcements, manual-tab timing, familiar source reading or focus stability. See [test plan](test-plan.md).
+Manual matrix: NVDA + Windows + Edge (Chromium), plus at least one additional Chromium-based browser; test browse mode and focus mode. Review keyboard-only without screen reader separately. Manual NVDA and native zoom checks are explicitly deferred for later execution, not passed. Automated axe/Playwright checks cannot prove spoken announcements, manual-tab timing, familiar source reading or focus stability. See [test plan](test-plan.md).
 
 ## Accessibility references
 

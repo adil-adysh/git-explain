@@ -124,7 +124,7 @@ const startApp = async ({ directory, modelUrl, mode, source, cache = false, reus
 };
 
 const openConcepts = async (page, appUrl) => {
-  await page.goto(appUrl);
+  await page.goto(`${appUrl}/legacy`);
   const article = page.locator('article').filter({ has: page.getByRole('heading', { name: 'calculate', exact: true }) });
   await article.getByRole('tab', { name: 'Concepts', exact: true }).click();
   return article;
@@ -402,7 +402,7 @@ for (const mode of ['file', 'diff']) {
     git(repo.directory, 'commit', '-qm', 'second file');
     if (mode === 'diff') await writeFile(path.join(repo.directory, 'src/other.rs'), 'fn secondary() { let value = 2; }\n');
     const app = await startApp({ ...repo, modelUrl: mock.url, mode });
-    await page.goto(app.url);
+    await page.goto(`${app.url}/legacy`);
     await expect(page.getByRole('heading', { name: 'secondary', exact: true })).toBeVisible();
     const search = page.getByRole('searchbox', { name: 'Filter files and code sections' });
     await search.fill('CALCULATE');
@@ -445,7 +445,7 @@ for (const mode of ['file', 'diff']) {
     git(repo.directory, 'commit', '-qm', 'second file');
     if (mode === 'diff') await writeFile(path.join(repo.directory, 'src/other.rs'), 'fn secondary() { let value = 2; }\n');
     const app = await startApp({ ...repo, modelUrl: mock.url, mode });
-    await page.goto(app.url);
+    await page.goto(`${app.url}/legacy`);
     const results = await page.evaluate(() => Promise.all([...document.querySelectorAll('[data-layer=concepts]')].map(async tab => {
       const response = await fetch(tab.dataset.endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tab.dataset.generation ? { generation: Number(tab.dataset.generation) } : {}) });
       return response.json();
@@ -665,7 +665,7 @@ test('learning controls change pending settings without starting a model request
   const mock = await startMock('valid');
   const repo = await createRepository();
   const app = await startApp({ ...repo, modelUrl: mock.url, mode: 'file' });
-  await page.goto(app.url);
+  await page.goto(`${app.url}/legacy`);
   await page.locator('#learning-settings > summary').click();
   await expect(page.locator('#learning-profile')).toBeEnabled();
   await page.locator('#learning-settings fieldset [data-preference="focus"]').selectOption('execution');
@@ -835,7 +835,7 @@ test('feedback-moves concepts between known and learning lists preserving unrela
   const mock = await startMock('valid');
   const repo = await createRepository();
   const app = await startApp({ ...repo, modelUrl: mock.url, mode: 'file' });
-  await page.goto(app.url);
+  await page.goto(`${app.url}/legacy`);
   await expect(page.locator('#learning-profile')).toBeEnabled();
 
   const profileName = 'Feedback Movement';
@@ -956,7 +956,7 @@ for (const [scenario, conflictError] of [
     const mock = await startMock('valid');
     const repo = await createRepository();
     const app = await startApp({ ...repo, modelUrl: mock.url, mode: 'file' });
-    await page.goto(app.url);
+    await page.goto(`${app.url}/legacy`);
     await expect(page.locator('#learning-profile')).toBeEnabled();
 
     const profileName = 'Conflict Draft';
@@ -1058,7 +1058,7 @@ test('profile-clone preserves language overrides and explicitly inherited scalar
     data: { revision: current.revision, config: current.config },
   });
   expect(seeded.ok()).toBe(true);
-  await page.goto(app.url);
+  await page.goto(`${app.url}/legacy`);
   await expect(page.locator('#learning-profile')).toHaveValue('Original');
   await page.locator('#learning-settings > summary').click();
   await page.getByText('Customize saved preferences', { exact: true }).click();
@@ -1096,7 +1096,7 @@ test('inherited-lists: preserved when editing saved preferences and profiles', a
   const mock = await startMock('valid');
   const repo = await createRepository();
   const app = await startApp({ ...repo, modelUrl: mock.url, mode: 'file' });
-  await page.goto(app.url);
+  await page.goto(`${app.url}/legacy`);
   await expect(page.locator('#learning-profile')).toBeEnabled();
 
   const profileName = 'Inherited Profile';

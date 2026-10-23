@@ -12,7 +12,7 @@ use crate::{
 use anyhow::Result;
 use axum::http::{HeaderMap, StatusCode};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::{Html, Json},
     routing::{get, post},
     Router,
@@ -21,6 +21,8 @@ use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
 struct StateData {
+    repository_label: String,
+    workspace: std::sync::OnceLock<crate::workspace::Workspace>,
     learning: LearningRuntime,
     generation_lock: tokio::sync::Mutex<()>,
     change_set: Mutex<ChangeSet>,
@@ -31,6 +33,8 @@ struct StateData {
     explanation: ExplanationConfig,
 }
 struct FileStateData {
+    repository_label: String,
+    workspace: std::sync::OnceLock<crate::workspace::Workspace>,
     learning: LearningRuntime,
     generation_lock: tokio::sync::Mutex<()>,
     analysis: Mutex<FileAnalysis>,
@@ -47,6 +51,7 @@ struct SnapshotRequest {
     learning: Option<crate::learning::LearningSelection>,
 }
 pub async fn serve(
+    repository_label: String,
     mut change_set: ChangeSet,
     provider: impl ExplanationProvider + 'static,
     config: ServerConfig,
@@ -60,6 +65,8 @@ pub async fn serve(
         runtime::hydrate(&mut change_set, cache_ref, &model, &reader, &explanation);
     }
     let state = Arc::new(StateData {
+        repository_label,
+        workspace: Default::default(),
         learning,
         generation_lock: tokio::sync::Mutex::new(()),
         change_set: Mutex::new(change_set),
@@ -70,7 +77,20 @@ pub async fn serve(
         explanation,
     });
     let app = Router::new()
-        .route("/", get(index))
+        .route("/", get(crate::workspace_assets::shell))
+        .route("/legacy", get(index))
+        .route("/workspace", get(crate::workspace_assets::shell))
+        .route(
+            "/ui-assets/workspace.js",
+            get(crate::workspace_assets::script),
+        )
+        .route(
+            "/ui-assets/workspace.css",
+            get(crate::workspace_assets::style),
+        )
+        .route("/api/ui/v1/workspace", get(workspace_summary))
+        .route("/api/ui/v1/index", get(workspace_index))
+        .route("/api/ui/v1/sections/{id}", get(workspace_section))
         .route("/api/learning", get(learning_inspect).put(learning_save))
         .route("/api/learning/resolve", post(learning_resolve))
         .route("/api/learning/results", post(learning_results))
@@ -101,6 +121,7 @@ pub async fn serve(
 }
 
 pub async fn serve_file(
+    repository_label: String,
     mut analysis: FileAnalysis,
     provider: impl ExplanationProvider + 'static,
     config: ServerConfig,
@@ -114,6 +135,8 @@ pub async fn serve_file(
         analysis.hydrate(cache_ref, &model, &reader, &explanation);
     }
     let state = Arc::new(FileStateData {
+        repository_label,
+        workspace: Default::default(),
         learning,
         generation_lock: tokio::sync::Mutex::new(()),
         analysis: Mutex::new(analysis),
@@ -124,7 +147,20 @@ pub async fn serve_file(
         explanation,
     });
     let app = Router::new()
-        .route("/", get(file_index))
+        .route("/", get(crate::workspace_assets::shell))
+        .route("/legacy", get(file_index))
+        .route("/workspace", get(crate::workspace_assets::shell))
+        .route(
+            "/ui-assets/workspace.js",
+            get(crate::workspace_assets::script),
+        )
+        .route(
+            "/ui-assets/workspace.css",
+            get(crate::workspace_assets::style),
+        )
+        .route("/api/ui/v1/workspace", get(file_workspace_summary))
+        .route("/api/ui/v1/index", get(file_workspace_index))
+        .route("/api/ui/v1/sections/{id}", get(file_workspace_section))
         .route(
             "/api/learning",
             get(file_learning_inspect).put(file_learning_save),
@@ -152,6 +188,65 @@ pub async fn serve_file(
     }
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn diff_workspace(state: &StateData) -> &crate::workspace::Workspace {
+    state
+        .workspace
+        .get_or_init(|| crate::workspace::Workspace::from_diff(&state.change_set.lock().unwrap()))
+}
+fn file_workspace(state: &FileStateData) -> &crate::workspace::Workspace {
+    state
+        .workspace
+        .get_or_init(|| crate::workspace::Workspace::from_file(&state.analysis.lock().unwrap()))
+}
+async fn workspace_summary(State(state): State<Arc<StateData>>) -> Json<serde_json::Value> {
+    Json(crate::workspace_api::summary(
+        diff_workspace(&state),
+        None,
+        &state.model,
+        &state.repository_label,
+    ))
+}
+async fn workspace_index(State(state): State<Arc<StateData>>) -> Json<serde_json::Value> {
+    Json(crate::workspace_api::index(
+        diff_workspace(&state),
+        None,
+        &state.model,
+        &state.repository_label,
+    ))
+}
+async fn workspace_section(
+    Path(id): Path<String>,
+    Query(query): Query<crate::workspace_api::SectionQuery>,
+    State(state): State<Arc<StateData>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    crate::workspace_api::section(diff_workspace(&state), &id, query)
+}
+async fn file_workspace_summary(
+    State(state): State<Arc<FileStateData>>,
+) -> Json<serde_json::Value> {
+    Json(crate::workspace_api::summary(
+        file_workspace(&state),
+        None,
+        &state.model,
+        &state.repository_label,
+    ))
+}
+async fn file_workspace_index(State(state): State<Arc<FileStateData>>) -> Json<serde_json::Value> {
+    Json(crate::workspace_api::index(
+        file_workspace(&state),
+        None,
+        &state.model,
+        &state.repository_label,
+    ))
+}
+async fn file_workspace_section(
+    Path(id): Path<String>,
+    Query(query): Query<crate::workspace_api::SectionQuery>,
+    State(state): State<Arc<FileStateData>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    crate::workspace_api::section(file_workspace(&state), &id, query)
 }
 
 async fn file_index(State(state): State<Arc<FileStateData>>) -> Html<String> {
@@ -845,6 +940,8 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let state = Arc::new(FileStateData {
+            repository_label: "Test repository".into(),
+            workspace: Default::default(),
             learning: LearningRuntime::new(
                 config.paths.clone(),
                 config.reader.clone(),
@@ -949,6 +1046,8 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let state = Arc::new(StateData {
+            repository_label: "Test repository".into(),
+            workspace: Default::default(),
             learning: LearningRuntime::new(
                 config.paths.clone(),
                 config.reader.clone(),
@@ -1039,6 +1138,8 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let state = Arc::new(FileStateData {
+            repository_label: "Test repository".into(),
+            workspace: Default::default(),
             learning: LearningRuntime::new(
                 config.paths.clone(),
                 config.reader.clone(),
@@ -1094,6 +1195,8 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let state = Arc::new(StateData {
+            repository_label: "Test repository".into(),
+            workspace: Default::default(),
             learning: LearningRuntime::new(
                 config.paths.clone(),
                 config.reader.clone(),

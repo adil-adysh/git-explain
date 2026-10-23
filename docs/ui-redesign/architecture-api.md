@@ -13,6 +13,12 @@
 - Existing `ChangeSet::json` includes change IDs, identity, language and start/end lines **but not full unit source**; it may not represent the required full unchanged-section index for a selected diff file.
 - Existing generation routes are `POST` and include session/learning context. Do not rewrite provider, cache identity or serialization logic just for the frontend.
 
+## Default entry points
+
+The default shell is served at `/` for standalone file/diff and `/sessions/{id}` for daemon sessions. The `/workspace` and `/sessions/{id}/workspace` aliases remain supported. Legacy rendering is available only through explicit `/legacy` and `/sessions/{id}/legacy` fallback routes. The daemon route parser recognizes both default and alias paths before any API request.
+
+Selecting a file chooses its first section or the last-read valid section in that file. This memory is workspace-local and cleared when reloading the index, so stale section IDs are never silently remapped across source identities. One navigation entry contains the file and selected section; initial app startup still fetches metadata only. Empty files have a textual no-sections state and no source request. User-requested cutover proceeds with manual NVDA/zoom validation deferred and recorded in the acceptance ledger.
+
 ## Responsibility split
 
 | Rust/Axum owns | Svelte owns |
