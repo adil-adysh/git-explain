@@ -87,6 +87,7 @@ pub struct LearningSelection {
     pub clear_profile: bool,
     pub use_repository_defaults: bool,
     pub session: LearningPreferences,
+    pub section: LearningPreferences,
     pub overrides: LearningPreferences,
 }
 impl LearningSelection {
@@ -253,6 +254,7 @@ impl LearningContext {
             }
         }
         apply(&mut sources, &selection.session, "session preferences")?;
+        apply(&mut sources, &selection.section, "current section")?;
         apply(&mut sources, &selection.overrides, "current view")?;
         Ok(sources)
     }
@@ -288,6 +290,7 @@ impl LearningContext {
             }
         }
         p.overlay(&selection.session);
+        p.overlay(&selection.section);
         p.overlay(&selection.overrides);
         Ok(ResolvedExplanationPolicy {
             language: language.clone(),
@@ -527,6 +530,36 @@ mod tests {
         ] {
             assert!(saved.contains(comment), "lost {comment}: {saved}");
         }
+    }
+
+    #[test]
+    fn section_preferences_merge_fieldwise_below_current_view() {
+        let context = context();
+        let mut selection: LearningSelection = serde_json::from_value(serde_json::json!({
+            "session": { "focus": "syntax", "known_concepts": ["ownership"] },
+            "section": { "language_help": "explain", "focus": "execution", "known_concepts": [] },
+            "overrides": { "detail": "detailed", "focus": "reasoning" }
+        }))
+        .unwrap();
+        let policy = context.resolve("rust", &selection).unwrap();
+        assert_eq!(policy.language_help, LanguageHelp::Explain);
+        assert_eq!(policy.focus, Focus::Reasoning);
+        assert_eq!(policy.detail, Detail::Detailed);
+        assert!(policy.known_concepts.is_empty());
+        let provenance = context.provenance("rust", &selection).unwrap();
+        assert_eq!(provenance["language_help"], "current section");
+        assert_eq!(provenance["focus"], "current view");
+        selection.overrides = LearningPreferences::default();
+        assert_eq!(
+            context.resolve("rust", &selection).unwrap().focus,
+            Focus::Execution
+        );
+        let other = LearningSelection::default();
+        assert_ne!(context.resolve("rust", &other).unwrap().id(), policy.id());
+        assert_eq!(
+            context.resolve("rust", &selection).unwrap().known_concepts,
+            Vec::<String>::new()
+        );
     }
 
     #[test]
