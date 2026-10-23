@@ -34,10 +34,11 @@ for (const mode of ['file', 'diff', 'daemon']) {
     await expect(page.getByRole('link', { name: /src\/lib.rs/ })).toBeVisible();
     expect(app.requests.filter(r => r.url.includes('/ui/v1/sections/'))).toHaveLength(0);
     await page.getByRole('link', { name: /src\/lib.rs/ }).click();
-    await expect(page.getByRole('link', { name: /spare.*function/ })).toBeVisible();
     await expect(page.locator('[data-source-view]')).toBeVisible();
     expect(app.requests.filter(r => r.url.includes('/ui/v1/sections/'))).toHaveLength(1);
     await expect(page.getByRole('heading', { name: /lib.rs.*calculate/ })).toBeFocused();
+    if (mode !== 'file') await page.getByRole('button', { name: 'All', exact: true }).click();
+    await expect(page.getByRole('link', { name: /spare.*function/ })).toBeVisible();
     await expect(page.locator('[data-source-view]')).toHaveCount(1);
     expect(app.requests.filter(r => r.url.includes('/ui/v1/sections/'))).toHaveLength(1);
     await page.getByRole('link', { name: /spare.*function/ }).click();
@@ -62,6 +63,55 @@ test('workspace filters retain reader and section navigation stops within file',
   await expect(page.getByRole('button', { name: /Next section/ })).toBeDisabled();
   expect(await modelCalls(app.mock)).toBe(0);
 });
+
+for (const mode of ['file', 'diff', 'daemon']) {
+  test(`workspace ${mode}: file totals distinguish changed sections from filtered sections`, async ({ page }) => {
+    const app = await workspace(page, mode);
+    const file = page.getByRole('link', { name: /src\/lib.rs/ });
+    await expect(file).toContainText('2 sections');
+    if (mode !== 'file') await expect(file).toContainText('1 changed · 1 unchanged');
+    await selectCalculate(page);
+    if (mode !== 'file') await page.getByRole('button', { name: 'All', exact: true }).click();
+    await expect(page.getByText('Showing 2 of 2 code sections', { exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: /spare.*function/ })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Filter sections' }).fill('calculate');
+    await expect(page.getByText('Showing 1 of 2 code sections', { exact: true })).toBeVisible();
+    await expect(page.getByText('Section 1 of 1 shown (2 total)', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Clear section filter' }).click();
+    await expect(page.getByText('Showing 2 of 2 code sections', { exact: true })).toBeVisible();
+    if (mode !== 'file') {
+      await page.getByRole('button', { name: 'Changed', exact: true }).click();
+      await expect(page.getByText('Showing 1 of 2 code sections', { exact: true })).toBeVisible();
+      await expect(page.getByRole('link', { name: /spare.*function/ })).toHaveCount(0);
+      await expect(file).toContainText('2 sections');
+      await expect(file).toContainText('1 changed · 1 unchanged');
+      await page.getByRole('button', { name: 'All', exact: true }).click();
+      await expect(page.getByRole('link', { name: /spare.*function/ })).toBeVisible();
+    }
+    expect(await modelCalls(app.mock)).toBe(0);
+  });
+}
+
+for (const mode of ['file', 'diff', 'daemon']) {
+  test(`workspace ${mode}: section filter defaults to changed only for diffs`, async ({ page }) => {
+    const app = await workspace(page, mode);
+    await selectCalculate(page);
+    await expect(page.getByRole('button', { name: mode === 'file' ? 'All' : 'Changed', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    if (mode !== 'file') {
+      await expect(page.getByRole('link', { name: /spare.*function/ })).toHaveCount(0);
+      await expect(page.getByText('Showing 1 of 2 code sections', { exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'All', exact: true }).click();
+      await page.getByRole('link', { name: /spare.*function/ }).click();
+      await page.reload();
+      await expect(page.getByRole('button', { name: 'Changed', exact: true })).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByRole('heading', { name: /lib.rs.*spare/ })).toBeVisible();
+      await expect(page.getByText('Not in current filter', { exact: true })).toBeVisible();
+      await page.getByRole('link', { name: /src\/lib.rs/ }).click();
+      await expect(page.getByRole('heading', { name: /lib.rs.*calculate/ })).toBeFocused();
+    } else await expect(page.getByRole('link', { name: /spare.*function/ })).toBeVisible();
+    expect(await modelCalls(app.mock)).toBe(0);
+  });
+}
 
 test('workspace destinations preserve Explore selection and change appearance without requests', async ({ page }) => {
   const app = await workspace(page);
@@ -255,8 +305,8 @@ test('workspace feedback save completes for its original section after navigatio
   expect(await modelCalls(app.mock)).toBe(1);
 });
 
-for (const mode of ['file', 'diff']) {
-  test(`workspace ${mode}: Deep prepares its matching prerequisite and invalidates only dependencies`, async ({ page }) => {
+for (const mode of ['file', 'diff', 'daemon']) {
+  test(`workspace ${mode}: Deep uses one request and later context invalidates only dependencies`, async ({ page }) => {
     const app = await workspace(page, mode);
     await selectCalculate(page);
     await page.getByRole('tab', { name: 'Concepts', exact: true }).click();
@@ -266,11 +316,10 @@ for (const mode of ['file', 'diff']) {
     expect(await modelCalls(app.mock)).toBe(1);
     await page.getByRole('button', { name: 'Generate Deep', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Regenerate Deep', exact: true })).toBeEnabled();
-    expect(await modelCalls(app.mock)).toBe(3);
+    expect(await modelCalls(app.mock)).toBe(2);
     await page.getByRole('tab', { name: mode === 'file' ? 'Overview' : 'Changes', exact: true }).click();
-    await page.getByRole('button', { name: 'Check saved explanation', exact: true }).click();
-    await page.getByRole('button', { name: `Regenerate ${mode === 'file' ? 'Overview' : 'Changes'}`, exact: true }).click();
-    await expect.poll(() => modelCalls(app.mock)).toBe(4);
+    await page.getByRole('button', { name: `Generate ${mode === 'file' ? 'Overview' : 'Changes'}`, exact: true }).click();
+    await expect.poll(() => modelCalls(app.mock)).toBe(3);
     await page.getByRole('tab', { name: 'Concepts', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Regenerate Concepts', exact: true })).toBeEnabled();
     await page.getByRole('tab', { name: 'Deep', exact: true }).click();
@@ -313,14 +362,34 @@ test('workspace section and view overrides remain independent and preserve used 
   await page.getByLabel('Detail', { exact: true }).selectOption('detailed');
   await page.getByRole('button', { name: 'Apply temporary override' }).click();
   await page.getByRole('button', { name: 'Generate Overview', exact: true }).click();
-  await expect(page.getByText('Used for displayed result: explain language help · reasoning focus · detailed detail', { exact: true })).toBeVisible();
+  await page.getByText('Explanation preferences', { exact: true }).click();
+  await expect(page.getByText('Used for this explanation: Explain language features · Reasoning focus · Detailed explanation', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Concepts', exact: true }).click();
   await page.getByRole('button', { name: 'Check saved explanation', exact: true }).click();
-  await expect(page.getByText('Pending settings: explain language help · execution focus · balanced detail', { exact: true })).toBeVisible();
+  await expect(page.getByText('For the next explanation: Explain language features · Execution focus · Standard detail', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Overview', exact: true }).click();
   await page.getByRole('button', { name: 'Reset this scope', exact: true }).click();
-  await expect(page.getByText('Pending settings: explain language help · execution focus · balanced detail', { exact: true })).toBeVisible();
-  await expect(page.getByText('Used for displayed result: explain language help · reasoning focus · detailed detail', { exact: true })).toBeVisible();
+  await expect(page.getByText('For the next explanation: Explain language features · Execution focus · Standard detail', { exact: true })).toBeVisible();
+  await expect(page.getByText('Used for this explanation: Explain language features · Reasoning focus · Detailed explanation', { exact: true })).toBeVisible();
+  expect(await modelCalls(app.mock)).toBe(1);
+});
+
+test('workspace explanation preferences are optional details without a misleading pending notice', async ({ page }) => {
+  const app = await workspace(page);
+  await selectCalculate(page);
+  await expect(page.getByRole('button', { name: 'Generate Overview', exact: true })).toBeEnabled();
+  await expect(page.getByRole('tabpanel')).not.toContainText('Pending settings');
+  const next = page.getByText(/^For the next explanation:/);
+  await expect(next).not.toBeVisible();
+  await page.getByText('Explanation preferences', { exact: true }).click();
+  await expect(next).toBeVisible();
+  expect(await modelCalls(app.mock)).toBe(0);
+  await page.getByRole('button', { name: 'Generate Overview', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Regenerate Overview', exact: true })).toBeEnabled();
+  await expect(next).toHaveCount(0);
+  await expect(page.getByText(/^Used for this explanation:/)).toBeVisible();
+  await page.getByText('Explanation preferences', { exact: true }).click();
+  await expect(page.getByText(/^Used for this explanation:/)).not.toBeVisible();
   expect(await modelCalls(app.mock)).toBe(1);
 });
 
@@ -506,6 +575,7 @@ for (const mode of ['file', 'diff', 'daemon']) {
       await page.getByRole('tab', { name: kind, exact: true }).click();
       await expect(annotations).toBeVisible();
     }
+    if (mode !== 'file') await page.getByRole('button', { name: 'All', exact: true }).click();
     await page.getByRole('link', { name: /spare.*function/ }).click();
     await expect(page.locator('.annotated-line')).toHaveCount(0);
     if (mode !== 'file') {
@@ -513,5 +583,25 @@ for (const mode of ['file', 'diff', 'daemon']) {
       await expect(page.getByRole('tab')).toHaveCount(0);
     }
     expect(await modelCalls(app.mock)).toBe(mode === 'file' ? 1 : 2);
+  });
+}
+
+for (const mode of ['file', 'diff', 'daemon']) {
+  test(`workspace ${mode}: invalid source evidence uses one request and explicit retry`, async ({ page }) => {
+    const app = await workspace(page, mode, 'invalid_evidence_then_valid');
+    await selectCalculate(page);
+    await page.getByRole('tab', { name: 'Concepts', exact: true }).click();
+    await page.getByRole('button', { name: 'Generate Concepts', exact: true }).click();
+    await expect(page.getByRole('tabpanel')).toContainText('The explanation did not match the selected source');
+    expect(await modelCalls(app.mock)).toBe(1);
+    await expect(page.getByRole('list', { name: 'Source annotations' })).toHaveCount(0);
+    await expect(page.locator('[data-source-view]')).toHaveCount(1);
+    await page.getByRole('tab', { name: 'Overview', exact: true }).click();
+    await page.getByRole('tab', { name: 'Concepts', exact: true }).click();
+    expect(await modelCalls(app.mock)).toBe(1);
+    await page.getByRole('button', { name: 'Generate Concepts', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Regenerate Concepts', exact: true })).toBeEnabled();
+    await expect(page.getByRole('list', { name: 'Source annotations' })).toBeVisible();
+    expect(await modelCalls(app.mock)).toBe(2);
   });
 }

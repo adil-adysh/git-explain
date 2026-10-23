@@ -163,22 +163,29 @@ test('file mode normalizes duplicate annotations and renders source once', async
 });
 
 for (const scenario of ['malformed_then_valid', 'wrong_kind_then_valid', 'invalid_region_then_valid']) {
-  test(`file mode retries ${scenario.replaceAll('_', ' ')}`, async ({ page }) => {
+  test(`file mode explicitly retries ${scenario.replaceAll('_', ' ')}`, async ({ page }) => {
     const mock = await startMock(scenario);
     const repo = await createRepository();
     const app = await startApp({ ...repo, modelUrl: mock.url, mode: 'file' });
     const article = await openConcepts(page, app.url);
+    await article.locator('[data-generate]').click();
+    await expect(article.locator('.layer-summary')).toContainText(scenario === 'invalid_region_then_valid' ? 'did not match the selected source' : 'could not generate an explanation');
+    await expect(article.locator('.annotation')).toHaveCount(0);
+    expect((await fetch(`${mock.origin}/calls`).then(r => r.json())).calls).toBe(1);
     await generate(article);
-    await expect(article.locator('.annotation')).toHaveCount(1);
+    await expect(article.locator('.annotation')).toHaveCount(3);
     expect((await fetch(`${mock.origin}/calls`).then(r => r.json())).calls).toBe(2);
   });
 }
 
-test('diff mode retries missing changed-region coverage and renders every source line once', async ({ page }) => {
+test('diff mode explicitly retries missing changed-region coverage and renders every source line once', async ({ page }) => {
   const mock = await startMock('missing_coverage_then_valid');
   const repo = await createRepository();
   const app = await startApp({ ...repo, modelUrl: mock.url, mode: 'diff' });
   const article = await openConcepts(page, app.url);
+  await article.locator('[data-generate]').click();
+  await expect(article.locator('.layer-summary')).toContainText('could not generate an explanation');
+  expect((await fetch(`${mock.origin}/calls`).then(r => r.json())).calls).toBe(1);
   await generate(article);
   await expect(article.locator('.annotation')).toHaveCount(2);
   expect((await fetch(`${mock.origin}/calls`).then(r => r.json())).calls).toBe(2);
@@ -199,10 +206,10 @@ test('delayed generation keeps progress visible until the response arrives', asy
   await expect(article.locator('[data-generate]')).toHaveText('Generating…');
   await expect(article.locator('.annotation')).toHaveCount(0);
   await expect(article.locator('[data-generate]')).toHaveText('Regenerate explanation');
-  await expect(article.locator('.annotation')).toHaveCount(1);
+  await expect(article.locator('.annotation')).toHaveCount(3);
 });
 
-test('retry failure is stable and leaves source visible', async ({ page }) => {
+test('invalid output is stable without an automatic retry and leaves source visible', async ({ page }) => {
   const mock = await startMock('always_malformed');
   const repo = await createRepository();
   const app = await startApp({ ...repo, modelUrl: mock.url, mode: 'file' });
@@ -211,7 +218,7 @@ test('retry failure is stable and leaves source visible', async ({ page }) => {
   await expect(article.locator('.layer-summary')).toContainText('could not generate an explanation');
   await expect(article.locator('.annotation')).toHaveCount(0);
   await expect(article.locator('.source-code')).toBeVisible();
-  expect((await fetch(`${mock.origin}/calls`).then(r => r.json())).calls).toBe(2);
+  expect((await fetch(`${mock.origin}/calls`).then(r => r.json())).calls).toBe(1);
 });
 
 // Hold transport until the test has navigated, avoiding timing-dependent races.
@@ -239,7 +246,7 @@ test('completion preserves navigation and prevents duplicate generation', async 
   await expect(article.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(article.locator('.annotation')).toHaveCount(0);
   await article.getByRole('tab', { name: 'Concepts', exact: true }).click();
-  await expect(article.locator('.annotation')).toHaveCount(1);
+  await expect(article.locator('.annotation')).toHaveCount(3);
   expect((await fetch(`${mock.origin}/calls`).then(r => r.json())).calls).toBe(1);
 });
 
@@ -250,9 +257,10 @@ test('hide explanations survives redraw and does not reveal inactive Deep', asyn
   const article = await openConcepts(page, app.url);
   await page.getByRole('button', { name: 'Hide explanations', exact: true }).click();
   await generate(article);
-  await expect(article.locator('.annotation')).toBeHidden();
+  await expect(article.locator('.annotation')).toHaveCount(3);
+  await expect.poll(async () => Promise.all((await article.locator('.annotation').all()).map(annotation => annotation.isVisible()))).toEqual([false, false, false]);
   await page.getByRole('button', { name: 'Show explanations', exact: true }).click();
-  await expect(article.locator('.annotation')).toBeVisible();
+  await expect.poll(async () => Promise.all((await article.locator('.annotation').all()).map(annotation => annotation.isVisible()))).toEqual([true, true, true]);
   await expect(article.locator('.deep-section')).toBeHidden();
 });
 
@@ -313,7 +321,7 @@ test('failed background request stays with its view and can be retried', async (
   await expect(article.locator('.layer-summary')).toContainText('try again');
   await page.unroute('**/concepts');
   await generate(article);
-  await expect(article.locator('.annotation')).toHaveCount(1);
+  await expect(article.locator('.annotation')).toHaveCount(3);
 });
 
 test('source and diff controls preserve a single source view when changing explanations', async ({ page }) => {
@@ -368,7 +376,7 @@ test('filtering a larger file selection preserves generated results', async ({ p
   await search.fill('src/module_39.rs');
   await expect(page.locator('article:visible')).toHaveCount(2);
   await search.fill('calculate');
-  await expect(article.locator('.annotation')).toHaveCount(1);
+  await expect(article.locator('.annotation')).toHaveCount(3);
   await expect(article.locator('[data-generate]')).toHaveText('Regenerate explanation');
   expect((await fetch(`${mock.origin}/calls`).then(r => r.json())).calls).toBe(1);
 });

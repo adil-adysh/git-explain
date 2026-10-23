@@ -122,6 +122,7 @@
     try {
       const index = await fetchWorkspaceIndex(route.mode, route.sessionId);
       workspaceIndex = index;
+      statusFilter = index.mode === 'file' ? 'all' : 'changed';
       stale = false;
       sessionGone = false;
       indexLoading = false;
@@ -270,10 +271,11 @@
     detailError = null;
     selectionNotice = '';
     filterText = '';
-    statusFilter = 'all';
+    statusFilter = workspaceIndex?.mode === 'file' ? 'all' : 'changed';
 
     const remembered = lastReadSections.get(file.id);
-    const section = file.sections.find(section => section.id === remembered) ?? file.sections[0];
+    const available = file.sections.filter(section => statusFilter === 'all' || section.change_status !== 'unchanged');
+    const section = available.find(section => section.id === remembered) ?? available[0];
     if (section) { handleSelectSection(section, file); return; }
 
     const url = buildRouteUrl(route.basePath, 'explore', {
@@ -381,6 +383,7 @@
       <FileExplorer
         basePath={route.basePath}
         files={workspaceIndex.files}
+        showChangeCounts={workspaceIndex.mode !== 'file'}
         {selectedFileId}
         {selectedSectionId}
         {filterText}

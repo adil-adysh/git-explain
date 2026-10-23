@@ -69,16 +69,15 @@ export class Explanations {
   }
   private remember(target: Target, kind: Kind, result: ExplanationResult): void {
     const state = this.state(target, kind);
-    const previous = state.variants[result.policy_id];
     state.variants[result.policy_id] = result;
     state.displayed = result;
     state.invalidated = false;
-    if (kind === (target.mode === 'file' ? 'overview' : 'changes') && previous && previous.result_id !== result.result_id) {
+    if (kind === (target.mode === 'file' ? 'overview' : 'changes')) {
       const deep = this.state(target, 'deep');
       for (const [policy, variant] of Object.entries(deep.variants)) {
-        if (variant.prerequisite_id === previous.result_id) delete deep.variants[policy];
+        if (policy === result.policy_id && variant.prerequisite_id !== result.result_id) delete deep.variants[policy];
       }
-      if (deep.displayed?.prerequisite_id === previous.result_id) deep.invalidated = true;
+      if (deep.displayed?.policy_id === result.policy_id && deep.displayed.prerequisite_id !== result.result_id) deep.invalidated = true;
     }
   }
   private async saved(target: Target, kind: Kind, selection: LearningSelection): Promise<ExplanationResult | null> {
@@ -134,15 +133,6 @@ export class Explanations {
     try {
       const pending = await resolveLearning(target.session, target.detail.language, selection);
       if (revision === this.policyRevision) { state.pending = pending; state.input = JSON.stringify(selection); }
-      if (kind === 'deep') {
-        const prerequisite = target.mode === 'file' ? 'overview' : 'changes';
-        const saved = await this.saved(target, prerequisite, selection);
-        if (saved) this.remember(target, prerequisite, saved);
-        else {
-          notify(`Preparing ${kindLabel(prerequisite)} before Deep.`);
-          await this.run(target, prerequisite, selection, false);
-        }
-      }
       await this.run(target, kind, selection, regenerate);
       state.phase = 'ready';
       notify(`${kindLabel(kind)} explanation ready.`);

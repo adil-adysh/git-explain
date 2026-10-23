@@ -137,7 +137,7 @@
         </span>
         {#if !isOutsideFilter && currentIndex >= 0}
           <span class="meta-text position-text">
-            Section {currentIndex + 1} of {filteredSections.length}
+            Section {currentIndex + 1} of {filteredSections.length}{filteredSections.length !== selectedFile.sections.length ? ` shown (${selectedFile.sections.length} total)` : ''}
           </span>
         {/if}
       </div>

@@ -5,6 +5,7 @@
   interface Props {
     basePath: string;
     files: WorkspaceFile[];
+    showChangeCounts: boolean;
     selectedFileId: string | null;
     selectedSectionId: string | null;
     filterText: string;
@@ -20,6 +21,7 @@
   let {
     basePath,
     files,
+    showChangeCounts,
     selectedFileId,
     selectedSectionId,
     filterText,
@@ -39,7 +41,7 @@
   function getFileUrl(file: WorkspaceFile): string {
     return buildRouteUrl(basePath, 'explore', {
       file: file.id,
-      section: file.sections[0]?.id ?? null,
+      section: file.sections.find(section => !showChangeCounts || section.change_status !== 'unchanged')?.id ?? null,
       view: null,
     });
   }
@@ -90,6 +92,7 @@
     {:else}
       <ul class="file-list">
         {#each visibleFiles as file (file.id)}
+          {@const changedCount = file.sections.filter(section => section.change_status !== 'unchanged').length}
           <li class="file-item">
             <a
               href={getFileUrl(file)}
@@ -102,6 +105,7 @@
               <span class="file-status badge badge-{file.status}">{file.status}</span>
               <span class="file-count">
                 {file.section_count} {file.section_count === 1 ? 'section' : 'sections'}
+                {#if showChangeCounts} · {changedCount} changed · {file.sections.length - changedCount} unchanged{/if}
               </span>
             </a>
           </li>
@@ -113,6 +117,7 @@
   {#if selectedFile}
     <div class="explorer-sections-section">
       <h2 class="explorer-heading">Code sections in {selectedFile.path_label}</h2>
+      <p class="section-count">Showing {filteredSections.length} of {selectedFile.sections.length} code sections</p>
 
       <div class="section-filter-container">
         <div class="filter-input-row">

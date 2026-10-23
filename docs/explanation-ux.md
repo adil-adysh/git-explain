@@ -52,7 +52,7 @@ clear no-match message and provide a way to clear the filter.
 - `ExplanationKind::{Overview, Changes, Concepts, Deep}` is part of request identity.
 - Each kind has an independent state slot and cache identity in both file and diff modes.
 - Snapshot and change cache namespaces remain disjoint.
-- Deterministic regions are selected by the application. The model cannot return arbitrary source line numbers.
+- Deterministic regions are selected by the application. The model cannot return arbitrary source line numbers. Changes and Concepts offer statement-bounded targets within each changed block, keeping multiline expressions intact. Coverage is tracked per original changed block, so selecting one useful target does not require annotating every candidate. Unsupported or malformed source retains the original bounded target.
 - Render exactly one active source view per code section. A hidden plain-text representation may support accessibility and client-side redraw, but must not become a second visible source panel.
 - Use one shared executable browser script. Server-rendered inert state is allowed; dynamically injected concept panels and per-mode scripts are not.
 - Regeneration is scoped to the selected kind. If a prerequisite result changes, invalidate only genuinely dependent state such as Deep.
@@ -73,3 +73,12 @@ Exclude unsupported files from file lists and rendered sections. Supported files
 - Source inspection or tests prove there are no injected concept panels and only one executable UI script.
 - Browser tests prove selecting a tab makes no generation request, the action generates only the selected view, cached views switch without inference, and Changes/Concepts replace annotations on the shared source.
 - `task check` and `git diff --check` pass.
+
+
+### Grounding validation
+
+Each annotation includes a validation-only `source_quote`: a nonempty exact substring of its selected region, limited to 240 Unicode characters. Offer a bounded catalog of exact line excerpts in each target and constrain quote choices in the response schema. Reject invalid evidence before displaying or caching the result. For Added/Deleted sections, scope the model patch to the selected section so unrelated changes cannot imply a replacement. Quotes verify location, not factual correctness. Annotation prose must stay within the selected region; surrounding source is context. Deep must not invent object layouts or unseen-helper outputs and may omit unsupported examples.
+
+Each explicit Generate/Regenerate action makes at most one text-generation attempt. Context preflight and backend metadata discovery remain local preparation; malformed, truncated or unsupported responses require a new explicit action rather than an automatic retry. Model loading requests that return no text are distinct from generation.
+
+The opt-in `scripts/evaluate-grounding.py` runner compares frozen baseline/candidate binaries against the configured loopback llama.cpp model using synthetic cases. Store its source-bearing artifacts under ignored `target/`. Review factual and target accuracy independently of schema and quote validation; report generation counts and latency without assuming a successful response is correct.

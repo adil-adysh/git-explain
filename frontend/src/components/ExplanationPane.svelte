@@ -25,7 +25,12 @@
   const feedbackKey = $derived(`${targetKey(target)}:${activeKind}`);
   const feedbackChanges = $derived(explanations.feedback[feedbackKey] ?? {});
   let explanationHeading = $state<HTMLHeadingElement>();
-  const policyText = (policy: Policy) => `${policy.language_help} language help · ${policy.focus} focus · ${policy.detail} detail`;
+  const policyText = (policy: Policy) => {
+    const language = { automatic: 'Automatic syntax guidance', explain: 'Explain language features', brief: 'Brief syntax guidance', skip: 'Skip syntax guidance' };
+    const focus = { balanced: 'Balanced coverage', syntax: 'Syntax focus', execution: 'Execution focus', reasoning: 'Reasoning focus', architecture: 'Architecture focus' };
+    const detail = { concise: 'Concise explanation', balanced: 'Standard detail', detailed: 'Detailed explanation' };
+    return `${language[policy.language_help]} · ${focus[policy.focus]} · ${detail[policy.detail]}`;
+  };
   $effect(() => {
     const key = visible ? targetKey(target) : null;
     if (key) explanations.activeTarget = key;
@@ -158,11 +163,9 @@
       {#if viewState.phase === 'checking'}<p>Checking saved explanation…</p>{/if}
       {#if viewState.phase === 'generating'}<p>Waiting for {kindLabel(activeKind)} explanation… You can keep reading.</p>{/if}
       {#if viewState.error}<p class="error-text">{viewState.error}</p>{/if}
-      {#if viewState.pending && inputMatches}<p>Pending settings: {policyText(viewState.pending.policy)}</p>{:else if selection}<p>Check saved explanation or Generate to resolve the pending settings.</p>{/if}
       {#if viewState.displayed && !hideExplanations}
-        <p>Used for displayed result: {policyText(viewState.displayed.policy)}</p>
         <p>{viewState.displayed.cache_hit ? 'Loaded saved explanation.' : 'Generated explanation.'}</p>
-        {#if !matching}<p>Pending settings or the prerequisite differ. The displayed explanation has not been changed.</p>{/if}
+        {#if !matching}<p>Preferences or an earlier explanation have changed. Generate again to update this view; the explanation below is unchanged.</p>{/if}
         {#if viewState.displayed.teaching}
           <h4>Purpose</h4><p>{viewState.displayed.teaching.purpose}</p>
           <h4>Walkthrough</h4><ol>{#each viewState.displayed.teaching.walkthrough as step}<li>{step}</li>{/each}</ol>
@@ -202,7 +205,17 @@
           {#if feedbackError}<p class="error-text">{feedbackError} Your temporary preferences are retained. Choose profile for feedback again to review the latest saved preferences.</p>{/if}
         </section>
       {/if}
-      {#if viewState.pending && inputMatches}<details><summary>Effective preference sources</summary><dl>{#each Object.entries(viewState.pending.provenance) as [field, source]}<dt>{field.replaceAll('_', ' ')}</dt><dd>{source}</dd>{/each}</dl></details>{/if}
+      {#if selection || viewState.displayed}
+        <details>
+          <summary>Explanation preferences</summary>
+          {#if viewState.displayed}<p>Used for this explanation: {policyText(viewState.displayed.policy)}</p>{/if}
+          {#if viewState.pending && inputMatches}
+            {#if !matching}<p>For the next explanation: {policyText(viewState.pending.policy)}</p>{/if}
+            <h4>Where these preferences come from</h4>
+            <dl>{#each Object.entries(viewState.pending.provenance) as [field, source]}<dt>{field.replaceAll('_', ' ')}</dt><dd>{source}</dd>{/each}</dl>
+          {:else}<p>Use Generate or Check saved explanation to see which preferences will apply.</p>{/if}
+        </details>
+      {/if}
     </div>
     {#if selection}<SectionCustomize {target} kind={activeKind} base={selection} onApplied={check} {onStatusChange} />{/if}
   </section>

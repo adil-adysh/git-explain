@@ -5,3 +5,6 @@
 *.yml text
 *.yaml text
 
+# Generated JavaScript may contain literal trailing whitespace inside strings.
+frontend/dist/*.js -whitespace
+

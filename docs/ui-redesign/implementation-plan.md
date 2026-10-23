@@ -186,3 +186,35 @@ Do not accept only screenshots as proof of accessibility.
 3. **feat(ui): Svelte shell and accessible Explorer/Reader skeleton** — local bundling, keyboard navigation, loading/recovery, no inference.
 
 The implementation should then follow Phase 4 and beyond. These are proposed work items; **no implementation PRs are created by this docs-only change**.
+
+
+## Annotation target repair (2026-10-23)
+
+- [x] Reproduce whole-function targets in Changes and Concepts on the reported section.
+- [x] Delegate the focused implementation to agy; preserve its prompt, logs, initial diff and report under ignored `target/learning-evaluation/agy-tasks/annotation-regions/`.
+- [x] Review the delegated diff independently; reproduce and repair deleted-source target mismatch, malformed-source fallback, overlapping range normalization and nested expression splitting.
+- [x] Share deterministic statement targets between model requests and the source reader; retain original changed-block coverage and independent explanation keys.
+- [x] Run `task check` and focused prompt tests.
+- [x] Complete all 81 browser interaction checks in one fresh run; rebuild/install and verify the installed daemon exposes targets 1–6, 7, 8, 9 and 10–12 for the reported 12-line function.
+- [x] Review fresh local-model Changes, Concepts, Overview and Deep results after restoring the endpoint: all generated successfully with independent identities; Changes and Concepts each used three distinct valid targets. Remaining output issues: one Changes annotation mentions the adjacent retryability assertion; Deep uses illustrative error representations as concrete values. See ignored `target/learning-evaluation/agy-tasks/annotation-regions/live-review.md` for exact evidence. Manual browser screenshot remains unavailable because browser security policy rejected access.
+
+`task install` continues to install locked frontend dependencies, rebuild embedded frontend assets and rebuild the release binary before replacing the installed application.
+
+
+## Grounded explanations and one-request generation
+
+Design: keep the existing per-view request and shared source reader. Each model annotation must return a nonempty `source_quote` of at most 240 Unicode characters copied exactly from its selected region. Validate evidence before accepting or caching a result; preserve quotes as validation-only data rather than adding a second source panel. Exact substring matching deliberately rejects whitespace-normalized or neighboring-region quotes. Supply up to eight copyable line excerpts per target (160 characters each) and constrain source_quote choices in the schema, so multiline code need not be reformatted by the model. Added/Deleted request patches contain only their selected section; unrelated file-wide changes cannot establish replacement relationships. A valid quote proves location, not truth of the accompanying prose.
+
+Annotation instructions must restrict every claim to the selected region while allowing surrounding source as context. Deep must use visible expressions for causal explanations, avoid invented object layouts, distinguish unseen-helper behavior from asserted expectations, and omit examples that require guessing. Keep its existing structured shape.
+
+Each Generate action makes at most one generation attempt. Local validation, context preflight and metadata discovery do not generate text; invalid output surfaces a recoverable error and requires an explicit new action. Existing automatic output/context retries are removed from the generation entry point. No inference concurrency is added.
+
+Acceptance tasks:
+- [x] Observe failing grounding and one-request regressions, implement schema/prompt/local validation and user-facing errors. Pair each region ID with its own quote choices in schema branches; preserve local exact-match validation. Deep generates directly without silently generating a prerequisite. First-attempt failures retain history/context-pressure telemetry; Ollama loading returns no generated text.
+- [x] Update mock contracts and regression/browser expectations for explicit retries; cover missing, blank, oversized, neighboring, invented and valid multiline quotes.
+- [x] Compare fresh baseline and candidate outputs across adjacent assertions, multiline expressions, deleted code, guards and unseen helpers; record raw outputs, validity, factual/target accuracy, latency and request counts. Review prose independently of validators. Latest candidate: 13/13 accepted, 28/28 quotes matched selected regions, one generation request each; median 19.52 seconds versus baseline 15.60 seconds in an ordered sample with different warm conditions. No general performance or accuracy claim follows.
+- [x] Run task check and browser suite, update evidence, then task install and verify installed behavior.
+
+Evidence and known limits (2026-10-24): ignored `target/learning-evaluation/grounding/report.md` contains the primary source/output review, executable identities and raw comparison references. `check-shipping.log` records the passing full check; `browser-reviewed.log` records 85 passing browser tests. Independent review caught failure-history and generating-warmup regressions, both repaired with failing-then-passing coverage. `install.log` records frontend dependency installation, frontend/release rebuild, daemon stop/install/restart. Installed and evaluated executables differ only in verified PE build timestamps/GUID, with all remaining bytes identical (`installed-verification.json`). The installed daemon exposes the reported function's targets 1–6, 7, 8, 9 and 10–12. A fresh live Concepts result (25.61 seconds, cache_hit false) correctly targets the error chain, equality assertion and retryability assertion separately at lines 7, 8 and 9; see `installed-section.json` and `installed-concepts.json`.
+
+Quote validity is not a factual guarantee. The latest model still loses equality precision in one Changes explanation, speculates about custom field/helper semantics in Concepts, and uses an unconditional-return phrase in a Deep purpose despite correctly explaining panic/divergence in its walkthrough. Existing macro-punctuation sentence truncation can clip an Overview. These are explicitly unresolved quality limits, not passing teaching assertions. Manual access to the user's page remains blocked by browser security policy; no manual screenshot is claimed.
