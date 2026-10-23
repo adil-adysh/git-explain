@@ -3,8 +3,11 @@ pub mod c_sharp;
 pub mod cpp;
 pub mod facts;
 pub mod go;
+pub mod grammar;
+pub mod infra;
 pub mod java;
 pub mod javascript;
+pub mod kotlin;
 pub mod python;
 pub mod rust;
 pub mod typescript;
@@ -78,23 +81,46 @@ impl LanguageRegistry {
         static C: c::CAnalyzer = c::CAnalyzer;
         static PYTHON: python::PythonAnalyzer = python::PythonAnalyzer;
         static RUST: rust::RustAnalyzer = rust::RustAnalyzer;
+        static HCL: infra::HclAnalyzer = infra::HclAnalyzer;
+        static YAML: infra::YamlAnalyzer = infra::YamlAnalyzer;
+        static JSON: infra::JsonAnalyzer = infra::JsonAnalyzer;
+        static JSONC: infra::JsoncAnalyzer = infra::JsoncAnalyzer;
+        static DOCKERFILE: infra::DockerfileAnalyzer = infra::DockerfileAnalyzer;
+        static BASH: infra::BashAnalyzer = infra::BashAnalyzer;
+        static POWERSHELL: infra::PowerShellAnalyzer = infra::PowerShellAnalyzer;
+        static KOTLIN: kotlin::KotlinAnalyzer = kotlin::KotlinAnalyzer;
 
-        [
-            &RUST as &dyn LanguageAnalyzer,
-            &PYTHON as &dyn LanguageAnalyzer,
-            &GO as &dyn LanguageAnalyzer,
-            &JAVA as &dyn LanguageAnalyzer,
-            &C_SHARP as &dyn LanguageAnalyzer,
-            &TYPESCRIPT as &dyn LanguageAnalyzer,
-            &JAVASCRIPT as &dyn LanguageAnalyzer,
-            &CPP as &dyn LanguageAnalyzer,
-            &C as &dyn LanguageAnalyzer,
-        ]
-        .into_iter()
-        .find(|analyzer| analyzer.supports_path(path))
+        Some(match Self::language_for_path(path)? {
+            "Rust" => &RUST as &dyn LanguageAnalyzer,
+            "Python" => &PYTHON,
+            "Go" => &GO,
+            "Java" => &JAVA,
+            "C#" => &C_SHARP,
+            "TypeScript" => &TYPESCRIPT,
+            "JavaScript" => &JAVASCRIPT,
+            "C++" => &CPP,
+            "C" => &C,
+            "HCL" => &HCL,
+            "YAML" => &YAML,
+            "JSON" => &JSON,
+            "JSONC" => &JSONC,
+            "Dockerfile" => &DOCKERFILE,
+            "Bash" => &BASH,
+            "PowerShell" => &POWERSHELL,
+            "Kotlin" => &KOTLIN,
+            _ => return None,
+        })
     }
 
     pub fn language_for_path(path: &Path) -> Option<&'static str> {
+        if infra::DockerfileAnalyzer::is_dockerfile_path(path) {
+            return Some("Dockerfile");
+        }
+        if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
+            if file_name.ends_with(".tf.json") {
+                return Some("JSON");
+            }
+        }
         match path.extension().and_then(|extension| extension.to_str()) {
             Some("rs") => Some("Rust"),
             Some("py") => Some("Python"),
@@ -105,6 +131,13 @@ impl LanguageRegistry {
             Some("js" | "jsx") => Some("JavaScript"),
             Some("cpp" | "cc" | "cxx" | "hpp") => Some("C++"),
             Some("c") => Some("C"),
+            Some("tf" | "tfvars" | "hcl") => Some("HCL"),
+            Some("yaml" | "yml") => Some("YAML"),
+            Some("json") => Some("JSON"),
+            Some("jsonc") => Some("JSONC"),
+            Some("sh" | "bash") => Some("Bash"),
+            Some("ps1" | "psm1" | "psd1") => Some("PowerShell"),
+            Some("kt" | "kts") => Some("Kotlin"),
             _ => None,
         }
     }
@@ -187,6 +220,13 @@ pub fn smallest_units(units: Vec<SourceUnit>, ranges: &[LineRange]) -> Vec<Sourc
     symbols
 }
 
+fn is_infra_format(path: &Path) -> bool {
+    matches!(
+        LanguageRegistry::language_for_path(path),
+        Some("HCL" | "YAML" | "JSON" | "JSONC" | "Dockerfile" | "Bash" | "PowerShell")
+    )
+}
+
 fn fallback_units(
     path: &Path,
     source: &str,
@@ -206,6 +246,19 @@ fn fallback_units(
         {
             continue;
         }
+        // Generic fallback must not invent brace sections in infrastructure formats.
+        if is_infra_format(path) {
+            result.push(SourceUnit {
+                name: "changed code".into(),
+                qualified_name: None,
+                kind: SourceUnitKind::TopLevelBlock,
+                start_line: range.start,
+                end_line: range.end.min(lines.len().max(1)),
+                source: changed_source,
+            });
+            continue;
+        }
+
         let current_line = lines
             .get(range.start.saturating_sub(1))
             .copied()
