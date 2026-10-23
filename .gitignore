@@ -1,5 +1,8 @@
 # Rust build output
 /target/
+/node_modules/
+/test-results/
+/playwright-report/
 
 # Local environment and secrets
 .env
@@ -22,4 +25,3 @@ Desktop.ini
 *.log
 *.tmp
 *.temp
-

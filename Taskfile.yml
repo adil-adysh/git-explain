@@ -22,6 +22,11 @@ tasks:
     cmds:
       - cargo build
 
+  test-browser:
+    desc: Build the application and run Chromium interaction tests (requires npm ci and npx playwright install chromium).
+    cmds:
+      - npm run test:browser
+
   build-release:
     desc: Build the optimized release binary.
     cmds:
