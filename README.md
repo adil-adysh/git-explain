@@ -224,6 +224,23 @@ The endpoint and runtime options `--model-port`, `--api-key-env`, `--provider`, 
 
 Run `task check` before contributing.
 
+## Proposed accessible Svelte 5 workspace (design only)
+
+A screen-reader- and keyboard-first redesign is specified in
+[docs/ui-redesign/README.md](docs/ui-redesign/README.md), with
+[screen-by-screen behavior](docs/ui-redesign/screens.md),
+[interaction and focus rules](docs/ui-redesign/interaction-accessibility.md),
+[Rust/TypeScript API contracts](docs/ui-redesign/architecture-api.md),
+[a phased implementation plan](docs/ui-redesign/implementation-plan.md), and
+[acceptance tests](docs/ui-redesign/test-plan.md).
+
+**These documents describe proposed work, not the current browser implementation.**
+The redesign prioritizes a lightweight startup; selecting a file reveals its
+complete code-section index; individual source and cached explanations load
+on demand; explanation kinds use direct tabs; personal learning profiles live
+under Personalization while section/view overrides remain accessible in the
+Reader. Navigation never implicitly invokes the model.
+
 ## Browser workflow and tests
 
 Use the file links to move through the page, or filter by file path or code
