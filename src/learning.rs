@@ -438,11 +438,7 @@ impl LearningStore {
         root.as_table_mut()
             .context("configuration must be a table")?
             .insert("learning".into(), toml::Value::try_from(config)?);
-        let temp = self
-            .path
-            .with_extension(format!("learning-{}.tmp", std::process::id()));
-        fs::write(&temp, toml::to_string_pretty(&root)?)?;
-        fs::rename(&temp, &self.path).context("could not atomically save learning preferences")?;
+        crate::config::write_toml(&self.path, root)?;
         self.inspect()
     }
 }
@@ -508,6 +504,84 @@ mod tests {
         store.save(&initial.revision, config.clone()).unwrap();
         assert!(store.save(&initial.revision, config).is_err());
         assert!(fs::read_to_string(p).unwrap().contains("local"));
+    }
+
+    #[test]
+    fn store_preserves_configuration_comments_and_formatting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let original = "# My local configuration\n[server] # transport\nport = 8192 # chosen port\n\n[learning.defaults]\n# My learning preference\nfocus = 'syntax' # keep this explanation\n";
+        fs::write(&path, original).unwrap();
+        let store = LearningStore::new(path.clone());
+        let before = store.inspect().unwrap();
+        let mut config = before.config;
+        config.defaults.focus = Some(Focus::Execution);
+        store.save(&before.revision, config).unwrap();
+        let saved = fs::read_to_string(path).unwrap();
+        for comment in [
+            "# My local configuration",
+            "[server] # transport",
+            "port = 8192 # chosen port",
+            "# My learning preference",
+            "# keep this explanation",
+        ] {
+            assert!(saved.contains(comment), "lost {comment}: {saved}");
+        }
+    }
+
+    #[test]
+    fn ordinary_config_write_waits_for_learning_transaction() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(&path, "[server]\nport = 8192\n").unwrap();
+        let store = LearningStore::new(path.clone());
+        let before = store.inspect().unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_extension("learning.lock"))
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let mut update = crate::config::ConfigUpdate::default();
+            update.server.port = Some(9000);
+            let result = crate::config::edit_config(&writer_path, false, &update, &[]);
+            finished_tx.send(result.is_ok()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        let blocked = finished_rx
+            .recv_timeout(Duration::from_millis(150))
+            .is_err();
+        // Simulate the learning transaction's final replacement while its lock is held.
+        fs::write(
+            &path,
+            "[server]\nport = 8192\n[learning.defaults]\nfocus = 'execution'\n",
+        )
+        .unwrap();
+        lock.unlock().unwrap();
+        drop(lock);
+        let succeeded = finished_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or(false);
+        writer.join().unwrap();
+        assert!(blocked, "ordinary writer bypassed the shared learning lock");
+        assert!(succeeded);
+        let saved: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["server"]["port"].as_integer(), Some(9000));
+        assert_eq!(
+            saved["learning"]["defaults"]["focus"].as_str(),
+            Some("execution")
+        );
+        assert!(store.save(&before.revision, before.config).is_err());
     }
     #[test]
     fn unknown_fields_are_rejected() {

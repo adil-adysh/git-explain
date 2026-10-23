@@ -468,6 +468,7 @@ pub fn repository_config_path(git_dir: &Path) -> PathBuf {
 }
 
 pub fn init_user_config(path: &Path, force: bool) -> Result<bool> {
+    let _transaction = config_write_lock(path)?;
     if path.exists() && !force {
         return Ok(false);
     }
@@ -479,6 +480,7 @@ pub fn init_user_config(path: &Path, force: bool) -> Result<bool> {
 }
 
 pub fn init_repository_config(path: &Path, force: bool) -> Result<bool> {
+    let _transaction = config_write_lock(path)?;
     if path.exists() && !force {
         return Ok(false);
     }
@@ -567,6 +569,7 @@ pub fn add_profile_with_update(
     update: ProfileUpdate,
 ) -> Result<()> {
     validate_profile_name(&profile.name)?;
+    let _transaction = config_write_lock(path)?;
     let mut root = user_toml(path)?;
     let profiles = table_mut(&mut root, "profiles");
     if profiles.contains_key(&profile.name) {
@@ -605,6 +608,7 @@ pub fn add_profile_with_update(
 }
 
 pub fn edit_profile(path: &Path, name: &str, update: ProfileUpdate) -> Result<()> {
+    let _transaction = config_write_lock(path)?;
     let mut root = user_toml(path)?;
     apply_profile_update(&mut root, name, &update)?;
     validate_profile_document(&root, path, name).context("the existing profile was not changed")?;
@@ -904,6 +908,7 @@ fn validate_profile_document(root: &toml::Value, path: &Path, name: &str) -> Res
 }
 
 pub fn remove_profile(path: &Path, name: &str) -> Result<()> {
+    let _transaction = config_write_lock(path)?;
     let mut root = user_toml(path)?;
     let profiles = table_mut(&mut root, "profiles");
     if profiles.remove(name).is_none() {
@@ -937,6 +942,7 @@ fn require_profile(
 }
 
 pub fn use_profile(path: &Path, name: &str) -> Result<()> {
+    let _transaction = config_write_lock(path)?;
     let root = user_toml(path)?;
     if !root
         .get("profiles")
@@ -951,6 +957,7 @@ pub fn use_profile(path: &Path, name: &str) -> Result<()> {
 }
 
 pub fn use_repository_profile(path: &Path, name: &str) -> Result<()> {
+    let _transaction = config_write_lock(path)?;
     let mut root = repository_toml(path)?;
     table_mut(&mut root, "model").insert("profile".into(), toml::Value::String(name.into()));
     write_toml(path, root)
@@ -964,6 +971,7 @@ pub fn edit_config(
     update: &ConfigUpdate,
     profiles: &[String],
 ) -> Result<bool> {
+    let _transaction = config_write_lock(path)?;
     if update.reader != ReaderUpdate::default() {
         anyhow::bail!("Reader settings are unsupported; use [learning.defaults] or git explain learning to customize explanations");
     }
@@ -1140,20 +1148,87 @@ fn repository_toml(path: &Path) -> Result<toml::Value> {
     })
 }
 
-fn write_toml(path: &Path, root: toml::Value) -> Result<()> {
-    let values = toml::to_string_pretty(&root)?;
-    let existing = fs::read_to_string(path).unwrap_or_default();
-    let template = if existing.starts_with("# git-explain user configuration") {
-        Some(example_config())
-    } else if existing.starts_with("# git-explain repository configuration") {
-        Some(repository_example_config())
-    } else {
-        None
+fn config_write_lock(path: &Path) -> Result<fs::File> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // The existing learning lock is the shared transaction lock for every writer.
+    // Hold it from the initial read through the atomic replacement.
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path.with_extension("learning.lock"))?;
+    fs2::FileExt::lock_exclusive(&lock).context("lock configuration for editing")?;
+    Ok(lock)
+}
+
+/// Callers must hold the shared configuration transaction lock.
+pub(crate) fn write_toml(path: &Path, root: toml::Value) -> Result<()> {
+    let mut existing = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
     };
-    let content = template.map_or(values.clone(), |template| {
-        format!("{template}\n# Active values written by git-explain\n\n{values}")
-    });
-    atomic_write(path, &content)
+    if (existing.starts_with("# git-explain user configuration")
+        || existing.starts_with("# git-explain repository configuration"))
+        && !existing.contains("# Active values written by git-explain")
+    {
+        existing.push_str("\n# Active values written by git-explain\n\n");
+    }
+    let before: toml::Value = toml::from_str(&existing)?;
+    let mut document: toml_edit::DocumentMut = existing.parse()?;
+    let desired: toml_edit::DocumentMut = toml::to_string_pretty(&root)?.parse()?;
+    sync_toml_table(
+        document.as_table_mut(),
+        desired.as_table(),
+        before.as_table().context("configuration must be a table")?,
+        root.as_table().context("configuration must be a table")?,
+    );
+    atomic_write(path, &document.to_string())
+}
+
+fn sync_toml_table(
+    current: &mut toml_edit::Table,
+    desired: &toml_edit::Table,
+    before: &toml::map::Map<String, toml::Value>,
+    after: &toml::map::Map<String, toml::Value>,
+) {
+    let removed: Vec<_> = before
+        .keys()
+        .filter(|key| !after.contains_key(*key))
+        .cloned()
+        .collect();
+    for key in removed {
+        current.remove(&key);
+    }
+    for (key, value) in after {
+        if before.get(key) == Some(value) {
+            continue;
+        }
+        if let (Some(old_table), Some(new_table), Some(old_values), Some(new_values)) = (
+            current.get_mut(key).and_then(toml_edit::Item::as_table_mut),
+            desired.get(key).and_then(toml_edit::Item::as_table),
+            before.get(key).and_then(toml::Value::as_table),
+            value.as_table(),
+        ) {
+            sync_toml_table(old_table, new_table, old_values, new_values);
+        } else if let Some(item) = desired.get(key) {
+            let mut replacement = item.clone();
+            if let (Some(old), Some(new)) = (
+                current.get(key).and_then(toml_edit::Item::as_value),
+                replacement.as_value_mut(),
+            ) {
+                *new.decor_mut() = old.decor().clone();
+            }
+            if let Some(existing) = current.get_mut(key) {
+                *existing = replacement;
+            } else {
+                current.insert(key, replacement);
+            }
+        }
+    }
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<()> {

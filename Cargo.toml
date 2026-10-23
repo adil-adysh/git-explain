@@ -29,6 +29,7 @@ tree-sitter-python = "0.23.6"
 tree-sitter-rust = "0.23"
 tree-sitter-typescript = "0.23.2"
 toml = "0.8"
+toml_edit = "0.22"
 webbrowser = "1"
 
 [dev-dependencies]
