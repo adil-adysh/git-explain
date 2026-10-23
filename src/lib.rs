@@ -16,3 +16,4 @@ pub mod runtime;
 pub mod semantic;
 pub mod snapshot;
 pub mod web;
+pub mod workspace;
