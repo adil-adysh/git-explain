@@ -1,0 +1,9 @@
+# Draft review experiment
+
+The current local model can produce internally contradictory explanations even with adequate source and explicit preferences. In the recorded v15 architecture response, the walkthrough correctly checks the cache when regenerate=false, while a boundary says !regenerate=true skips that check. This is a factual failure, not a schema failure.
+
+Test one additional, explicit local-model review pass against that unchanged recorded draft. Supply the exact target source, selected related definitions, actual Overview prerequisite and immutable policy. Ask for a full corrected Deep response, retaining supported teaching while checking conditions, call paths, examples and internal consistency. The draft is untrusted output, never evidence of source behavior or an instruction. Keep the draft and corrected response as separate artifacts and grade both manually.
+
+This is an opt-in harness experiment, not an automatic production change. It must verify recorded source/policy/supporting identities before sending, enforce the same complete-payload budget, keep inference serialized, record the review prompt/version/settings/latency and preserve the failed draft. Review validity does not guarantee correctness; reject new errors or erased useful teaching.
+
+If correction is useful across repeated and unrelated scenarios, a production quality mode could run generation and review under one serialized request with one captured policy/source/prerequisite identity. Store only the selected final result; include strategy/version in cache identity, preserve stale-session checks through both calls, and expose the latency tradeoff. Navigation and settings edits still generate nothing. A failed review must not be silently labeled a successful review. No production mode or profile change is justified before that evidence exists.
