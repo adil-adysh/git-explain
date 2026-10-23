@@ -155,12 +155,12 @@ Create the restricted repository template with `git explain config init --repo`,
 
 ## Application configuration
 
-Profiles own model endpoints and inference behavior. `config` owns reader preferences, explanation behavior, cache, the local server, Git analysis settings, and the selected profile. Every application setting has both a command and an accessible plain-text editor:
+Profiles own model endpoints and inference behavior. `git explain learning` commands own personalized learning profiles and reader preferences under `[learning]`. `config` owns explanation behavior, cache, the local server, Git analysis settings, and the selected profile. For complete CLI, configuration, and browser usage, see [learning-usage.md](docs/learning-usage.md); see [personalized-learning-design.md](docs/personalized-learning-design.md) for design details and current implementation status, and [prompt-evaluation.md](docs/prompt-evaluation.md) for the local-model evaluation protocol. Every application setting has both a command and an accessible plain-text editor:
 
 ```text
 git explain config show
 git explain config edit
-git explain config reader --experience intermediate --add-known-language Rust
+git explain learning add rust-learner
 git explain config explanation --depth deep --annotation-limit 20
 git explain config cache --enabled false
 git explain config server --port 9000 --open-browser false
@@ -168,7 +168,7 @@ git explain config git --include-staged true
 git explain config model --profile local
 ```
 
-List settings use `--add-*`, `--remove-*`, and `--clear-*` operations. `config edit` uses numbered menus and writes only after review and confirmation. Repository editing (`--repo`) can change application settings and select an already trusted user profile, but can never define profiles, endpoints, providers, or credentials.
+`config edit` uses numbered menus and writes only after review and confirmation. Repository editing (`--repo`) can change application settings and select an already trusted user profile, but can never define profiles, endpoints, providers, or credentials.
 
 `git explain --port 9000` is a runtime-only server override; `git explain config server --port 9000` persists the setting for file, direct, and daemon-backed diff servers. A running daemon keeps its bound port. If a different port is requested, git-explain reports the conflict; run `git explain daemon stop` before retrying. Likewise `git explain --profile cloud` is a one-shot profile override, while `git explain profile use cloud` persists the default selection.
 
@@ -223,3 +223,27 @@ Options:   -m -> --model      -u -> --base-url
 The endpoint and runtime options `--model-port`, `--api-key-env`, `--provider`, `--profile`, `--port`, and `--direct` remain long-only.
 
 Run `task check` before contributing.
+
+## Browser workflow and tests
+
+Use the file links to move through the page, or filter by file path or code
+section name. Filtering and selecting an explanation tab never contact the
+model. Use Left/Right arrows or Home/End to navigate the explanation tabs.
+Press Generate to request the selected view; while it runs you can keep
+reading and switch views. The result stays with its requested view. Hide
+explanations also hides annotations generated afterward. Replacing Overview
+in file mode or Changes in diff mode clears the dependent Deep explanation.
+
+Browser tests run the real application against a local mock model server;
+they require no model download, GPU, credentials, or hosted endpoint:
+
+```text
+npm ci
+npx playwright install chromium
+task test-browser
+```
+
+The test command builds the debug binary and discovers its path from Cargo,
+including when a custom target is configured. CI runs the Rust checks and
+Chromium tests. Failed browser runs retain screenshots and traces under
+`test-results/`. Use `npx playwright show-trace <trace.zip>` to inspect a trace.

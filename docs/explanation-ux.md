@@ -2,6 +2,10 @@
 
 This document defines the durable product and implementation contract for explanation generation. It is intentionally narrower than the general architecture documentation.
 
+For the proposed reader-preference model, scenarios, and delivery sequence,
+see [Personalized explanation and learning design](personalized-learning-design.md).
+That proposal does not change the implemented controls or the invariants here.
+
 ## Product constraints
 
 - Local inference is the primary deployment target, including machines with approximately 8 GiB VRAM.
@@ -26,11 +30,22 @@ A Concepts request is per code section, not per individual concept. It may retur
 1. The server renders the available view tabs and any already-generated state.
 2. Selecting a tab only displays its current state. It does not call an endpoint.
 3. The action button says Generate when that view has no result and Regenerate when it does.
-4. Generation updates only the selected view.
+4. Generation updates only the requested view. If the reader switches tabs while it runs, completion preserves their selected tab.
 5. Returning to a generated view displays its in-memory or server-restored result immediately.
 6. Changes and Concepts redraw annotations on the same source container. The source remains spatially stable.
 
 Use accessible tab semantics, selected state, keyboard focus, explicit action labels, and status announcements. Show clear not-generated, generating, ready, and error states.
+
+Keep the Generate action disabled for a code section while its request runs;
+tabs remain available for reading. Left/Right arrows and Home/End move between
+tabs without making requests. Keep errors scoped to their requested view and
+offer a reload action when the Git changes are outdated. Hide explanations
+applies to annotations created after the toggle, and showing explanations
+must not reveal an inactive Deep view.
+
+File links and local filtering by path or code section name are navigation.
+They must not generate explanations or discard generated results. Display a
+clear no-match message and provide a way to clear the filter.
 
 ## Implementation invariants
 
