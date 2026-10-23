@@ -155,6 +155,8 @@ async fn small_openai_request(client: &Client, base_url: &str, model: &str) -> s
 
 fn tracker_request(source: &str) -> ExplanationRequest {
     ExplanationRequest {
+        prerequisite_id: None,
+        policy: Default::default(),
         source_unit: source.into(),
         unit_name: "local_unit".into(),
         unit_kind: "function".into(),
@@ -394,6 +396,8 @@ async fn live_llama_cpp_rejects_an_explanation_larger_than_its_fixed_context() {
     let large_body = "let deliberately_long_identifier_for_context_budget = 1;\n".repeat(1_200);
     let error = production_provider(base_url, model, "llama_cpp")
         .explain(ExplanationRequest {
+            prerequisite_id: None,
+            policy: Default::default(),
             source_unit: format!("fn oversized() {{\n{large_body}}}"),
             unit_name: "oversized".into(),
             unit_kind: "function".into(),
@@ -422,6 +426,8 @@ async fn live_llama_cpp_runs_a_small_git_explain_request() {
     let model = required("GIT_EXPLAIN_TEST_LLAMA_CPP_MODEL");
     let explanation = production_provider(base_url, model, "llama_cpp")
         .explain(ExplanationRequest {
+            prerequisite_id: None,
+            policy: Default::default(),
             source_unit: "fn add_one(value: i32) -> i32 { value + 1 }".into(),
             unit_name: "add_one".into(),
             unit_kind: "function".into(),

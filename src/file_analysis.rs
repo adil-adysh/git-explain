@@ -152,6 +152,8 @@ pub fn request_for(
     prior_explanation: Option<String>,
 ) -> ExplanationRequest {
     ExplanationRequest {
+        prerequisite_id: None,
+        policy: Default::default(),
         source_unit: unit.source.clone(),
         unit_name: unit.identity.qualified_name.clone(),
         unit_kind: format!("{:?}", unit.identity.kind),
@@ -220,6 +222,7 @@ mod tests {
         assert!(analysis.apply(
             &id,
             UnitExplanation {
+                teaching: None,
                 overview: "New overview".into(),
                 annotations: vec![],
                 deep: None,

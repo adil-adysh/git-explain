@@ -1,3 +1,4 @@
+use crate::learning_runtime::{LearningLookup, LearningRuntime, LearningSave};
 use crate::{
     analyzer::RepositoryAnalyzer,
     cache::ExplanationCache,
@@ -57,6 +58,7 @@ struct Metadata {
 pub struct RepositorySessionId(pub String);
 
 struct RepositorySession {
+    learning: LearningRuntime,
     id: RepositorySessionId,
     repo_root: PathBuf,
     analyzer: RepositoryAnalyzer,
@@ -136,10 +138,14 @@ struct OpenRequest {
     #[serde(default)]
     paths: Vec<PathBuf>,
     profile: Option<String>,
+    #[serde(default)]
+    learning: crate::learning::LearningSelection,
 }
 #[derive(Debug, Deserialize)]
 struct SnapshotRequest {
     generation: Option<SnapshotGeneration>,
+    #[serde(default)]
+    learning: Option<crate::learning::LearningSelection>,
 }
 
 pub async fn command(action: &DaemonAction, port: Option<u16>) -> Result<()> {
@@ -159,6 +165,7 @@ pub async fn open_repository(
     paths: &[PathBuf],
     profile: Option<&str>,
     port: Option<u16>,
+    learning: crate::learning::LearningSelection,
 ) -> Result<()> {
     let metadata = ensure_running(port.unwrap_or(daemon_port())).await?;
     let token = metadata.control_token.clone();
@@ -172,6 +179,7 @@ pub async fn open_repository(
             staged,
             paths: paths.to_vec(),
             profile: profile.map(str::to_owned),
+            learning,
         })
         .send()
         .await
@@ -446,6 +454,18 @@ async fn run(port: u16) -> Result<()> {
     println!("git-explain daemon listening on http://127.0.0.1:{actual_port}");
     let app = Router::new()
         .route("/api/health", get(health))
+        .route(
+            "/api/sessions/{session}/learning",
+            get(learning_inspect).put(learning_save),
+        )
+        .route(
+            "/api/sessions/{session}/learning/resolve",
+            post(learning_resolve),
+        )
+        .route(
+            "/api/sessions/{session}/learning/results",
+            post(learning_results),
+        )
         .route("/api/daemon/shutdown", post(shutdown))
         .route("/api/repos/open", post(open))
         .route("/api/repos/refresh", post(refresh))
@@ -540,10 +560,11 @@ async fn open(
         Ok(loader) => loader,
         Err(error) => return error_json(StatusCode::BAD_REQUEST, error.to_string()),
     };
-    let config = match loader.resolve(request.profile.as_deref()) {
+    let mut config = match loader.resolve(request.profile.as_deref()) {
         Ok(config) => config,
         Err(error) => return error_json(StatusCode::BAD_REQUEST, error.to_string()),
     };
+    config.learning_selection = request.learning;
     let id = RepositorySessionId(new_id());
     let session = match build_session(
         id,
@@ -735,7 +756,13 @@ fn build_session_from_analyzer(
             &config.explanation,
         );
     }
+    let learning = LearningRuntime::new(
+        config.paths.clone(),
+        config.reader.clone(),
+        config.learning_selection.clone(),
+    )?;
     Ok(Arc::new(RepositorySession {
+        learning,
         id,
         repo_root: root,
         analyzer,
@@ -768,12 +795,44 @@ async fn session_page(
     State(state): State<Arc<DaemonState>>,
 ) -> Result<Html<String>, StatusCode> {
     let session = current(&state, &id).await.ok_or(StatusCode::NOT_FOUND)?;
-    let change_set = session.change_set.lock().unwrap();
-    Ok(Html(web::render_for_session_at_generation(
-        &change_set,
-        &id,
-        change_set.generation.0,
-    )))
+    let mut html = {
+        let changes = session.change_set.lock().unwrap();
+        web::render_for_session_at_generation(&changes, &id, changes.generation.0)
+    };
+    let ids = session
+        .change_set
+        .lock()
+        .unwrap()
+        .explainable_changes()
+        .map(|c| c.id.clone())
+        .collect::<Vec<_>>();
+    for id in ids {
+        let mut saved = Vec::new();
+        for kind in [
+            ExplanationKind::Overview,
+            ExplanationKind::Changes,
+            ExplanationKind::Concepts,
+            ExplanationKind::Deep,
+        ] {
+            if let Ok((request, prior)) = learning_request(&session, &id, kind, None) {
+                let key = ExplanationCache::change_key(
+                    &request,
+                    &session.model,
+                    &session.reader,
+                    &session.explanation,
+                );
+                if let Some(result) =
+                    session
+                        .learning
+                        .restore(&key, &request, prior, session.cache.as_ref())
+                {
+                    saved.push((kind, result));
+                }
+            }
+        }
+        LearningRuntime::decorate_article(&mut html, &id.0, &saved);
+    }
+    Ok(Html(html))
 }
 async fn snapshot_status(
     Path(session_id): Path<String>,
@@ -868,6 +927,115 @@ async fn deep_regenerate(
 ) -> Json<serde_json::Value> {
     generate(session, id, ExplanationKind::Deep, true, body, state).await
 }
+fn learning_json(result: anyhow::Result<serde_json::Value>) -> Json<serde_json::Value> {
+    Json(result.unwrap_or_else(|e| serde_json::json!({"ok":false,"error":e.to_string()})))
+}
+async fn learning_inspect(
+    Path(id): Path<String>,
+    State(state): State<Arc<DaemonState>>,
+) -> Json<serde_json::Value> {
+    let Some(session) = current(&state, &id).await else {
+        return stale_session();
+    };
+    learning_json(session.learning.inspect())
+}
+async fn learning_resolve(
+    Path(id): Path<String>,
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<LearningLookup>,
+) -> Json<serde_json::Value> {
+    let Some(session) = current(&state, &id).await else {
+        return stale_session();
+    };
+    learning_json(session.learning.resolve_response(&body))
+}
+async fn learning_save(
+    Path(id): Path<String>,
+    State(state): State<Arc<DaemonState>>,
+    headers: HeaderMap,
+    Json(body): Json<LearningSave>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(session) = current(&state, &id).await else {
+        return (StatusCode::CONFLICT, stale_session());
+    };
+    let (status, value) = session.learning.save(&headers, body);
+    (status, Json(value))
+}
+fn learning_request(
+    session: &RepositorySession,
+    id: &SemanticChangeId,
+    kind: ExplanationKind,
+    selection: Option<&crate::learning::LearningSelection>,
+) -> anyhow::Result<(ExplanationRequest, Option<String>)> {
+    let (mut request, mut prior) = {
+        let changes = session.change_set.lock().unwrap();
+        let (file, change) = changes
+            .find_change(id)
+            .ok_or_else(|| anyhow::anyhow!("This code section is no longer available."))?;
+        if !change.kind.explainable() {
+            anyhow::bail!("This code section is unchanged.");
+        }
+        (
+            runtime::request_for_kind(file, change, &changes.context, kind),
+            runtime::request_for_kind(file, change, &changes.context, ExplanationKind::Changes),
+        )
+    };
+    session.learning.prepare(&mut request, selection)?;
+    request.prior_explanation = None;
+    let mut prerequisite = None;
+    if kind.is_deep() {
+        // A prerequisite belongs to this request's captured policy, even if
+        // another thread saves preferences during request construction.
+        prior.policy = request.policy.clone();
+        let key = ExplanationCache::change_key(
+            &prior,
+            &session.model,
+            &session.reader,
+            &session.explanation,
+        );
+        if let Some(value) = session
+            .learning
+            .restore(&key, &prior, None, session.cache.as_ref())
+        {
+            request.prior_explanation = Some(value.explanation.overview);
+            prerequisite = Some(value.result_id);
+            request.prerequisite_id = prerequisite.clone();
+        }
+    }
+    Ok((request, prerequisite))
+}
+async fn learning_results(
+    Path(id): Path<String>,
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<LearningLookup>,
+) -> Json<serde_json::Value> {
+    let Some(session) = current(&state, &id).await else {
+        return stale_session();
+    };
+    let kind = body.kind.unwrap_or(ExplanationKind::Overview);
+    let (request, prerequisite) = match learning_request(
+        &session,
+        &SemanticChangeId(body.unit_id),
+        kind,
+        body.learning.as_ref().or(body.selection.as_ref()),
+    ) {
+        Ok(v) => v,
+        Err(e) => return learning_json(Err(e)),
+    };
+    let key = ExplanationCache::change_key(
+        &request,
+        &session.model,
+        &session.reader,
+        &session.explanation,
+    );
+    Json(
+        session
+            .learning
+            .restore(&key, &request, prerequisite, session.cache.as_ref())
+            .map(|v| v.response(true, kind))
+            .unwrap_or_else(|| serde_json::json!({"ok":true,"result":null})),
+    )
+}
 async fn generate(
     session_id: String,
     id: String,
@@ -877,36 +1045,20 @@ async fn generate(
     state: Arc<DaemonState>,
 ) -> Json<serde_json::Value> {
     let Some(session) = current(&state, &session_id).await else {
-        return Json(
-            serde_json::json!({"ok":false,"stale":true,"code":"session_stale","error":"This repository session is no longer active. Reload the page and try again.","retryable":true}),
-        );
+        return stale_session();
     };
     if body
-        .and_then(|Json(body)| body.generation)
-        .is_some_and(|generation| generation != session.change_set.lock().unwrap().generation)
+        .as_ref()
+        .and_then(|Json(b)| b.generation)
+        .is_some_and(|g| g != session.change_set.lock().unwrap().generation)
     {
-        return Json(
-            serde_json::json!({"ok":false,"stale":true,"code":"snapshot_stale","error":"The repository changed while this page was open. Reload the page and try again.","retryable":true}),
-        );
+        return stale_session();
     }
     let unit_id = SemanticChangeId(id);
-    let request = {
-        let changes = session.change_set.lock().unwrap();
-        let Some((file, item)) = changes.find_change(&unit_id) else {
-            return Json(
-                serde_json::json!({"ok":false,"code":"unit_not_found","error":"This code unit is no longer available. Reload the page and try again.","retryable":false}),
-            );
-        };
-        if !item.kind.explainable() {
-            return Json(
-                serde_json::json!({"ok":false,"code":"no_explanation_required","error":"This semantic unit is unchanged and requires no model explanation.","retryable":false}),
-            );
-        }
-        if kind == ExplanationKind::Concepts {
-            runtime::concept_request_for(file, item, &changes.context)
-        } else {
-            runtime::request_for_kind(file, item, &changes.context, kind)
-        }
+    let selection = body.as_ref().and_then(|Json(b)| b.learning.as_ref());
+    let (request, prerequisite) = match learning_request(&session, &unit_id, kind, selection) {
+        Ok(v) => v,
+        Err(e) => return learning_json(Err(e)),
     };
     let key = ExplanationCache::change_key(
         &request,
@@ -915,36 +1067,45 @@ async fn generate(
         &session.explanation,
     );
     if !regenerate {
-        if let Some(cache) = &session.cache {
-            if let Ok(Some(json)) = cache.get(&key) {
-                if let Ok(e) = serde_json::from_str::<UnitExplanation>(&json) {
-                    if update_if_current(&state, &session, &unit_id, e.clone(), kind).await {
-                        return Json(runtime::result(e, true, kind));
-                    }
-                    return stale_session();
-                }
-            }
+        if let Some(value) =
+            session
+                .learning
+                .restore(&key, &request, prerequisite.clone(), session.cache.as_ref())
+        {
+            return Json(value.response(true, kind));
         }
     }
     match infer_with_dedup(&state, &session, key.clone(), request.clone()).await {
-        InferenceOutcome::Success(e) => {
-            if current(&state, &session.id.0).await.is_none() {
-                return Json(
-                    serde_json::json!({"ok":false,"stale":true,"code":"session_stale","error":"This repository session is no longer active. Reload the page and try again.","retryable":true}),
-                );
+        InferenceOutcome::Success(result) => {
+            let Some(active) = current(&state, &session.id.0).await else {
+                return stale_session();
+            };
+            if !Arc::ptr_eq(&active, &session) {
+                return stale_session();
             }
-            if let Some(cache) = &session.cache {
-                let _ = cache.put(
-                    &key,
-                    &request,
-                    &session.model,
-                    &serde_json::to_string(&e).unwrap(),
-                );
+            if kind.is_deep() {
+                if let Ok((_, latest)) = learning_request(&session, &unit_id, kind, selection) {
+                    if latest != prerequisite {
+                        return Json(
+                            serde_json::json!({"ok":false,"code":"prerequisite_changed","retryable":true,"error":"The earlier explanation changed. Generate this explanation again."}),
+                        );
+                    }
+                }
             }
-            if update_if_current(&state, &session, &unit_id, e.clone(), kind).await {
-                Json(runtime::result(e, false, kind))
-            } else {
-                stale_session()
+
+            {
+                let value = session
+                    .learning
+                    .remember(&key, &request, prerequisite, result);
+                if let Some(cache) = &session.cache {
+                    let _ = cache.put(
+                        &key,
+                        &request,
+                        &session.model,
+                        &serde_json::to_string(&value).unwrap(),
+                    );
+                }
+                Json(value.response(false, kind))
             }
         }
         InferenceOutcome::Cancelled => stale_session(),
@@ -1020,6 +1181,7 @@ async fn infer_with_dedup(
     session.in_flight.lock().unwrap().remove(&key);
     outcome
 }
+#[cfg(test)]
 async fn update_if_current(
     state: &DaemonState,
     session: &Arc<RepositorySession>,
@@ -1331,6 +1493,7 @@ mod tests {
             self.started.notify_one();
             self.release.notified().await;
             Ok(UnitExplanation {
+                teaching: None,
                 overview: "shared result".into(),
                 annotations: vec![],
                 deep: None,
@@ -1348,6 +1511,12 @@ mod tests {
             release: Notify::new(),
         });
         let session = Arc::new(RepositorySession {
+            learning: LearningRuntime::new(
+                config.paths.clone(),
+                config.reader.clone(),
+                Default::default(),
+            )
+            .unwrap(),
             id: RepositorySessionId("dedup-session".into()),
             repo_root: PathBuf::from("."),
             analyzer: RepositoryAnalyzer::new(".", config.clone()),
@@ -1374,6 +1543,8 @@ mod tests {
         });
         let state = Arc::new(test_state(Some(session.clone())));
         let request = ExplanationRequest {
+            prerequisite_id: None,
+            policy: Default::default(),
             source_unit: "fn f() {}".into(),
             unit_name: "f".into(),
             unit_kind: "Function".into(),

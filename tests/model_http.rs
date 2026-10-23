@@ -103,6 +103,20 @@ fn ollama_provider(base_url: String, timeout: Duration) -> OpenAiProvider {
 
 fn request(deep: bool) -> ExplanationRequest {
     ExplanationRequest {
+        prerequisite_id: None,
+        policy: git_explain::learning::LearningContext {
+            config: Default::default(),
+            repository_defaults: None,
+            reader: ReaderConfig {
+                experience: "experienced".into(),
+                known_languages: vec![],
+                learning_languages: vec![],
+                known_frameworks: vec![],
+                learning_frameworks: vec![],
+            },
+        }
+        .resolve("Rust", &Default::default())
+        .unwrap(),
         source_unit: "fn add(a: i32, b: i32) -> i32 { a + b }".into(),
         unit_name: "add".into(),
         unit_kind: "Function".into(),
@@ -416,4 +430,59 @@ async fn reports_timeout() {
         .to_string();
     assert!(error.contains("model request"));
     let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn shared_provider_keeps_each_requests_learning_policy() {
+    use git_explain::learning::{Focus, LanguageHelp, LearningContext};
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let capture = observed.clone();
+    let app = Router::new().route("/v1/chat/completions", post(move |Json(body): Json<serde_json::Value>| {
+        let capture = capture.clone();
+        async move {
+            let prompt = body["messages"][1]["content"].as_str().unwrap().to_string();
+            let overview = if prompt.contains("Skip elementary syntax") { "Traces execution." } else { "Teaches syntax." };
+            capture.lock().unwrap().push(prompt);
+            Json(json!({"choices":[{"finish_reason":"stop","message":{"content":json!({"overview":overview,"annotations":[]}).to_string()}}]}))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let provider = provider(format!("http://{address}/v1"), Duration::from_secs(2));
+    let context = LearningContext {
+        config: Default::default(),
+        repository_defaults: None,
+        reader: ReaderConfig {
+            experience: "experienced".into(),
+            known_languages: vec![],
+            learning_languages: vec![],
+            known_frameworks: vec![],
+            learning_frameworks: vec![],
+        },
+    };
+    let mut first = request(false);
+    let mut policy = context.resolve("Rust", &Default::default()).unwrap();
+    policy.language_help = LanguageHelp::Explain;
+    policy.focus = Focus::Architecture;
+    first.policy = policy.clone();
+    assert_eq!(
+        provider.explain(first).await.unwrap().overview,
+        "Teaches syntax."
+    );
+    let mut second = request(false);
+    policy.language_help = LanguageHelp::Skip;
+    policy.focus = Focus::Execution;
+    second.policy = policy;
+    assert_eq!(
+        provider.explain(second).await.unwrap().overview,
+        "Traces execution."
+    );
+    let prompts = observed.lock().unwrap();
+    assert_eq!(prompts.len(), 2);
+    assert!(prompts[0].contains("architectural relationships"));
+    assert!(prompts[1].contains("Trace execution in order"));
+    server.abort();
 }

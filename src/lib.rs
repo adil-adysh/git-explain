@@ -8,6 +8,8 @@ pub mod explain;
 pub mod file_analysis;
 pub mod git;
 pub mod language;
+pub mod learning;
+pub mod learning_runtime;
 pub mod local_context;
 pub mod model;
 pub mod runtime;

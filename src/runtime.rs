@@ -77,6 +77,8 @@ pub fn request_for_kind(
     }
     git_context.push_str(&format!("\nUnit status: {:?}", change.kind));
     ExplanationRequest {
+        prerequisite_id: None,
+        policy: Default::default(),
         source_unit: unit.source.clone(),
         unit_name: unit.identity.qualified_name.clone(),
         unit_kind: format!("{:?}", unit.identity.kind),
@@ -222,16 +224,19 @@ mod tests {
             after: Some(unit),
             diff: String::new(),
             overview_explanation: UnitExplanation {
+                teaching: None,
                 overview: String::new(),
                 annotations: vec![],
                 deep: None,
             },
             explanation: UnitExplanation {
+                teaching: None,
                 overview: "Old overview".into(),
                 annotations: vec![],
                 deep: None,
             },
             concept_explanation: UnitExplanation {
+                teaching: None,
                 overview: String::new(),
                 annotations: vec![],
                 deep: None,
@@ -242,6 +247,7 @@ mod tests {
         apply(
             &mut change,
             UnitExplanation {
+                teaching: None,
                 overview: "New overview".into(),
                 annotations: vec![],
                 deep: None,

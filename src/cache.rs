@@ -13,8 +13,8 @@ use std::{
 };
 
 const SCHEMA: &str = "1";
-const PROMPT: &str = "explanation-prompt-v3";
-const RESPONSE_CONTRACT: &str = "structured-response-v2";
+pub const PROMPT: &str = "explanation-prompt-v15";
+pub const RESPONSE_CONTRACT: &str = "structured-response-v5";
 
 #[derive(Clone)]
 pub struct ExplanationCache {
@@ -24,6 +24,8 @@ pub struct ExplanationCache {
 
 #[derive(Clone, Debug, Serialize)]
 struct Identity<'a> {
+    prerequisite_id: Option<&'a str>,
+    learning: &'a crate::learning::ResolvedExplanationPolicy,
     schema: &'static str,
     prompt: &'static str,
     response_contract: &'static str,
@@ -34,7 +36,6 @@ struct Identity<'a> {
     mode: &'static str,
     explanation_kind: crate::model::ExplanationKind,
     generation: &'a GenerationConfig,
-    reader: &'a ReaderConfig,
     explanation: &'a ExplanationConfig,
     git_context: &'a str,
     language: &'a str,
@@ -91,7 +92,7 @@ impl ExplanationCache {
         scope: &'static str,
         request: &ExplanationRequest,
         model: &ResolvedProfile,
-        reader: &ReaderConfig,
+        _reader: &ReaderConfig,
         explanation: &ExplanationConfig,
     ) -> String {
         let generation = if request.kind.is_deep() {
@@ -100,6 +101,8 @@ impl ExplanationCache {
             &model.normal
         };
         let identity = Identity {
+            prerequisite_id: request.prerequisite_id.as_deref(),
+            learning: &request.policy,
             schema: SCHEMA,
             prompt: PROMPT,
             response_contract: RESPONSE_CONTRACT,
@@ -114,7 +117,6 @@ impl ExplanationCache {
             },
             explanation_kind: request.kind,
             generation,
-            reader,
             explanation,
             git_context: &request.git_context,
             language: &request.language,
@@ -234,6 +236,8 @@ mod tests {
             infer_intent: false,
         };
         let request = ExplanationRequest {
+            prerequisite_id: None,
+            policy: Default::default(),
             source_unit: "fn load() {}".into(),
             unit_name: "load".into(),
             unit_kind: "Function".into(),
@@ -325,6 +329,51 @@ mod tests {
             ));
         }
         assert_eq!(keys.len(), 4);
+    }
+
+    #[test]
+    fn effective_learning_policy_is_part_of_both_cache_namespaces() {
+        let (_, model, reader, explanation, request) = setup();
+        let first = ExplanationCache::change_key(&request, &model, &reader, &explanation);
+        let snapshot = ExplanationCache::snapshot_key(&request, &model, &reader, &explanation);
+        let mut changed = request.clone();
+        changed.policy.focus = crate::learning::Focus::Reasoning;
+        assert_ne!(
+            first,
+            ExplanationCache::change_key(&changed, &model, &reader, &explanation)
+        );
+        assert_ne!(
+            snapshot,
+            ExplanationCache::snapshot_key(&changed, &model, &reader, &explanation)
+        );
+        // Obsolete reader scaffolding cannot split identical resolved policies.
+        let mut unused_reader = reader.clone();
+        unused_reader.known_languages = vec!["Python".into()];
+        assert_eq!(
+            first,
+            ExplanationCache::change_key(&request, &model, &unused_reader, &explanation)
+        );
+    }
+
+    #[test]
+    fn deep_cache_tracks_prerequisite_identity_even_when_text_is_unchanged() {
+        let (_, model, reader, explanation, mut request) = setup();
+        request.kind = crate::model::ExplanationKind::Deep;
+        request.deep = true;
+        request.prior_explanation = Some("Identical overview text.".into());
+        request.prerequisite_id = Some("first-result".into());
+        let first_change = ExplanationCache::change_key(&request, &model, &reader, &explanation);
+        let first_snapshot =
+            ExplanationCache::snapshot_key(&request, &model, &reader, &explanation);
+        request.prerequisite_id = Some("regenerated-result".into());
+        assert_ne!(
+            first_change,
+            ExplanationCache::change_key(&request, &model, &reader, &explanation)
+        );
+        assert_ne!(
+            first_snapshot,
+            ExplanationCache::snapshot_key(&request, &model, &reader, &explanation)
+        );
     }
 
     #[test]

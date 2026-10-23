@@ -1,4 +1,5 @@
 pub mod openai;
+mod prompts;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,8 @@ impl ExplanationKind {
 
 #[derive(Clone, Debug)]
 pub struct ExplanationRequest {
+    pub prerequisite_id: Option<String>,
+    pub policy: crate::learning::ResolvedExplanationPolicy,
     pub source_unit: String,
     pub unit_name: String,
     pub unit_kind: String,
@@ -47,6 +50,8 @@ impl ExplanationRequest {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Annotation {
+    #[serde(default)]
+    pub title: Option<String>,
     pub start_line: usize,
     pub end_line: usize,
     pub kind: String,
@@ -54,6 +59,8 @@ pub struct Annotation {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UnitExplanation {
+    #[serde(default)]
+    pub teaching: Option<DeepTeaching>,
     pub overview: String,
     pub annotations: Vec<Annotation>,
     #[serde(default)]
@@ -158,4 +165,12 @@ pub fn user_facing_error(error: &anyhow::Error) -> UserFacingError {
 #[async_trait]
 pub trait ExplanationProvider: Send + Sync {
     async fn explain(&self, request: ExplanationRequest) -> Result<UnitExplanation>;
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeepTeaching {
+    pub purpose: String,
+    pub walkthrough: Vec<String>,
+    pub boundaries: Vec<String>,
+    pub example: Option<String>,
 }

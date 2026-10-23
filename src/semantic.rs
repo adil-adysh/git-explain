@@ -120,16 +120,19 @@ fn match_units(
                 after,
                 diff: diff.clone(),
                 overview_explanation: UnitExplanation {
+                    teaching: None,
                     overview: String::new(),
                     annotations: vec![],
                     deep: None,
                 },
                 explanation: UnitExplanation {
+                    teaching: None,
                     overview: String::new(),
                     annotations: vec![],
                     deep: None,
                 },
                 concept_explanation: UnitExplanation {
+                    teaching: None,
                     overview: String::new(),
                     annotations: vec![],
                     deep: None,

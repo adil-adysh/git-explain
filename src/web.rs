@@ -7,6 +7,63 @@ use crate::model::{Annotation, UnitExplanation};
 const STYLE: &str = r#"<style>:root{--page:#f7f8fa;--panel:#fff;--text:#18202a;--muted:#5c6875;--border:#d7dde5;--code:#f1f4f7;--accent:#185abc}body{font:1rem/1.55 system-ui,sans-serif;background:var(--page);color:var(--text);margin:auto;max-width:1100px;padding:2rem}section,article{background:var(--panel);border:1px solid var(--border);border-radius:.6rem;padding:1.25rem;margin:1.25rem 0}h1,h2,h3,h4{line-height:1.2}pre,textarea{font:.9rem/1.55 ui-monospace,Consolas,monospace;background:var(--code);white-space:pre;overflow:auto;padding:1rem;width:100%;box-sizing:border-box}button{padding:.45rem .7rem;margin:.25rem;border:1px solid var(--border);border-radius:.35rem;background:var(--panel);color:var(--text)}button[aria-selected=true]{border-color:var(--accent);box-shadow:inset 0 -2px var(--accent)}button:focus-visible{outline:3px solid var(--accent)}.layer-controls,.actions{margin:.75rem 0}.layer-summary{min-height:1.55rem}.annotation{border-left:4px solid var(--accent);margin:.25rem 0 1rem;padding:.5rem 1rem}@media(prefers-color-scheme:dark){:root{--page:#151a21;--panel:#1d242d;--text:#e8edf2;--muted:#aab6c2;--border:#3a4652;--code:#11171d;--accent:#8ab4f8}}</style>"#;
 
 const SCRIPT: &str = include_str!("web.js");
+const READER_STYLE: &str = include_str!("web.css");
+
+fn preference_controls(scope: &str) -> String {
+    let choices = [
+        (
+            "language_help",
+            "Language help",
+            vec![
+                ("automatic", "Automatic"),
+                ("explain", "Explain syntax"),
+                ("brief", "Brief reminders"),
+                ("skip", "Skip basics"),
+            ],
+        ),
+        (
+            "focus",
+            "Explanation focus",
+            vec![
+                ("balanced", "Balanced"),
+                ("syntax", "Syntax"),
+                ("execution", "Execution flow"),
+                ("reasoning", "Reasoning and tradeoffs"),
+                ("architecture", "Architecture"),
+            ],
+        ),
+        (
+            "detail",
+            "Detail",
+            vec![
+                ("concise", "Concise"),
+                ("balanced", "Balanced"),
+                ("detailed", "Detailed"),
+            ],
+        ),
+    ];
+    let mut html = String::new();
+    for (key, label, options) in choices {
+        html.push_str(&format!("<label>{label}<select data-preference=\"{key}\" aria-label=\"{scope}: {label}\"><option value=\"\">Inherit</option>"));
+        for (value, name) in options {
+            html.push_str(&format!("<option value=\"{value}\">{name}</option>"));
+        }
+        html.push_str("</select></label>");
+    }
+    html
+}
+
+fn learning_controls() -> String {
+    format!(
+        r#"<details id="learning-settings"><summary>Learning settings</summary><p>Changes apply to your next Generate action.</p><label>Learning profile<select id="learning-profile" disabled><option value="">User defaults</option></select></label><label><input id="learning-repository" type="checkbox">Use repository learning defaults</label><fieldset><legend>For this session</legend>{}</fieldset><button id="learning-reset">Reset temporary settings</button><details><summary>Customize saved preferences</summary><label>Edit<select id="learning-edit-target"><option value="defaults">User defaults</option><option value="profile">Selected profile</option></select></label><label>Language override (leave empty for all languages)<input id="learning-language" placeholder="rust"></label><div id="learning-editor">{}</div><div id="learning-lists"></div><label>Profile name<input id="learning-name"></label><button id="learning-save">Save preferences</button><button id="learning-save-as">Save as profile</button><button id="learning-default">Use selected profile by default</button></details><p id="learning-status" role="status" aria-live="polite">Loading learning settings…</p></details>"#,
+        preference_controls("Session"),
+        preference_controls("Saved preferences")
+    )
+}
+
+fn filter_controls() -> &'static str {
+    "<div class=\"reader-tools\" role=\"search\" aria-label=\"Find code\"><label for=\"code-filter\">Filter files and code sections</label><div class=\"filter-input\"><input id=\"code-filter\" type=\"search\" aria-describedby=\"filter-help filter-status\" placeholder=\"File path or code section name\"><button id=\"clear-filter\" disabled>Clear filter</button></div><p id=\"filter-help\">Filter by file path or code section name. Explanations are generated only when you press Generate.</p><p id=\"filter-status\" role=\"status\" aria-live=\"polite\"></p></div><p id=\"filter-empty\" hidden>No files or code sections match your filter.</p>"
+}
 
 fn escape(value: &str) -> String {
     value
@@ -17,7 +74,7 @@ fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 fn page_start(title: &str) -> String {
-    format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title>{}</head><body><main>", escape(title), STYLE)
+    format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title>{}<style>{}</style></head><body><a class=\"skip-link\" href=\"#content\">Skip to code</a><main id=\"content\">", escape(title), STYLE, READER_STYLE)
 }
 
 pub fn render(change_set: &ChangeSet) -> String {
@@ -27,13 +84,27 @@ pub fn render(change_set: &ChangeSet) -> String {
 pub fn render_file_analysis(analysis: &FileAnalysis) -> String {
     let mut html = page_start("git-explain files");
     html.push_str(&format!("<h1>Files</h1><p>Revision: {}</p><button id=\"toggle-explanations\">Hide explanations</button><p id=\"status\" role=\"status\" aria-live=\"polite\"></p>", escape(analysis.revision.as_deref().unwrap_or("working tree"))));
-    for document in analysis
+    html.push_str(&learning_controls());
+    html.push_str(filter_controls());
+    let documents = analysis
         .documents
         .iter()
         .filter(|document| document.language.is_some())
-    {
+        .collect::<Vec<_>>();
+    html.push_str("<nav aria-label=\"Files\"><h2>Files</h2><ol>");
+    for (index, document) in documents.iter().enumerate() {
         html.push_str(&format!(
-            "<section><h2>{}</h2><p>Language: {}</p><p>Code sections: {}</p>",
+            "<li><a href=\"#file-{}\">{}</a></li>",
+            index + 1,
+            escape(&document.source.path.display().to_string())
+        ));
+    }
+    html.push_str("</ol></nav>");
+    for (index, document) in documents.iter().enumerate() {
+        html.push_str(&format!(
+            "<section id=\"file-{}\" data-file-path=\"{}\"><h2>{}</h2><p>Language: {}</p><p>Code sections: {}</p>",
+            index + 1,
+            escape(&document.source.path.display().to_string()),
             escape(&document.source.path.display().to_string()),
             escape(document.language.as_deref().unwrap_or("unsupported")),
             document.units.len()
@@ -46,6 +117,7 @@ pub fn render_file_analysis(analysis: &FileAnalysis) -> String {
             let base = format!("/api/file-units/{id}");
             html.push_str(&unit_card(UnitCard {
                 id: &id,
+                language: &unit.language,
                 name: &unit.identity.qualified_name,
                 metadata: &format!(
                     "{:?} · lines {}–{}",
@@ -117,6 +189,8 @@ pub fn render_for_session_at_generation(
     if let Some(message) = change_set.empty_state() {
         html.push_str(&format!("<p role=\"status\">{}</p>", escape(&message)))
     }
+    html.push_str(&learning_controls());
+    html.push_str(filter_controls());
     html.push_str("<nav aria-labelledby=\"files\"><h2 id=\"files\">Files</h2><ol>");
     for (index, file) in supported_files.iter().enumerate() {
         html.push_str(&format!(
@@ -131,7 +205,7 @@ pub fn render_for_session_at_generation(
         render_file(&mut html, file, index + 1, &endpoint, generation)
     }
     if !session_id.is_empty() {
-        html.push_str(&format!("<div id=\"session-state\" data-session=\"{}\" data-generation=\"{}\"></div><button id=\"reload-snapshot\" hidden onclick=\"location.reload()\">Reload Git changes</button>", escape(session_id), generation));
+        html.push_str(&format!("<div id=\"session-state\" data-session=\"{}\" data-generation=\"{}\"></div><button id=\"reload-snapshot\" hidden>Reload Git changes</button>", escape(session_id), generation));
     }
     html.push_str(SCRIPT);
     html.push_str("</main></body></html>");
@@ -146,7 +220,8 @@ fn render_file(
     generation: u64,
 ) {
     html.push_str(&format!(
-        "<section id=\"file-{number}\"><h2>{}</h2><p>Status: {}</p>",
+        "<section id=\"file-{number}\" data-file-path=\"{}\"><h2>{}</h2><p>Status: {}</p>",
+        escape(&file.display_path().display().to_string()),
         escape(&file.display_path().display().to_string()),
         file.status_label()
     ));
@@ -194,6 +269,7 @@ fn render_change(html: &mut String, change: &SemanticUnitChange, endpoint: &str,
         (!change.concept_explanation.overview.is_empty()).then_some(&change.concept_explanation);
     html.push_str(&unit_card(UnitCard {
         id,
+        language: &unit.language,
         name: &unit.identity.qualified_name,
         metadata: &format!(
             "Status: {:?} · {} · lines {}–{}",
@@ -212,6 +288,7 @@ fn render_change(html: &mut String, change: &SemanticUnitChange, endpoint: &str,
 
 struct UnitCard<'a> {
     id: &'a str,
+    language: &'a str,
     name: &'a str,
     metadata: &'a str,
     source: &'a str,
@@ -225,6 +302,7 @@ struct UnitCard<'a> {
 }
 
 fn layer_button(
+    id: &str,
     kind: &str,
     label: &str,
     endpoint: &str,
@@ -232,7 +310,7 @@ fn layer_button(
     generation: &str,
     selected: bool,
 ) -> String {
-    format!("<button role=\"tab\" aria-selected=\"{}\" data-layer=\"{}\" data-endpoint=\"{}\" data-regenerate-endpoint=\"{}\"{}>{}</button>",selected,kind,escape(endpoint),escape(regenerate),generation,label)
+    format!("<button id=\"tab-{}-{}\" role=\"tab\" aria-controls=\"panel-{}\" tabindex=\"{}\" aria-selected=\"{}\" data-layer=\"{}\" data-endpoint=\"{}\" data-regenerate-endpoint=\"{}\"{}>{}</button>",escape(id),kind,escape(id),if selected { 0 } else { -1 },selected,kind,escape(endpoint),escape(regenerate),generation,label)
 }
 
 fn unit_card(card: UnitCard<'_>) -> String {
@@ -256,6 +334,7 @@ fn unit_card(card: UnitCard<'_>) -> String {
         "regenerate"
     };
     let mut controls = layer_button(
+        card.id,
         "overview",
         "Overview",
         &format!("{}/{}", card.base, overview_endpoint),
@@ -265,6 +344,7 @@ fn unit_card(card: UnitCard<'_>) -> String {
     );
     if card.diff.is_some() {
         controls.push_str(&layer_button(
+            card.id,
             "changes",
             "Changes",
             &format!("{}/explain", card.base),
@@ -274,6 +354,7 @@ fn unit_card(card: UnitCard<'_>) -> String {
         ))
     }
     controls.push_str(&layer_button(
+        card.id,
         "concepts",
         "Concepts",
         &format!("{}/concepts", card.base),
@@ -282,6 +363,7 @@ fn unit_card(card: UnitCard<'_>) -> String {
         false,
     ));
     controls.push_str(&layer_button(
+        card.id,
         "deep",
         "Explain this code in depth",
         &format!("{}/deep", card.base),
@@ -307,10 +389,30 @@ fn unit_card(card: UnitCard<'_>) -> String {
                 overview: String::new(),
                 annotations: vec![],
                 deep: Some(value.to_string()),
+                teaching: None,
             },
         ));
     }
-    format!("<article data-unit-id=\"{}\"><h3>{}</h3><p>{}</p><div class=\"layer-controls\" role=\"tablist\" aria-label=\"Explanation views\">{}</div><p class=\"layer-summary explanation\">{}</p><div class=\"actions\"><button data-generate title=\"Regenerate in-depth explanation when Deep is selected\">Generate selected explanation</button><button class=\"source-toggle\">Read code as text</button>{}</div><h4>Source</h4><div class=\"source-code\">{}</div><textarea class=\"source-text\" readonly hidden aria-label=\"Source code for {}\">{}</textarea><section class=\"deep-section explanation\" hidden><h4>Detailed explanation</h4><p class=\"deep\">{}</p></section>{}{}</article>",escape(card.id),escape(card.name),escape(card.metadata),controls,escape(overview),diff_button,rendered_source(card.source,annotations),escape(card.name),escape(card.source),escape(card.deep.unwrap_or("")),diff_panel,states)
+    let action_label = if card.overview.is_some() {
+        "Regenerate explanation"
+    } else {
+        "Generate selected explanation"
+    };
+    format!(
+        "<article data-unit-id=\"{id}\" data-language=\"{language}\"><h3>{name}</h3><p>{metadata}</p>
+<div class=\"layer-controls\" role=\"tablist\" aria-label=\"Explanation views\">{controls}</div>
+<details class=\"view-learning\"><summary>Settings for this code section and view</summary>{preferences}<button data-reset-view>Reset view settings</button><label>Feedback term<input class=\"feedback-term\"></label><button data-save-feedback>Save feedback to selected profile</button></details><p class=\"policy-status\" role=\"status\"></p><p class=\"generation-status\" role=\"status\" aria-live=\"polite\"></p>
+<div id=\"panel-{id}\" role=\"tabpanel\" aria-labelledby=\"tab-{id}-overview\" aria-busy=\"false\" tabindex=\"0\">
+<p class=\"layer-summary explanation\">{overview}</p>
+<div class=\"actions\"><button data-generate data-generated=\"{generated}\">{action_label}</button><button data-reload hidden>Reload Git changes</button><button class=\"source-toggle\" aria-pressed=\"false\">Read code as text</button>{diff_button}</div>
+<h4>Source</h4><div class=\"source-code\">{source}</div>
+<textarea class=\"source-text\" readonly hidden aria-label=\"Source code for {name}\">{plain_source}</textarea>
+<section class=\"deep-section explanation\" hidden><h4>Detailed explanation</h4><div class=\"deep\">{deep}</div></section>{diff_panel}</div>{states}</article>",
+        language = escape(card.language), preferences = preference_controls("Current view"), id = escape(card.id), name = escape(card.name), metadata = escape(card.metadata),
+        overview = escape(overview), generated = card.overview.is_some(),
+        source = rendered_source(card.source, annotations), plain_source = escape(card.source),
+        deep = escape(card.deep.unwrap_or("")),
+    )
 }
 
 fn layer_state(kind: &str, value: &UnitExplanation) -> String {
@@ -320,6 +422,25 @@ fn layer_state(kind: &str, value: &UnitExplanation) -> String {
         kind,
         escape(&json)
     )
+}
+
+pub fn render_teaching(teaching: &crate::model::DeepTeaching) -> String {
+    let mut html = format!(
+        "<h5>Purpose</h5><p>{}</p><h5>Walkthrough</h5><ol>",
+        escape(&teaching.purpose)
+    );
+    for step in &teaching.walkthrough {
+        html.push_str(&format!("<li>{}</li>", escape(step)));
+    }
+    html.push_str("</ol><h5>Boundaries</h5><ul>");
+    for boundary in &teaching.boundaries {
+        html.push_str(&format!("<li>{}</li>", escape(boundary)));
+    }
+    html.push_str("</ul>");
+    if let Some(example) = &teaching.example {
+        html.push_str(&format!("<h5>Example</h5><p>{}</p>", escape(example)));
+    }
+    html
 }
 
 fn rendered_source(source: &str, annotations: &[Annotation]) -> String {
@@ -346,7 +467,7 @@ fn rendered_source(source: &str, annotations: &[Annotation]) -> String {
         if end > start {
             html.push_str(&format!(
                 "<section class=\"annotation explanation\"><h4>{}</h4><p>{}</p></section>",
-                escape(&a.kind),
+                escape(a.title.as_deref().unwrap_or(&a.kind)),
                 escape(&a.text)
             ))
         }
@@ -369,6 +490,21 @@ fn rendered_source(source: &str, annotations: &[Annotation]) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn structured_teaching_has_plain_escaped_sections() {
+        let html = render_teaching(&crate::model::DeepTeaching {
+            purpose: "<purpose>".into(),
+            walkthrough: vec!["step & effect".into()],
+            boundaries: vec!["boundary".into()],
+            example: Some("<script>example</script>".into()),
+        });
+        for heading in ["Purpose", "Walkthrough", "Boundaries", "Example"] {
+            assert!(html.contains(heading));
+        }
+        assert!(html.contains("&lt;purpose&gt;"));
+        assert!(html.contains("step &amp; effect"));
+        assert!(!html.contains("<script>"));
+    }
+    #[test]
     fn annotations_render_between_source_regions() {
         let html = rendered_source(
             "first\nsecond\nthird",
@@ -376,6 +512,7 @@ mod tests {
                 start_line: 2,
                 end_line: 2,
                 kind: "concept".into(),
+                title: None,
                 text: "Explains second".into(),
             }],
         );
@@ -395,12 +532,14 @@ mod tests {
                     start_line: 1,
                     end_line: 3,
                     kind: "concept".into(),
+                    title: None,
                     text: "First concept".into(),
                 },
                 Annotation {
                     start_line: 1,
                     end_line: 3,
                     kind: "concept".into(),
+                    title: None,
                     text: "Second concept".into(),
                 },
             ],

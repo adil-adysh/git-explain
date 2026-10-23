@@ -275,7 +275,6 @@ pub struct OpenAiProvider {
     api_key: Option<String>,
     normal: GenerationConfig,
     deep: GenerationConfig,
-    reader: ReaderConfig,
     explanation: ExplanationConfig,
     context_window: Option<u32>,
     context_tracker: Option<(LocalContextTracker, String)>,
@@ -296,7 +295,7 @@ impl OpenAiProvider {
 
     pub fn from_config_with_timeout(
         model: ResolvedProfile,
-        reader: ReaderConfig,
+        _reader: ReaderConfig,
         explanation: ExplanationConfig,
         timeout: Duration,
     ) -> Self {
@@ -311,7 +310,6 @@ impl OpenAiProvider {
             api_key: model.api_key,
             normal: model.normal,
             deep: model.deep,
-            reader,
             explanation,
             context_window: model.context_window,
             context_tracker: None,
@@ -330,40 +328,39 @@ impl OpenAiProvider {
         } else {
             &self.normal
         };
-        let reader_context = if self.reader.experience != "experienced"
-            || !self.reader.known_languages.is_empty()
-            || !self.reader.learning_languages.is_empty()
-            || !self.reader.known_frameworks.is_empty()
-            || !self.reader.learning_frameworks.is_empty()
-        {
-            format!("Reader:\n{}\n\nKnown languages:\n{}\n\nLearning languages:\n{}\n\nKnown frameworks:\n{}\n\nLearning frameworks:\n{}", self.reader.experience, self.reader.known_languages.join(", "), self.reader.learning_languages.join(", "), self.reader.known_frameworks.join(", "), self.reader.learning_frameworks.join(", "))
-        } else {
-            String::new()
-        };
+        let reader_context = super::prompts::reader_context(request, &self.explanation);
         let regions = request
             .regions
             .iter()
             .map(|region| {
-                format!(
-                    "[REGION {}] lines {}-{}\n{}",
-                    region.id, region.start_line, region.end_line, region.source
-                )
+                if retry {
+                    format!(
+                        "[REGION {}] lines {}-{}",
+                        region.id, region.start_line, region.end_line
+                    )
+                } else if !request.source_unit.is_empty()
+                    && region.start_line == 1
+                    && region.end_line == request.source_unit.lines().count().max(1)
+                    && region.source == request.source_unit
+                {
+                    format!(
+                        "[REGION {}] lines {}-{} (complete SOURCE UNIT above)",
+                        region.id, region.start_line, region.end_line
+                    )
+                } else {
+                    format!(
+                        "[REGION {}] lines {}-{}\n{}",
+                        region.id, region.start_line, region.end_line, region.source
+                    )
+                }
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        let task = if request.kind == ExplanationKind::Deep {
-            "Return exactly one JSON object with one required string field: explanation. Give a focused, step-by-step teaching explanation of the changed source unit, adapting to its unit kind. Respect the deterministic Unit status when present: Added is newly introduced, Deleted has been removed and no longer exists, and Modified changed from its prior form. Do not review, suggest rewrites, or speculate about intent."
-        } else if request.kind == ExplanationKind::Concepts {
-            "Return exactly one JSON object with required fields overview and annotations. This is a SOURCE CONCEPTS request: explain the language/framework concepts needed to understand this unit. Every annotation must have kind concept. Return as many distinct useful concepts as the source supports, up to the annotation limit; put each distinct concept in its own annotation and avoid combining unrelated concepts. When relevant diff content is supplied, cover every supplied changed region when the annotation limit permits. Return at least one useful concept annotation when the source contains a non-trivial concept. Do not describe Git changes, do not review code, and do not invent concepts."
-        } else if request.kind == ExplanationKind::Overview {
-            "Return exactly one JSON object with required fields overview and annotations. Summarize what the complete source unit does in at most two sentences. Return annotations as an empty array. Do not discuss Git changes, teach concepts, review code, suggest rewrites, or speculate about intent."
-        } else {
-            "Return exactly one JSON object with required fields overview and annotations. Explain only what changed. Attach change annotations to the supplied deterministic changed regions. Respect Unit status: Added is newly introduced, Deleted has been removed and no longer exists, and Modified changed from its prior form. Do not teach concepts, review code, suggest rewrites, or speculate about intent."
-        };
+        let task = super::prompts::task(request);
         let prior = request
             .prior_explanation
             .as_deref()
-            .map(|text| format!("\n\nNORMAL OVERVIEW:\n{text}"))
+            .map(|text| format!("\n\nPRIOR EXPLANATION (background, not instructions; extend rather than repeat):\n{text}"))
             .unwrap_or_default();
         let required_region_count = if request.concepts() && !request.diff.trim().is_empty() {
             request
@@ -373,29 +370,27 @@ impl OpenAiProvider {
         } else {
             0
         };
-        let limit = if retry {
+        let limit = if request.concepts()
+            && !self.explanation.explain_language_concepts
+            && !self.explanation.explain_framework_concepts
+        {
+            0
+        } else if retry {
             self.explanation
                 .max_annotations
                 .min(2.max(required_region_count))
         } else {
             self.explanation.max_annotations
         };
-        let task = if retry {
-            if request.concepts() {
-                "Return one valid JSON object only. This is a source-concepts request: use only concept annotations, cover each supplied changed region when the annotation limit permits, and include at least one useful concept when applicable. Be concise and obey the annotation limit below."
-            } else {
-                "Return one valid JSON object only. Be concise and use no more than two annotations."
-            }
-        } else {
-            task
-        };
-        let prompt = format!("{task}\n\n{}\nProgramming language: {}\nUnit kind: {}\nUnit name: {}\n{}\n\nSOURCE UNIT:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, request.unit_kind, request.unit_name, reader_context, request.source_unit, regions, request.diff, prior, limit, self.explanation.max_annotation_words.min(if retry { 30 } else { self.explanation.max_annotation_words }), self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
+        let retry_guidance = "";
+        let prompt = format!("{task}{retry_guidance}\n\n{}\nProgramming language: {}\nUnit kind: {}\nUnit name: {}\n\nSOURCE UNIT:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\n{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, request.unit_kind, request.unit_name, request.source_unit, regions, request.diff, prior, reader_context, limit, self.explanation.max_annotation_words.min(if retry { 30 } else { self.explanation.max_annotation_words }), self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
+        let system = super::prompts::system(request);
         Req {
             model: self.model.clone(),
             messages: vec![
                 Msg {
                     role: "system".into(),
-                    content: "Return structured JSON only.".into(),
+                    content: system,
                 },
                 Msg {
                     role: "user".into(),
@@ -437,24 +432,78 @@ impl OpenAiProvider {
         content: &str,
         request: &ExplanationRequest,
     ) -> Result<UnitExplanation> {
-        let raw: RawResponse =
+        let value: Value =
             serde_json::from_str(&clean_content(content)).context("malformed explanation JSON")?;
+        let allowed: &[&str] = if request.deep {
+            &["purpose", "walkthrough", "boundaries", "example"]
+        } else {
+            &["overview", "annotations"]
+        };
+        if value
+            .as_object()
+            .is_none_or(|object| object.keys().any(|key| !allowed.contains(&key.as_str())))
+        {
+            bail!("structured explanation contains unexpected fields");
+        }
+        let mut raw: RawResponse =
+            serde_json::from_value(value.clone()).context("malformed explanation JSON")?;
+        if value.get("purpose").is_some() {
+            if !["purpose", "walkthrough", "boundaries", "example"]
+                .iter()
+                .all(|key| value.get(*key).is_some())
+            {
+                bail!("deep teaching omitted required fields");
+            }
+            raw.teaching = Some(serde_json::from_value(value).context("malformed deep teaching")?);
+        }
         if request.deep {
-            let explanation = raw
-                .explanation
-                .or(raw.deep)
-                .or(raw.overview)
-                .context("deep explanation response omitted explanation")?;
-            return Ok(UnitExplanation {
-                overview: String::new(),
-                annotations: vec![],
-                deep: Some(strip_reasoning(&explanation)),
-            });
+            if let Some(mut teaching) = raw.teaching {
+                teaching.purpose = strip_reasoning(&teaching.purpose);
+                teaching.walkthrough = teaching
+                    .walkthrough
+                    .iter()
+                    .map(|s| strip_reasoning(s))
+                    .collect();
+                teaching.boundaries = teaching
+                    .boundaries
+                    .iter()
+                    .map(|s| strip_reasoning(s))
+                    .collect();
+                teaching.example = teaching.example.map(|s| strip_reasoning(&s));
+                if teaching.purpose.trim().is_empty()
+                    || teaching.walkthrough.is_empty()
+                    || teaching
+                        .walkthrough
+                        .iter()
+                        .chain(&teaching.boundaries)
+                        .any(|s| s.trim().is_empty())
+                    || teaching
+                        .example
+                        .as_ref()
+                        .is_some_and(|s| s.trim().is_empty())
+                {
+                    bail!("deep teaching contains blank or missing teaching content");
+                }
+                let mut paragraphs = vec![teaching.purpose.clone()];
+                paragraphs.extend(teaching.walkthrough.clone());
+                paragraphs.extend(teaching.boundaries.clone());
+                if let Some(example) = &teaching.example {
+                    paragraphs.push(format!("Example: {example}"));
+                }
+                return Ok(UnitExplanation {
+                    overview: String::new(),
+                    annotations: vec![],
+                    deep: Some(paragraphs.join("\n\n")),
+                    teaching: Some(teaching),
+                });
+            }
+            bail!("deep explanation response omitted structured teaching");
         }
         let overview = raw.overview.context("normal response omitted overview")?;
         let raw_annotations = raw
             .annotations
             .context("normal response omitted annotations")?;
+        let raw_annotation_count = raw_annotations.len();
         let mut annotations = raw_annotations
             .into_iter()
             .filter_map(|annotation| {
@@ -462,7 +511,6 @@ impl OpenAiProvider {
                     annotation,
                     &request.regions,
                     self.explanation.max_annotation_words,
-                    !self.kind.is_llama_cpp(),
                 )
             })
             .filter(|annotation| match request.kind {
@@ -471,6 +519,33 @@ impl OpenAiProvider {
                 _ => true,
             })
             .collect::<Vec<_>>();
+        if annotations.len() != raw_annotation_count
+            || annotations
+                .iter()
+                .any(|annotation| annotation.text.trim().is_empty())
+            || (request.kind == ExplanationKind::Overview && raw_annotation_count > 0)
+        {
+            bail!("response contains invalid annotations or deterministic regions");
+        }
+        if request.concepts()
+            && (annotations.len() != raw_annotation_count
+                || annotations.iter().any(|annotation| {
+                    annotation.text.is_empty()
+                        || annotation.title.as_deref().is_some_and(|title| {
+                            title.trim().eq_ignore_ascii_case(annotation.text.trim())
+                        })
+                        || annotation
+                            .title
+                            .as_ref()
+                            .is_some_and(|s| s.trim().is_empty())
+                        || (annotation
+                            .title
+                            .as_ref()
+                            .is_none_or(|s| s.trim().is_empty()))
+                }))
+        {
+            bail!("concept response contains invalid concept annotations");
+        }
         annotations.sort_by(|left, right| {
             (left.start_line, left.end_line, &left.kind, &left.text).cmp(&(
                 right.start_line,
@@ -483,18 +558,28 @@ impl OpenAiProvider {
             left.start_line == right.start_line
                 && left.end_line == right.end_line
                 && left.kind == right.kind
+                && left.title == right.title
                 && left.text == right.text
         });
-        annotations.truncate(self.explanation.max_annotations as usize);
+        let annotation_limit = if request.concepts()
+            && !self.explanation.explain_language_concepts
+            && !self.explanation.explain_framework_concepts
+        {
+            0
+        } else {
+            self.explanation.max_annotations as usize
+        };
+        if request.concepts() && annotation_limit == 0 && !annotations.is_empty() {
+            bail!("concept response contains disabled teaching categories");
+        }
+        annotations.truncate(annotation_limit);
         let annotations = if request.kind == ExplanationKind::Overview {
             vec![]
         } else {
             annotations
         };
-        if request.concepts() && annotations.is_empty() {
-            bail!("concept response omitted useful concept annotations");
-        }
         if request.concepts()
+            && !annotations.is_empty()
             && !request.diff.trim().is_empty()
             && request.regions.len() <= self.explanation.max_annotations as usize
         {
@@ -512,6 +597,7 @@ impl OpenAiProvider {
             overview: truncate_words(&truncate_sentences(&strip_reasoning(&overview), 2), 80),
             annotations,
             deep: None,
+            teaching: None,
         })
     }
 }
@@ -587,25 +673,23 @@ impl Usage {
 }
 #[derive(Deserialize)]
 struct RawResponse {
+    #[serde(skip)]
+    teaching: Option<DeepTeaching>,
     overview: Option<String>,
     annotations: Option<Vec<RawAnnotation>>,
-    explanation: Option<String>,
-    deep: Option<String>,
 }
 #[derive(Deserialize)]
 struct RawAnnotation {
+    title: Option<String>,
     region: Option<usize>,
     kind: Option<String>,
     text: String,
-    start_line: Option<usize>,
-    end_line: Option<usize>,
 }
 
 fn map_annotation(
     annotation: RawAnnotation,
     regions: &[ExplanationRegion],
     max_words: u32,
-    allow_legacy_lines: bool,
 ) -> Option<Annotation> {
     let kind = annotation.kind.unwrap_or_else(|| "context".into());
     if !matches!(kind.as_str(), "change" | "concept" | "flow" | "context") {
@@ -614,12 +698,11 @@ fn map_annotation(
     let (start_line, end_line) = if let Some(id) = annotation.region {
         let region = regions.iter().find(|region| region.id == id)?;
         (region.start_line, region.end_line)
-    } else if allow_legacy_lines {
-        (annotation.start_line?, annotation.end_line?)
     } else {
         return None;
     };
     Some(Annotation {
+        title: annotation.title.map(|s| strip_reasoning(&s)),
         start_line,
         end_line,
         kind,
@@ -694,15 +777,19 @@ fn normal_schema(request: &ExplanationRequest, annotation_limit: u32) -> Value {
     };
     let (minimum, maximum) = if request.kind == ExplanationKind::Overview {
         (0, 0)
-    } else if request.kind == ExplanationKind::Concepts {
-        (1, annotation_limit)
     } else {
         (0, annotation_limit)
     };
-    json!({"type":"json_schema","json_schema":{"name":"git_explain_normal","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["overview","annotations"],"properties":{"overview":{"type":"string"},"annotations":{"type":"array","minItems":minimum,"maxItems":maximum,"items":{"type":"object","additionalProperties":false,"required":["region","kind","text"],"properties":{"region":{"type":"integer","enum":region_ids},"kind":{"type":"string","enum":kinds},"text":{"type":"string","minLength":1}}}}}}}})
+    let mut schema = json!({"type":"json_schema","json_schema":{"name":"git_explain_normal","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["overview","annotations"],"properties":{"overview":{"type":"string"},"annotations":{"type":"array","minItems":minimum,"maxItems":maximum,"items":{"type":"object","additionalProperties":false,"required":["region","kind","text"],"properties":{"region":{"type":"integer","enum":region_ids},"kind":{"type":"string","enum":kinds},"text":{"type":"string","minLength":1}}}}}}}});
+    if request.concepts() {
+        let item = &mut schema["json_schema"]["schema"]["properties"]["annotations"]["items"];
+        item["required"] = json!(["region", "kind", "title", "text"]);
+        item["properties"]["title"] = json!({"type":"string", "minLength":1});
+    }
+    schema
 }
 fn deep_schema() -> Value {
-    json!({"type":"json_schema","json_schema":{"name":"git_explain_deep","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["explanation"],"properties":{"explanation":{"type":"string"}}}}})
+    json!({"type":"json_schema","json_schema":{"name":"git_explain_deep","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["purpose","walkthrough","boundaries","example"],"properties":{"purpose":{"type":"string","minLength":1},"walkthrough":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"boundaries":{"type":"array","items":{"type":"string","minLength":1}},"example":{"type":["string","null"]}}}}})
 }
 
 #[async_trait]
@@ -1261,6 +1348,20 @@ mod tests {
     }
     fn request(deep: bool) -> ExplanationRequest {
         ExplanationRequest {
+            prerequisite_id: None,
+            policy: crate::learning::LearningContext {
+                config: Default::default(),
+                repository_defaults: None,
+                reader: ReaderConfig {
+                    experience: "experienced".into(),
+                    known_languages: vec![],
+                    learning_languages: vec![],
+                    known_frameworks: vec![],
+                    learning_frameworks: vec![],
+                },
+            }
+            .resolve("Rust", &Default::default())
+            .unwrap(),
             source_unit: "fn work() { changed(); }".into(),
             unit_name: "work".into(),
             unit_kind: "Function".into(),
@@ -1281,6 +1382,361 @@ mod tests {
             },
             deep,
         }
+    }
+
+    #[test]
+    fn system_calibration_separates_behavior_evidence_from_names_and_bounds() {
+        let p = provider("llama_cpp");
+        for kind in [
+            ExplanationKind::Overview,
+            ExplanationKind::Concepts,
+            ExplanationKind::Deep,
+        ] {
+            let mut r = request(kind.is_deep());
+            r.kind = kind;
+            let system = p.build_request(&r).messages[0].content.clone();
+            assert!(system.contains("Names and locks do not establish file writes"));
+            assert!(system.contains("valid empty range"));
+            assert!(system.contains("Clamping one endpoint does not prove"));
+            assert!(system.contains("metadata consistency"));
+            assert!(system.contains("not facts about the supplied source"));
+            assert!(!system.contains("generate_file_with_learning"));
+            assert!(!system.contains("explanation_regions"));
+        }
+    }
+
+    #[test]
+    fn deep_boundaries_require_reachable_conditions_and_actual_consequences() {
+        let p = provider("llama_cpp");
+        let r = request(true);
+        for retry in [false, true] {
+            let prompt = p.build_request_with_retry(&r, retry).messages[1]
+                .content
+                .clone();
+            assert!(prompt.contains(
+                "Each boundary must name a reachable condition and its actual consequence"
+            ));
+            assert!(prompt.contains("Defensive syntax alone is not evidence"));
+        }
+    }
+
+    #[test]
+    fn concepts_reject_a_label_repeated_as_the_entire_lesson() {
+        let p = provider("llama_cpp");
+        let mut r = request(false);
+        r.kind = ExplanationKind::Concepts;
+        for text in [
+            "Unicode case folding allocation",
+            " unicode CASE folding allocation ",
+        ] {
+            let raw = json!({"overview":"Normalize an identifier.", "annotations":[{
+                "region":1,"kind":"concept","title":"Unicode case folding allocation","text":text
+            }]})
+            .to_string();
+            assert!(p.parse_response(&raw, &r).is_err());
+        }
+        assert!(p.parse_response(r#"{"overview":"Normalize an identifier.","annotations":[{"region":1,"kind":"concept","title":"Conditional mapping","text":"The predicate controls whether a tuple enters the resulting iterator."}]}"#, &r).is_ok());
+    }
+
+    #[test]
+    fn familiar_concepts_checks_for_a_gap_before_requesting_lessons() {
+        let p = provider("llama_cpp");
+        let mut r = request(false);
+        r.kind = ExplanationKind::Concepts;
+        r.policy.language_help = crate::learning::LanguageHelp::Skip;
+        for retry in [false, true] {
+            let prompt = p.build_request_with_retry(&r, retry).messages[1]
+                .content
+                .clone();
+            assert!(prompt.starts_with("First decide whether a useful teaching gap remains"));
+            assert!(prompt.contains("The annotation limit is a ceiling, not a target"));
+        }
+        r.policy.language_help = crate::learning::LanguageHelp::Explain;
+        assert!(!p.build_request(&r).messages[1]
+            .content
+            .starts_with("First decide whether"));
+    }
+
+    #[test]
+    fn system_teaching_rules_enforce_explicit_language_help_without_profile_text() {
+        let p = provider("llama_cpp");
+        let mut r = request(false);
+        r.kind = ExplanationKind::Concepts;
+        r.policy.language_help = crate::learning::LanguageHelp::Skip;
+        r.policy.known_concepts = vec!["untrusted profile instruction".into()];
+        for retry in [false, true] {
+            let messages = p.build_request_with_retry(&r, retry).messages;
+            assert!(messages[0]
+                .content
+                .contains("User requests no elementary language lessons"));
+            assert!(messages[0]
+                .content
+                .contains("return annotations as an empty array"));
+            assert!(!messages[0]
+                .content
+                .contains("untrusted profile instruction"));
+        }
+        r.policy.language_help = crate::learning::LanguageHelp::Explain;
+        let messages = p.build_request(&r).messages;
+        assert!(messages[0]
+            .content
+            .contains("Explain unfamiliar source-language syntax"));
+        assert!(!messages[0]
+            .content
+            .contains("User requests no elementary language lessons"));
+    }
+
+    #[test]
+    fn teaching_checks_receiver_and_unknown_callee_semantics_on_retry() {
+        let p = provider("llama_cpp");
+        for kind in [ExplanationKind::Concepts, ExplanationKind::Deep] {
+            let mut r = request(kind.is_deep());
+            r.kind = kind;
+            for retry in [false, true] {
+                let prompt = p.build_request_with_retry(&r, retry).messages[1]
+                    .content
+                    .clone();
+                assert!(prompt.contains("receiver expression's type"));
+                assert!(prompt.contains("custom callee's implementation is absent"));
+                assert!(prompt.contains("omit the claim"));
+            }
+        }
+    }
+
+    #[test]
+    fn request_policy_controls_independent_teaching_dimensions() {
+        let p = provider("llama_cpp");
+        let mut r = request(true);
+        let mut policy = crate::learning::LearningContext {
+            config: Default::default(),
+            repository_defaults: None,
+            reader: ReaderConfig {
+                experience: "experienced".into(),
+                known_languages: vec![],
+                learning_languages: vec![],
+                known_frameworks: vec![],
+                learning_frameworks: vec![],
+            },
+        }
+        .resolve("Rust", &Default::default())
+        .unwrap();
+        policy.language_help = crate::learning::LanguageHelp::Explain;
+        policy.focus = crate::learning::Focus::Architecture;
+        policy.detail = crate::learning::Detail::Concise;
+        r.policy = policy;
+        for retry in [false, true] {
+            let prompt = p.build_request_with_retry(&r, retry).messages[1]
+                .content
+                .clone();
+            assert!(prompt.contains("syntax and execution rules explicitly"));
+            assert!(prompt.contains("architectural relationships"));
+            assert!(prompt.contains("Keep explanations concise"));
+        }
+        assert!(p
+            .parse_response(r#"{"explanation":"Legacy summary."}"#, &r)
+            .is_err());
+        r.kind = ExplanationKind::Concepts;
+        r.deep = false;
+        assert!(p.parse_response(r#"{"overview":"Concept.","annotations":[{"region":1,"kind":"concept","text":"A useful lesson."}]}"#, &r).is_err());
+    }
+
+    #[test]
+    fn structured_deep_has_walkthrough_and_rejects_blank_steps() {
+        let p = provider("llama_cpp");
+        let r = request(true);
+        let parsed = p.parse_response(r#"{"purpose":"Retain a lock.","walkthrough":["Acquire the guard."],"boundaries":["Only visible scope is known."],"example":null}"#, &r).unwrap();
+        assert_eq!(parsed.teaching.unwrap().walkthrough.len(), 1);
+        assert!(p
+            .parse_response(
+                r#"{"purpose":"Lock.","walkthrough":[" "],"boundaries":[],"example":null}"#,
+                &r
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn learning_profile_instructs_teaching_instead_of_only_listing_preferences() {
+        let provider = provider("llama_cpp");
+        let mut request = request(false);
+        request.kind = ExplanationKind::Concepts;
+        request.policy.known_languages = vec!["python".into()];
+        request.policy.learning_languages = vec!["rust".into()];
+        request.policy.language_help = crate::learning::LanguageHelp::Explain;
+        let prompt = provider.build_request(&request).messages[1].content.clone();
+        assert!(prompt.contains("syntax and execution rules explicitly"));
+        assert!(prompt.contains("python") && prompt.contains("rust"));
+        assert!(prompt.contains("Ground every lesson in an expression"));
+        request.policy.language_help = crate::learning::LanguageHelp::Skip;
+        assert!(provider.build_request(&request).messages[1]
+            .content
+            .contains("Skip elementary syntax"));
+    }
+
+    #[test]
+    fn structured_retry_preserves_each_views_teaching_and_scope_rules() {
+        let provider = provider("llama_cpp");
+        for kind in [
+            ExplanationKind::Overview,
+            ExplanationKind::Changes,
+            ExplanationKind::Concepts,
+            ExplanationKind::Deep,
+        ] {
+            let mut request = request(kind.is_deep());
+            request.kind = kind;
+            let normal = provider.build_request_with_retry(&request, false);
+            let retry = provider.build_request_with_retry(&request, true);
+            let task = normal.messages[1].content.split("\n\n").next().unwrap();
+            assert!(
+                retry.messages[1].content.contains(task),
+                "retry lost {kind:?} instructions"
+            );
+        }
+    }
+
+    #[test]
+    fn learning_guidance_follows_reference_evidence_without_changing_view_or_policy() {
+        let p = provider("llama_cpp");
+        for kind in [
+            ExplanationKind::Overview,
+            ExplanationKind::Changes,
+            ExplanationKind::Concepts,
+            ExplanationKind::Deep,
+        ] {
+            let mut r = request(kind.is_deep());
+            r.kind = kind;
+            r.prior_explanation = Some("captured prerequisite evidence".into());
+            for retry in [false, true] {
+                let payload = p.build_request_with_retry(&r, retry);
+                let prompt = &payload.messages[1].content;
+                let guidance = prompt
+                    .find("Keep language help, focus, and detail independent.")
+                    .unwrap();
+                assert!(guidance > prompt.find("SOURCE UNIT:").unwrap());
+                assert!(guidance > prompt.find("captured prerequisite evidence").unwrap());
+                assert!(prompt.starts_with(super::super::prompts::task(&r)));
+                assert!(prompt.contains(&r.source_unit));
+            }
+        }
+    }
+
+    #[test]
+    fn architecture_focus_organizes_evidence_without_overriding_language_help() {
+        let p = provider("llama_cpp");
+        let mut r = request(true);
+        r.policy.focus = crate::learning::Focus::Architecture;
+        for help in [
+            crate::learning::LanguageHelp::Skip,
+            crate::learning::LanguageHelp::Explain,
+        ] {
+            r.policy.language_help = help;
+            for retry in [false, true] {
+                let prompt = p.build_request_with_retry(&r, retry).messages[1]
+                    .content
+                    .clone();
+                assert!(prompt.contains("component responsibilities, state ownership"));
+                assert!(prompt.contains("missing implementations"));
+                let expected = if help == crate::learning::LanguageHelp::Skip {
+                    "Skip elementary syntax"
+                } else {
+                    "Teach relevant source-language syntax"
+                };
+                assert!(prompt.contains(expected));
+            }
+        }
+        r.policy.focus = crate::learning::Focus::Balanced;
+        assert!(!p.build_request(&r).messages[1]
+            .content
+            .contains("component responsibilities, state ownership"));
+    }
+
+    #[test]
+    fn complete_source_regions_reference_the_target_without_duplicating_it() {
+        let p = provider("llama_cpp");
+        for kind in [
+            ExplanationKind::Overview,
+            ExplanationKind::Concepts,
+            ExplanationKind::Deep,
+        ] {
+            let mut r = request(kind.is_deep());
+            r.kind = kind;
+            r.diff.clear();
+            r.source_unit = "fn context_budget_probe() { inspect(); }".into();
+            r.regions = vec![ExplanationRegion {
+                id: 9,
+                start_line: 1,
+                end_line: 1,
+                source: r.source_unit.clone(),
+            }];
+            for retry in [false, true] {
+                let payload = p.build_request_with_retry(&r, retry);
+                let prompt = &payload.messages[1].content;
+                assert_eq!(prompt.matches(&r.source_unit).count(), 1);
+                assert!(prompt.contains("[REGION 9] lines 1-1"));
+                if !retry {
+                    assert!(prompt.contains("complete SOURCE UNIT above"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_source_regions_keep_their_exact_evidence() {
+        let p = provider("llama_cpp");
+        let mut r = request(false);
+        r.source_unit = "first();\nsecond();".into();
+        r.regions = vec![ExplanationRegion {
+            id: 7,
+            start_line: 2,
+            end_line: 2,
+            source: "second();".into(),
+        }];
+        let payload = p.build_request(&r);
+        assert!(payload.messages[1]
+            .content
+            .contains("[REGION 7] lines 2-2\nsecond();"));
+    }
+
+    #[test]
+    fn file_deep_teaches_existing_code_without_implying_a_git_change() {
+        let mut request = request(true);
+        request.diff.clear();
+        request.git_context = "Semantic file snapshot\nPath: lib.rs".into();
+        let payload = provider("llama_cpp").build_request(&request);
+        assert!(payload.messages[1]
+            .content
+            .contains("complete code section"));
+        assert!(!payload.messages[1].content.contains("changed source unit"));
+    }
+
+    #[test]
+    fn concepts_allow_no_new_lesson_and_respect_disabled_teaching_categories() {
+        let mut provider = provider("llama_cpp");
+        let mut request = request(false);
+        request.kind = ExplanationKind::Concepts;
+        request.diff.clear();
+        let response =
+            r#"{"overview":"No new concepts are needed for this code.","annotations":[]}"#;
+        assert!(provider.parse_response(response, &request).is_ok());
+        let payload = provider.build_request(&request);
+        assert_eq!(
+            payload.response_format["json_schema"]["schema"]["properties"]["annotations"]
+                ["minItems"],
+            0
+        );
+        provider.explanation.explain_language_concepts = false;
+        provider.explanation.explain_framework_concepts = false;
+        let payload = provider.build_request(&request);
+        assert_eq!(
+            payload.response_format["json_schema"]["schema"]["properties"]["annotations"]
+                ["maxItems"],
+            0
+        );
+        assert!(payload.messages[1]
+            .content
+            .contains("Language concepts are disabled"));
+        assert!(payload.messages[1]
+            .content
+            .contains("Framework concepts are disabled"));
     }
     #[test]
     fn llama_normal_request_uses_schema_and_disables_reasoning() {
@@ -1321,7 +1777,7 @@ mod tests {
         let value = serde_json::to_value(provider("llama_cpp").build_request(&request)).unwrap();
         let annotations =
             &value["response_format"]["json_schema"]["schema"]["properties"]["annotations"];
-        assert_eq!(annotations["minItems"], 1);
+        assert_eq!(annotations["minItems"], 0);
         assert_eq!(annotations["maxItems"], 3);
         assert_eq!(
             annotations["items"]["properties"]["kind"]["enum"],
@@ -1334,15 +1790,18 @@ mod tests {
     }
 
     #[test]
-    fn concepts_reject_empty_and_incomplete_changed_region_coverage() {
+    fn concepts_allow_no_lessons_but_reject_incomplete_nonempty_changed_region_coverage() {
         let p = provider("llama_cpp");
         let mut request = request(false);
         request.kind = ExplanationKind::Concepts;
         assert!(p
-            .parse_response(r#"{"overview":"Short.","annotations":[]}"#, &request)
-            .unwrap_err()
-            .to_string()
-            .contains("omitted useful concept"));
+            .parse_response(
+                r#"{"overview":"No new concepts.","annotations":[]}"#,
+                &request
+            )
+            .unwrap()
+            .annotations
+            .is_empty());
 
         request.regions.push(ExplanationRegion {
             id: 2,
@@ -1352,7 +1811,7 @@ mod tests {
         });
         assert!(p
             .parse_response(
-                r#"{"overview":"Short.","annotations":[{"region":1,"kind":"concept","text":"One concept."}]}"#,
+                r#"{"overview":"Short.","annotations":[{"region":1,"kind":"concept","title":"Filtering","text":"One concept."}]}"#,
                 &request,
             )
             .unwrap_err()
@@ -1374,7 +1833,7 @@ mod tests {
         });
         let parsed = p
             .parse_response(
-                r#"{"overview":"Short.","annotations":[{"region":2,"kind":"concept","text":"Second."},{"region":1,"kind":"concept","text":"First."},{"region":1,"kind":"concept","text":"First."}]}"#,
+                r#"{"overview":"Short.","annotations":[{"region":2,"kind":"concept","title":"Second concept","text":"Second."},{"region":1,"kind":"concept","title":"First concept","text":"First."},{"region":1,"kind":"concept","title":"First concept","text":"First."}]}"#,
                 &request,
             )
             .unwrap();
@@ -1393,7 +1852,7 @@ mod tests {
         assert_eq!(value["reasoning_format"], "deepseek");
         assert_eq!(
             value["response_format"]["json_schema"]["schema"]["required"],
-            json!(["explanation"])
+            json!(["purpose", "walkthrough", "boundaries", "example"])
         );
         assert!(
             value["response_format"]["json_schema"]["schema"]["properties"]
@@ -1535,11 +1994,11 @@ mod tests {
         assert_eq!(parsed.annotations[0].text, "Explain it.");
         let deep = p
             .parse_response(
-                r#"<think>hidden</think>{"explanation":"Visible explanation."}"#,
+                r#"<think>hidden</think>{"purpose":"Visible explanation.","walkthrough":["Follow the call."],"boundaries":[],"example":null}"#,
                 &ExplanationRequest { deep: true, ..r },
             )
             .unwrap();
-        assert_eq!(deep.deep.as_deref(), Some("Visible explanation."));
+        assert_eq!(deep.teaching.unwrap().purpose, "Visible explanation.");
     }
 
     #[test]
@@ -1550,9 +2009,8 @@ mod tests {
             .parse_response(
                 r#"{"overview":"Short.","annotations":[{"start_line":1,"end_line":1,"kind":"change","text":"Wrong contract."}]}"#,
                 &r,
-            )
-            .unwrap();
-        assert!(parsed.annotations.is_empty());
+            );
+        assert!(parsed.is_err());
     }
 
     #[test]

@@ -1,0 +1,34 @@
+[hidden] { display: none !important; }
+.explanations-hidden .explanation { display: none !important; }
+button, input { font: inherit; }
+button { cursor: pointer; min-height: 2.75rem; }
+button:disabled { cursor: default; opacity: .65; }
+input:focus-visible, a:focus-visible, [role=tabpanel]:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+a { color: var(--accent); }
+.skip-link { position: absolute; left: -10000px; }
+.skip-link:focus { position: static; }
+.reader-tools { border: 1px solid var(--border); border-radius: .6rem; padding: 1rem; margin: 1.25rem 0; }
+.reader-tools label { font-weight: 600; }
+.filter-input { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; }
+.filter-input input { flex: 1; min-width: 0; padding: .65rem; border: 1px solid var(--border); border-radius: .35rem; background: var(--panel); color: var(--text); }
+#filter-help, #filter-status, .generation-status { color: var(--muted); font-size: .9rem; }
+.generation-status { min-height: 1.4rem; }
+.layer-controls { display: flex; flex-wrap: wrap; gap: .25rem; }
+[data-file-path], article { scroll-margin-top: 1rem; }
+nav ol { columns: 2 20rem; padding-left: 1.5rem; }
+nav li { break-inside: avoid; overflow-wrap: anywhere; }
+h2, h3 { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  body { padding: .75rem; }
+  section, article { padding: .75rem; }
+  .filter-input { flex-wrap: wrap; }
+}
+
+#learning-settings, .view-learning { border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+#learning-settings summary, .view-learning summary { cursor: pointer; font-weight: 600; }
+#learning-settings label, .view-learning label { display: inline-flex; flex-direction: column; gap: .3rem; margin: .5rem; max-width: 100%; }
+#learning-settings select, #learning-settings input, .view-learning select, .view-learning input { padding: .5rem; border: 1px solid var(--border); border-radius: .3rem; background: var(--panel); color: var(--text); max-width: 100%; }
+#learning-settings input[type=checkbox] { align-self: start; }
+#learning-lists { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); }
+.policy-status { color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.deep { white-space: pre-wrap; }

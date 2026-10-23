@@ -21,6 +21,18 @@ pub struct Cli {
         help = "Override the configured model profile for this invocation"
     )]
     pub profile: Option<String>,
+    #[arg(long, global = true)]
+    pub learning_profile: Option<String>,
+    #[arg(long, global = true, conflicts_with = "learning_profile")]
+    pub no_learning_profile: bool,
+    #[arg(long, global = true, value_enum)]
+    pub language_help: Option<crate::learning::LanguageHelp>,
+    #[arg(long, global = true, value_enum)]
+    pub focus: Option<crate::learning::Focus>,
+    #[arg(long, global = true, value_enum)]
+    pub detail: Option<crate::learning::Detail>,
+    #[arg(long, global = true)]
+    pub use_repository_learning: bool,
     #[arg(long, global = true, help = "Override the configured web-server port")]
     pub port: Option<u16>,
     #[arg(
@@ -35,6 +47,7 @@ pub struct Cli {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
+    Learning(LearningCommand),
     #[command(
         about = "Explain semantic changes in the working tree, from a revision to HEAD, or across an explicit Git range"
     )]
@@ -180,7 +193,7 @@ pub enum ConfigAction {
         )]
         repo: bool,
     },
-    #[command(about = "Update reader preferences (persisted; --repo is repository scoped)")]
+    #[command(hide = true, about = "Unsupported: use git explain learning")]
     Reader {
         #[arg(long)]
         experience: Option<String>,
@@ -766,5 +779,91 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
+    }
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct LearningCommand {
+    #[command(subcommand)]
+    pub action: LearningAction,
+}
+#[derive(Clone, Debug, Subcommand)]
+pub enum LearningAction {
+    List,
+    Show { name: Option<String> },
+    Add { name: String },
+    Edit { name: String },
+    Use { name: String },
+    Remove { name: String },
+}
+impl Cli {
+    pub fn learning_selection(&self) -> crate::learning::LearningSelection {
+        crate::learning::LearningSelection {
+            profile: self.learning_profile.clone(),
+            clear_profile: self.no_learning_profile,
+            use_repository_defaults: self.use_repository_learning,
+            session: crate::learning::LearningPreferences {
+                language_help: self.language_help,
+                focus: self.focus,
+                detail: self.detail,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod learning_tests {
+    use super::*;
+    #[test]
+    fn learning_controls_are_independent_of_model_profile() {
+        let cli = Cli::try_parse_from([
+            "git-explain",
+            "--profile",
+            "local",
+            "--learning-profile",
+            "rust",
+            "--language-help",
+            "explain",
+            "--focus",
+            "execution",
+            "--detail",
+            "detailed",
+            "--use-repository-learning",
+            "diff",
+        ])
+        .unwrap();
+        assert_eq!(cli.profile.as_deref(), Some("local"));
+        let selected = cli.learning_selection();
+        assert_eq!(selected.profile.as_deref(), Some("rust"));
+        assert!(selected.use_repository_defaults);
+        assert_eq!(
+            selected.session.focus,
+            Some(crate::learning::Focus::Execution)
+        );
+    }
+    #[test]
+    fn learning_management_parses_without_model_profile() {
+        assert!(matches!(
+            Cli::try_parse_from(["git-explain", "learning", "list"])
+                .unwrap()
+                .command,
+            Some(Command::Learning(_))
+        ));
+        assert!(Cli::try_parse_from(["git-explain", "--focus", "expert"]).is_err());
+        assert!(Cli::try_parse_from([
+            "git-explain",
+            "--no-learning-profile",
+            "--learning-profile",
+            "p"
+        ])
+        .is_err());
+        assert!(
+            Cli::try_parse_from(["git-explain", "--no-learning-profile", "diff"])
+                .unwrap()
+                .learning_selection()
+                .clear_profile
+        );
     }
 }

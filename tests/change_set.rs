@@ -246,7 +246,7 @@ fn rename_plus_edit_preserves_other_units() {
     change.deep_explanation = Some("Cached detail".into());
     let cached_html = git_explain::web::render(&changes);
     assert!(cached_html.contains("Regenerate explanation"));
-    assert!(cached_html.contains("Regenerate in-depth explanation"));
+    assert!(cached_html.contains("data-generated=\"true\">Regenerate explanation</button>"));
     assert!(cached_html.contains(">Changes<"));
     assert!(cached_html.contains("data-layer-state=\"overview\""));
     assert!(cached_html.contains("data-layer-state=\"changes\""));

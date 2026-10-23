@@ -11,6 +11,8 @@ mod explain;
 mod file_analysis;
 mod git;
 mod language;
+mod learning;
+mod learning_runtime;
 mod model;
 mod profile_editor;
 mod runtime;
@@ -44,6 +46,9 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::Learning(command)) = &cli.command {
+        return learning_command(&command.action);
+    }
     let (selected_revision, selected_staged, selected_paths) = match &cli.command {
         Some(Command::Diff(command)) => (
             command.revision.as_deref(),
@@ -532,7 +537,13 @@ async fn run() -> Result<()> {
             print!("{}", analysis.format_debug());
             return Ok(());
         }
-        let resolved = loader.resolve(cli.profile.as_deref())?;
+        let mut resolved = loader.resolve(cli.profile.as_deref())?;
+        resolved.learning_selection = cli.learning_selection();
+        let learning = crate::learning_runtime::LearningRuntime::new(
+            resolved.paths.clone(),
+            resolved.reader.clone(),
+            resolved.learning_selection.clone(),
+        )?;
         let provider = model::openai::OpenAiProvider::from_config(
             resolved.model.clone(),
             resolved.reader.clone(),
@@ -565,6 +576,7 @@ async fn run() -> Result<()> {
             resolved.model,
             resolved.reader,
             resolved.explanation,
+            learning,
         )
         .await;
     }
@@ -589,7 +601,8 @@ async fn run() -> Result<()> {
         }
         return Ok(());
     }
-    let resolved = loader.resolve(cli.profile.as_deref())?;
+    let mut resolved = loader.resolve(cli.profile.as_deref())?;
+    resolved.learning_selection = cli.learning_selection();
     if let Some(Command::Cache(command)) = &cli.command {
         let cache = cache::ExplanationCache::open(&git::git_dir(&repo)?)?;
         match command.action {
@@ -632,6 +645,7 @@ async fn run() -> Result<()> {
         &selected_paths,
         cli.profile.as_deref(),
         daemon_port,
+        cli.learning_selection(),
     )
     .await
 }
@@ -1273,6 +1287,11 @@ async fn run_direct(
         println!("{message}");
         return Ok(());
     }
+    let learning = crate::learning_runtime::LearningRuntime::new(
+        resolved.paths.clone(),
+        resolved.reader.clone(),
+        resolved.learning_selection.clone(),
+    )?;
     let provider = model::openai::OpenAiProvider::from_config(
         resolved.model.clone(),
         resolved.reader.clone(),
@@ -1305,6 +1324,7 @@ async fn run_direct(
         resolved.model,
         resolved.reader,
         resolved.explanation,
+        learning,
     )
     .await
 }
@@ -1577,4 +1597,178 @@ mod profile_error_tests {
         assert!(output.contains("Current local backend context:\nUnavailable"));
         assert!(output.contains("The recommendation is based on recorded request history."));
     }
+}
+
+fn learning_command(action: &cli::LearningAction) -> Result<()> {
+    use cli::LearningAction;
+    let store = learning::LearningStore::new(config::default_user_config_path()?);
+    let current = store.inspect()?;
+    let mut saved = current.config;
+    match action {
+        LearningAction::List => {
+            for name in saved.profiles.keys() {
+                println!(
+                    "{name}{}",
+                    if saved.profile.as_ref() == Some(name) {
+                        " (default)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            return Ok(());
+        }
+        LearningAction::Show { name } => {
+            if let Some(name) = name {
+                print!(
+                    "{}",
+                    toml::to_string_pretty(
+                        saved
+                            .profiles
+                            .get(name)
+                            .context("unknown learning profile")?
+                    )?
+                );
+            } else {
+                print!("{}", toml::to_string_pretty(&saved)?);
+            }
+            return Ok(());
+        }
+        LearningAction::Use { name } => {
+            anyhow::ensure!(
+                saved.profiles.contains_key(name),
+                "unknown learning profile '{name}'"
+            );
+            saved.profile = Some(name.clone());
+        }
+        LearningAction::Remove { name } => {
+            anyhow::ensure!(
+                saved.profile.as_ref() != Some(name),
+                "select another default learning profile before removing '{name}'"
+            );
+            anyhow::ensure!(
+                saved.profiles.remove(name).is_some(),
+                "unknown learning profile '{name}'"
+            );
+        }
+        LearningAction::Add { name } | LearningAction::Edit { name } => {
+            anyhow::ensure!(
+                !name.trim().is_empty(),
+                "learning profile name cannot be empty"
+            );
+            if matches!(action, LearningAction::Add { .. }) {
+                anyhow::ensure!(
+                    !saved.profiles.contains_key(name),
+                    "learning profile '{name}' already exists"
+                );
+            } else {
+                anyhow::ensure!(
+                    saved.profiles.contains_key(name),
+                    "unknown learning profile '{name}'"
+                );
+            }
+            let mut profile = saved.profiles.get(name).cloned().unwrap_or_default();
+            let stdin = io::stdin();
+            let mut input = stdin.lock();
+            println!("Learning profile: {name}. Enter preferences; blank inherits the default.");
+            println!("Language help [automatic/explain/brief/skip]:");
+            let help = terminal::read_line(&mut input)?.context("learning edit cancelled")?;
+            println!("Focus [balanced/syntax/execution/reasoning/architecture]:");
+            let focus = terminal::read_line(&mut input)?.context("learning edit cancelled")?;
+            println!("Detail [concise/balanced/detailed]:");
+            let detail = terminal::read_line(&mut input)?.context("learning edit cancelled")?;
+            fn parse<T: serde::de::DeserializeOwned>(v: &str) -> Result<Option<T>> {
+                if v.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(serde_json::from_value(serde_json::Value::String(
+                        v.into(),
+                    ))?))
+                }
+            }
+            profile.preferences.language_help = parse(&help)?;
+            profile.preferences.focus = parse(&focus)?;
+            profile.preferences.detail = parse(&detail)?;
+            if terminal::confirmation(
+                &mut input,
+                &mut io::stdout(),
+                "Customize familiarity lists? [y/N]:",
+            )? {
+                fn list<R: std::io::BufRead>(
+                    input: &mut R,
+                    label: &str,
+                    current: &mut Option<Vec<String>>,
+                ) -> Result<()> {
+                    println!("{label} (comma separated; blank keeps current; - clears):");
+                    let value = terminal::read_line(input)?.context("learning edit cancelled")?;
+                    if value == "-" {
+                        *current = Some(Vec::new());
+                    } else if !value.is_empty() {
+                        *current = Some(
+                            value
+                                .split(',')
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .map(str::to_owned)
+                                .collect(),
+                        );
+                    }
+                    Ok(())
+                }
+                list(
+                    &mut input,
+                    "Known languages",
+                    &mut profile.preferences.known_languages,
+                )?;
+                list(
+                    &mut input,
+                    "Learning languages",
+                    &mut profile.preferences.learning_languages,
+                )?;
+                list(
+                    &mut input,
+                    "Known frameworks",
+                    &mut profile.preferences.known_frameworks,
+                )?;
+                list(
+                    &mut input,
+                    "Learning frameworks",
+                    &mut profile.preferences.learning_frameworks,
+                )?;
+                list(
+                    &mut input,
+                    "Known domains",
+                    &mut profile.preferences.known_domains,
+                )?;
+                list(
+                    &mut input,
+                    "Learning domains",
+                    &mut profile.preferences.learning_domains,
+                )?;
+                list(
+                    &mut input,
+                    "Known concepts",
+                    &mut profile.preferences.known_concepts,
+                )?;
+                list(
+                    &mut input,
+                    "Learning concepts",
+                    &mut profile.preferences.learning_concepts,
+                )?;
+            }
+            println!("{}", toml::to_string_pretty(&profile)?);
+            if !terminal::confirmation(
+                &mut input,
+                &mut io::stdout(),
+                "Save learning profile? [y/N]:",
+            )? {
+                println!("Learning edit cancelled.");
+                return Ok(());
+            }
+            saved.profiles.insert(name.clone(), profile);
+        }
+    }
+    store.save(&current.revision, saved)?;
+    println!("Learning preferences saved.");
+    Ok(())
 }

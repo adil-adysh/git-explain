@@ -8,6 +8,7 @@ description = "Accessible local explanations for changed source code"
 anyhow = "1"
 async-trait = "0.1"
 sha2 = "0.10"
+fs2 = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }

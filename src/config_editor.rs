@@ -1,5 +1,5 @@
 //! Deliberately linear, screen-reader-first configuration editor.
-use crate::config::{edit_config, ApplicationConfig, ConfigUpdate, ListUpdate};
+use crate::config::{edit_config, ApplicationConfig, ConfigUpdate};
 use crate::terminal::{confirmation as confirm, read_line as line};
 use anyhow::Result;
 use std::io::{BufRead, Write};
@@ -15,9 +15,9 @@ pub fn run<R: BufRead, W: Write>(
 ) -> Result<()> {
     let mut draft = ConfigUpdate::default();
     loop {
-        writeln!(output, "\n{} configuration editor\n\n1. Reader\n2. Explanation\n3. Cache\n4. Server\n5. Git\n6. Model profile selection\n7. Review changes and save\n8. Cancel", if repository { "Repository" } else { "User" })?;
+        writeln!(output, "\n{} configuration editor\n\n1. Learning preferences\n2. Explanation\n3. Cache\n4. Server\n5. Git\n6. Model profile selection\n7. Review changes and save\n8. Cancel", if repository { "Repository" } else { "User" })?;
         match choice(input, output, "Enter 1-8:", 1, 8)? {
-            1 => reader(input, output, &mut draft, current)?,
+            1 => writeln!(output, "Use git explain learning add/edit to customize explanations, or edit [learning.defaults].")?,
             2 => explanation(input, output, &mut draft, current)?,
             3 => boolean(
                 input,
@@ -85,48 +85,7 @@ fn run_repository<R: BufRead, W: Write>(
         }
     }
 }
-fn reader<R: BufRead, W: Write>(
-    i: &mut R,
-    o: &mut W,
-    d: &mut ConfigUpdate,
-    current: &ApplicationConfig,
-) -> Result<()> {
-    loop {
-        writeln!(o,"\nReader settings\n\n1. Experience: {}\n2. Known languages: {}\n3. Learning languages: {}\n4. Known frameworks: {}\n5. Learning frameworks: {}\n6. Return", current.reader.experience, display(&current.reader.known_languages), display(&current.reader.learning_languages), display(&current.reader.known_frameworks), display(&current.reader.learning_frameworks))?;
-        match choice(i, o, "Enter 1-6:", 1, 6)? {
-            1 => string(i, o, "Experience", &mut d.reader.experience)?,
-            2 => list(i, o, "Known languages", &mut d.reader.known_languages)?,
-            3 => list(i, o, "Learning languages", &mut d.reader.learning_languages)?,
-            4 => list(i, o, "Known frameworks", &mut d.reader.known_frameworks)?,
-            5 => list(
-                i,
-                o,
-                "Learning frameworks",
-                &mut d.reader.learning_frameworks,
-            )?,
-            6 => return Ok(()),
-            _ => unreachable!(),
-        }
-    }
-}
-fn list<R: BufRead, W: Write>(i: &mut R, o: &mut W, title: &str, d: &mut ListUpdate) -> Result<()> {
-    writeln!(o, "\n{title}\n\n1. Add\n2. Remove\n3. Clear all\n4. Return")?;
-    match choice(i, o, "Enter 1-4:", 1, 4)? {
-        1 => {
-            if let Some(v) = value(i, o, "Value:")? {
-                d.add.push(v)
-            }
-        }
-        2 => {
-            if let Some(v) = value(i, o, "Value:")? {
-                d.remove.push(v)
-            }
-        }
-        3 => d.clear = true,
-        _ => {}
-    };
-    Ok(())
-}
+
 fn explanation<R: BufRead, W: Write>(
     i: &mut R,
     o: &mut W,
@@ -299,11 +258,6 @@ fn boolean<R: BufRead, W: Write>(
 }
 fn review<W: Write>(o: &mut W, d: &ConfigUpdate) -> Result<()> {
     writeln!(o, "\nPending configuration changes:")?;
-    change(o, "Reader experience", d.reader.experience.as_deref())?;
-    list_change(o, "Known languages", &d.reader.known_languages)?;
-    list_change(o, "Learning languages", &d.reader.learning_languages)?;
-    list_change(o, "Known frameworks", &d.reader.known_frameworks)?;
-    list_change(o, "Learning frameworks", &d.reader.learning_frameworks)?;
     change(
         o,
         "Explanation depth",
@@ -360,25 +314,7 @@ fn bool_change<W: Write>(o: &mut W, label: &str, value: Option<bool>) -> Result<
     }
     Ok(())
 }
-fn list_change<W: Write>(o: &mut W, label: &str, value: &ListUpdate) -> Result<()> {
-    if value.clear {
-        writeln!(o, "  {label}: clear")?;
-    }
-    for item in &value.add {
-        writeln!(o, "  {label}: add {item}")?;
-    }
-    for item in &value.remove {
-        writeln!(o, "  {label}: remove {item}")?;
-    }
-    Ok(())
-}
-fn display(values: &[String]) -> String {
-    if values.is_empty() {
-        "<none>".into()
-    } else {
-        values.join(", ")
-    }
-}
+
 fn yes_no(value: bool) -> &'static str {
     if value {
         "yes"

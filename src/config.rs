@@ -12,6 +12,7 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedConfig {
+    pub learning_selection: crate::learning::LearningSelection,
     pub profile: String,
     pub profile_selection_source: ProfileSelectionSource,
     pub available_profiles: Vec<String>,
@@ -963,6 +964,9 @@ pub fn edit_config(
     update: &ConfigUpdate,
     profiles: &[String],
 ) -> Result<bool> {
+    if update.reader != ReaderUpdate::default() {
+        anyhow::bail!("Reader settings are unsupported; use [learning.defaults] or git explain learning to customize explanations");
+    }
     if !update.has_changes() {
         return Ok(false);
     }
@@ -1002,20 +1006,6 @@ pub fn edit_config(
 }
 
 fn apply_config_update(root: &mut toml::Value, update: &ConfigUpdate) -> Result<()> {
-    let reader = table_mut(root, "reader");
-    set(reader, "experience", update.reader.experience.clone());
-    update_list(reader, "known_languages", &update.reader.known_languages)?;
-    update_list(
-        reader,
-        "learning_languages",
-        &update.reader.learning_languages,
-    )?;
-    update_list(reader, "known_frameworks", &update.reader.known_frameworks)?;
-    update_list(
-        reader,
-        "learning_frameworks",
-        &update.reader.learning_frameworks,
-    )?;
     let explanation = table_mut(root, "explanation");
     set(
         explanation,
@@ -1072,47 +1062,6 @@ fn set_u32(t: &mut toml::map::Map<String, toml::Value>, k: &str, v: Option<u32>)
     if let Some(v) = v {
         t.insert(k.into(), toml::Value::Integer(i64::from(v)));
     }
-}
-fn update_list(
-    t: &mut toml::map::Map<String, toml::Value>,
-    key: &str,
-    update: &ListUpdate,
-) -> Result<()> {
-    if !update.clear && update.add.is_empty() && update.remove.is_empty() {
-        return Ok(());
-    }
-    let mut values = if update.clear {
-        Vec::new()
-    } else {
-        t.get(key)
-            .and_then(toml::Value::as_array)
-            .map(|v| {
-                v.iter()
-                    .filter_map(toml::Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    for value in &update.remove {
-        values.retain(|existing| existing != value);
-    }
-    for value in &update.add {
-        if value.trim().is_empty() {
-            anyhow::bail!("{key} entries must not be empty");
-        }
-        if !values
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(value))
-        {
-            values.push(value.clone());
-        }
-    }
-    t.insert(
-        key.into(),
-        toml::Value::Array(values.into_iter().map(toml::Value::String).collect()),
-    );
-    Ok(())
 }
 fn validate_application_document(root: &toml::Value) -> Result<()> {
     let partial: PartialConfig = root.clone().try_into().context("validate configuration")?;
@@ -1263,11 +1212,13 @@ pub fn example_config() -> &'static str {
 # temperature = 0.3
 
 # ----------------------------------------------------------------------
-# Reader context
+# Learning preferences
 # ----------------------------------------------------------------------
-# [reader]
-# git-explain defaults experience to "experienced" and lists to [].
-# experience = "experienced"
+# [learning.defaults]
+# Defaults: automatic language help, balanced focus and detail.
+# language_help = "automatic"
+# focus = "balanced"
+# detail = "balanced"
 # known_languages = []
 # learning_languages = []
 # known_frameworks = []
@@ -1331,8 +1282,11 @@ pub fn repository_example_config() -> &'static str {
 # profile = "work"
 
 # Repository-safe application settings use the same keys as user configuration.
-# [reader]
-# experience = "experienced"
+# Repository learning preferences require explicit opt-in.
+# [learning.defaults]
+# language_help = "automatic"
+# focus = "balanced"
+# detail = "balanced"
 # known_languages = []
 # learning_languages = []
 # known_frameworks = []
@@ -1421,7 +1375,7 @@ pub fn format_show(config: &ResolvedConfig) -> String {
         display_optional(config.model.deep.temperature)
     )
     .unwrap();
-    writeln!(output, "\nReader:\nexperience: {}\nknown languages: {}\nlearning languages: {}\nknown frameworks: {}\nlearning frameworks: {}", config.reader.experience, config.reader.known_languages.join(", "), config.reader.learning_languages.join(", "), config.reader.known_frameworks.join(", "), config.reader.learning_frameworks.join(", ")).unwrap();
+    writeln!(output, "\nLearning preferences: git explain learning show").unwrap();
     writeln!(output, "\nExplanation:\ndefault depth: {}\nannotation limit: {}\nannotation word limit: {}\nexplain language concepts: {}\nexplain framework concepts: {}\ninfer intent: {}", config.explanation.default_depth, config.explanation.max_annotations, config.explanation.max_annotation_words, config.explanation.explain_language_concepts, config.explanation.explain_framework_concepts, config.explanation.infer_intent).unwrap();
     writeln!(output, "\nCache:\nenabled: {}", config.cache.enabled).unwrap();
     writeln!(
@@ -1456,7 +1410,7 @@ pub fn format_application_show(config: &ApplicationConfig) -> String {
         )
     )
     .unwrap();
-    writeln!(output, "\nReader (source: {}):\n  Experience: {}\n  Known languages: {}\n  Learning languages: {}\n  Known frameworks: {}\n  Learning frameworks: {}", config.reader_source.label(), config.reader.experience, display_list(&config.reader.known_languages), display_list(&config.reader.learning_languages), display_list(&config.reader.known_frameworks), display_list(&config.reader.learning_frameworks)).unwrap();
+    writeln!(output, "\nLearning preferences: git explain learning show").unwrap();
     writeln!(output, "\nExplanation (source: {}):\n  Default depth: {}\n  Annotation limit: {}\n  Annotation word limit: {}\n  Explain language concepts: {}\n  Explain framework concepts: {}\n  Infer intent: {}", config.explanation_source.label(), config.explanation.default_depth, config.explanation.max_annotations, config.explanation.max_annotation_words, yes_no(config.explanation.explain_language_concepts), yes_no(config.explanation.explain_framework_concepts), yes_no(config.explanation.infer_intent)).unwrap();
     writeln!(
         output,
@@ -1523,12 +1477,21 @@ fn display_optional<T: std::fmt::Display>(value: Option<T>) -> String {
         .unwrap_or_else(|| "unspecified".into())
 }
 
+fn reject_reader_preferences<'de, D: serde::Deserializer<'de>>(
+    _deserializer: D,
+) -> std::result::Result<Option<PartialReaderConfig>, D::Error> {
+    Err(serde::de::Error::custom("[reader] is unsupported; use [learning.defaults] or git explain learning to customize explanations"))
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PartialConfig {
+    #[serde(rename = "learning")]
+    _learning: Option<crate::learning::LearningConfig>,
     model: Option<PartialModelConfig>,
     #[serde(default)]
     profiles: BTreeMap<String, PartialProfileConfig>,
+    #[serde(default, deserialize_with = "reject_reader_preferences")]
     reader: Option<PartialReaderConfig>,
     explanation: Option<PartialExplanationConfig>,
     server: Option<PartialServerConfig>,
@@ -1586,7 +1549,10 @@ impl PartialConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RepositoryConfig {
+    #[serde(rename = "learning")]
+    _learning: Option<crate::learning::RepositoryLearningConfig>,
     model: Option<PartialModelConfig>,
+    #[serde(default, deserialize_with = "reject_reader_preferences")]
     reader: Option<PartialReaderConfig>,
     explanation: Option<PartialExplanationConfig>,
     server: Option<PartialServerConfig>,
@@ -1931,6 +1897,7 @@ fn resolve(
         .with_context(|| format!("invalid profile '{profile}'"))?;
     validate_model_config(&model, &profile)?;
     Ok(ResolvedConfig {
+        learning_selection: Default::default(),
         profile,
         profile_selection_source,
         available_profiles: merged.profiles.keys().cloned().collect(),
@@ -2236,7 +2203,6 @@ mod tests {
             "# max_tokens = 2500",
             "# temperature = 0.2",
             "# temperature = 0.3",
-            "# experience = \"experienced\"",
             "# known_languages = []",
             "# learning_languages = []",
             "# known_frameworks = []",
@@ -2332,7 +2298,6 @@ mod tests {
         let template = repository_example_config();
         for field in [
             "# profile = \"work\"",
-            "# experience = \"experienced\"",
             "# known_languages = []",
             "# default_depth = \"normal\"",
             "# max_annotations = 3",
@@ -2385,7 +2350,7 @@ mod tests {
     fn editing_a_profile_is_partial_and_can_clear_optional_fields() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("config.toml");
-        fs::write(&path, "[model]\nprofile = \"local\"\n[profiles.local]\nprovider = \"openai_compatible\"\npreset = \"llama_cpp\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"old\"\napi_key_env = \"LOCAL_KEY\"\n[profiles.local.normal]\nmax_tokens = 500\ntemperature = 0.2\n[reader]\nexperience = \"new\"\n[profiles.other]\nprovider = \"openai_compatible\"\nbase_url = \"http://example.test/v1\"\nmodel = \"other\"").unwrap();
+        fs::write(&path, "[model]\nprofile = \"local\"\n[profiles.local]\nprovider = \"openai_compatible\"\npreset = \"llama_cpp\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nmodel = \"old\"\napi_key_env = \"LOCAL_KEY\"\n[profiles.local.normal]\nmax_tokens = 500\ntemperature = 0.2\n[learning.defaults]\nfocus = \"syntax\"\n[profiles.other]\nprovider = \"openai_compatible\"\nbase_url = \"http://example.test/v1\"\nmodel = \"other\"").unwrap();
         edit_profile(
             &path,
             "local",
@@ -2408,7 +2373,7 @@ mod tests {
         assert_eq!(config.model.normal.max_tokens, Some(500));
         assert_eq!(config.model.normal.temperature, None);
         let text = fs::read_to_string(path).unwrap();
-        assert!(text.contains("experience = \"new\""));
+        assert!(text.contains("focus = \"syntax\""));
         assert!(text.contains("[profiles.other]"));
     }
 
@@ -2785,14 +2750,7 @@ mod tests {
         let path = directory.path().join("config.toml");
         fs::write(&path, "[profiles.local]\nprovider = \"openai_compatible\"\nbase_url = \"http://local\"\nmodel = \"local\"\n[model]\nprofile = \"local\"\n").unwrap();
         let update = ConfigUpdate {
-            reader: ReaderUpdate {
-                experience: Some("intermediate".into()),
-                known_languages: ListUpdate {
-                    add: vec!["Rust".into()],
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
+            reader: ReaderUpdate::default(),
             explanation: ExplanationUpdate {
                 default_depth: Some("deep".into()),
                 max_annotations: Some(20),
@@ -2823,7 +2781,7 @@ mod tests {
         let resolved = ConfigLoader::with_paths(path.clone(), None)
             .resolve(None)
             .unwrap();
-        assert_eq!(resolved.reader.known_languages, ["Rust"]);
+        assert!(resolved.reader.known_languages.is_empty());
         assert_eq!(resolved.explanation.max_annotations, 20);
         assert!(!resolved.cache.enabled);
         assert_eq!(resolved.server.port, 9000);
@@ -2854,5 +2812,33 @@ mod tests {
         assert!(shown.contains("Cache (source: user configuration):\n  Enabled: no"));
         assert!(shown.contains("Port: 9000"));
         assert!(!shown.contains("Base URL"));
+    }
+    #[test]
+    fn old_reader_settings_are_rejected_with_learning_guidance() {
+        for repository in [false, true] {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            fs::write(&path, "[reader]\nexperience='expert'\n").unwrap();
+            let loader = if repository {
+                ConfigLoader::with_paths(dir.path().join("user.toml"), Some(path.clone()))
+            } else {
+                ConfigLoader::with_paths(path.clone(), None)
+            };
+            let error = loader.application_config(None).unwrap_err();
+            assert!(format!("{error:#}").contains("[learning.defaults]"));
+            fs::write(&path, "").unwrap();
+            let update = ConfigUpdate {
+                reader: ReaderUpdate {
+                    experience: Some("beginner".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            assert!(edit_config(&path, repository, &update, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("[learning.defaults]"));
+            assert_eq!(fs::read_to_string(path).unwrap(), "");
+        }
     }
 }
