@@ -173,6 +173,7 @@ fn tracker_request(source: &str) -> ExplanationRequest {
         prior_explanation: None,
         kind: git_explain::model::ExplanationKind::Changes,
         deep: false,
+        evidence: Default::default(),
     }
 }
 
@@ -415,6 +416,7 @@ async fn live_llama_cpp_rejects_an_explanation_larger_than_its_fixed_context() {
             prior_explanation: None,
             kind: git_explain::model::ExplanationKind::Changes,
             deep: false,
+            evidence: Default::default(),
         })
         .await
         .expect_err("fixed runtime must reject an oversized explanation locally");
@@ -446,6 +448,7 @@ async fn live_llama_cpp_runs_a_small_git_explain_request() {
             prior_explanation: None,
             kind: git_explain::model::ExplanationKind::Changes,
             deep: false,
+            evidence: Default::default(),
         })
         .await
         .expect("small git-explain request must produce structured output");

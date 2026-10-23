@@ -395,7 +395,39 @@ impl OpenAiProvider {
             self.explanation.max_annotations
         };
         let retry_guidance = "";
-        let prompt = format!("{task}{retry_guidance}\n\n{}\nProgramming language: {}\nUnit kind: {}\nUnit name: {}\n\nSOURCE UNIT:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}\n\nRELEVANT DIFF:\n{}{}\n\n{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, request.unit_kind, request.unit_name, request.source_unit, regions, request.diff, prior, reader_context, limit, self.explanation.max_annotation_words.min(if retry { 30 } else { self.explanation.max_annotation_words }), self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
+        let active_evidence = request.source_evidence();
+        let evidence_section = if active_evidence.facts.is_empty() {
+            String::new()
+        } else {
+            let mut lines = Vec::new();
+            if request.deep {
+                for fact in &active_evidence.facts {
+                    lines.push(format!("- [code section] {}", fact.display_summary()));
+                }
+            } else {
+                for fact in &active_evidence.facts {
+                    let span = fact.span();
+                    let matched_region = request
+                        .regions
+                        .iter()
+                        .find(|r| span.start_line >= r.start_line && span.end_line <= r.end_line);
+                    match matched_region {
+                        Some(r) => {
+                            lines.push(format!("- [REGION {}] {}", r.id, fact.display_summary()))
+                        }
+                        None => lines.push(format!(
+                            "- [surrounding context] {}",
+                            fact.display_summary()
+                        )),
+                    }
+                }
+            }
+            let catalog = lines.join("\n");
+            format!(
+                "\n\nOBSERVED SYNTACTIC EVIDENCE (bounded, incomplete observations; an omitted fact does not establish absence. These are not complete type or control-flow proofs. Preserve exact comparison strictness; no behavior claims from names. Macro invocations are not expanded or resolved. Nearby facts are surrounding context only; normal callee returns resume caller):\n{catalog}"
+            )
+        };
+        let prompt = format!("{task}{retry_guidance}\n\n{}\nProgramming language: {}\nUnit kind: {}\nUnit name: {}\n\nSOURCE UNIT:\n{}\n\nDETERMINISTIC SOURCE REGIONS (the region number is the only location identifier you may return):\n{}{evidence_section}\n\nRELEVANT DIFF:\n{}{}\n\n{}\n\nAnnotation limit: {}. Maximum words per annotation: {}. Explain language concepts: {}. Explain framework concepts: {}. Infer intent: {}. Do not calculate or return source line numbers. Do not include fields other than those required by the schema.", request.git_context, request.language, request.unit_kind, request.unit_name, request.source_unit, regions, request.diff, prior, reader_context, limit, self.explanation.max_annotation_words.min(if retry { 30 } else { self.explanation.max_annotation_words }), self.explanation.explain_language_concepts, self.explanation.explain_framework_concepts, self.explanation.infer_intent);
         let system = super::prompts::system(request);
         Req {
             model: self.model.clone(),
@@ -1430,6 +1462,85 @@ mod tests {
                 ExplanationKind::Changes
             },
             deep,
+            evidence: Default::default(),
+        }
+    }
+
+    #[test]
+    fn prompt_contains_exact_comparison_syntax_fact_for_synthetic_guard() {
+        let provider = provider("llama_cpp");
+        let mut req = request(false);
+        req.source_unit = "fn check(x: i32) -> bool {\n    if x >= 10 {\n        return true;\n    }\n    false\n}".into();
+        req.regions = vec![ExplanationRegion {
+            id: 1,
+            coverage_id: 1,
+            start_line: 2,
+            end_line: 4,
+            source: "    if x >= 10 {\n        return true;\n    }".into(),
+        }];
+        let user_prompt = &provider.build_request(&req).messages[1].content;
+        assert!(
+            user_prompt.contains("[REGION 1] Comparison: x >= 10"),
+            "prompt should include exact >= comparison fact: {user_prompt}"
+        );
+        assert!(user_prompt.contains("[REGION 1]"));
+        assert!(user_prompt.contains("OBSERVED SYNTACTIC EVIDENCE"));
+    }
+
+    #[test]
+    fn boundary_straddling_fact_is_classified_as_surrounding_context() {
+        let provider = provider("llama_cpp");
+        let mut req = request(false);
+        // The comparison itself spans lines 2..=3.
+        req.source_unit =
+            "fn check(x: i32) -> bool {\n    let flag = x\n        >= 10;\n    flag\n}".into();
+        req.regions = vec![ExplanationRegion {
+            id: 1,
+            coverage_id: 1,
+            start_line: 3,
+            end_line: 4,
+            source: "        >= 10;\n    flag".into(),
+        }];
+        let user_prompt = &provider.build_request(&req).messages[1].content;
+        assert!(
+            user_prompt.contains("[surrounding context] Comparison: x >= 10 (lines 2-3)"),
+            "straddling fact must be surrounding context: {user_prompt}"
+        );
+    }
+
+    #[test]
+    fn deep_mode_receives_complete_evidence() {
+        let provider = provider("llama_cpp");
+        let mut req = request(true);
+        req.source_unit = "fn check(x: i32) -> bool {\n    if x >= 10 {\n        return true;\n    }\n    false\n}".into();
+        req.regions = vec![];
+        let user_prompt = &provider.build_request(&req).messages[1].content;
+        assert!(
+            user_prompt.contains("[code section]"),
+            "deep mode receives complete section evidence: {user_prompt}"
+        );
+        assert!(user_prompt.contains("x >= 10"));
+    }
+
+    #[test]
+    fn stale_language_or_policy_evidence_is_rebuilt_from_active_source() {
+        let provider = provider("llama_cpp");
+        for mismatch in ["language", "version"] {
+            let mut req = request(false);
+            req.source_unit = "fn check(x: i32) -> bool { x >= 10 }".into();
+            req.evidence =
+                crate::language::facts::extract_evidence(&req.language, &req.source_unit);
+            req.evidence.facts.clear();
+            if mismatch == "language" {
+                req.evidence.language = "Python".into();
+            } else {
+                req.evidence.version = "outdated-policy".into();
+            }
+            let payload = provider.build_request(&req);
+            assert!(
+                payload.messages[1].content.contains("Comparison: x >= 10"),
+                "stale {mismatch} evidence was trusted"
+            );
         }
     }
 

@@ -125,6 +125,7 @@ pub fn request_for_kind(
             .filter(|value| !value.is_empty()),
         kind,
         deep: kind == ExplanationKind::Deep,
+        evidence: crate::language::facts::extract_evidence(&unit.language, &unit.source),
     }
 }
 
@@ -891,5 +892,89 @@ mod tests {
             assert_eq!(regions[i].end_line + 1, regions[i + 1].start_line);
             assert_eq!(regions[i + 1].id, regions[i].id + 1);
         }
+    }
+
+    #[test]
+    fn deleted_unit_request_populates_evidence_from_before_source() {
+        let before_source =
+            "fn removed(limit: i32) {\n    if limit >= 0 {\n        cleanup();\n    }\n}";
+        let before_unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "removed".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "test.rs".into(),
+                start_line: 1,
+                end_line: 5,
+            },
+            source: before_source.into(),
+            language: "Rust".into(),
+        };
+        let change = SemanticUnitChange {
+            id: SemanticChangeId("test".into()),
+            kind: SemanticUnitChangeKind::Deleted,
+            overview_explanation: UnitExplanation::default(),
+            explanation: UnitExplanation::default(),
+            concept_explanation: UnitExplanation::default(),
+            deep_explanation: None,
+            before: Some(before_unit),
+            after: None,
+            diff: "-fn removed()".into(),
+        };
+        let file = FileChange {
+            old_path: Some(std::path::PathBuf::from("test.rs")),
+            new_path: None,
+            kind: crate::change_set::FileChangeKind::Deleted,
+            similarity: None,
+            old_mode: None,
+            new_mode: None,
+            binary: false,
+            patch: None,
+            before: None,
+            after: None,
+            semantic_changes: vec![],
+        };
+        let context = crate::explain::AnalysisContext::working_tree();
+        let request = request_for_kind(&file, &change, &context, ExplanationKind::Changes);
+        assert!(
+            !request.evidence.is_empty(),
+            "deleted unit must populate evidence from before source"
+        );
+        let has_cmp = request.evidence.facts.iter().any(|f| matches!(f, crate::language::facts::SourceFact::Comparison { operator, .. } if operator == ">="));
+        assert!(
+            has_cmp,
+            "deleted unit evidence should contain >= comparison"
+        );
+    }
+
+    #[test]
+    fn file_analysis_request_populates_evidence_from_unit_source() {
+        let source = "fn inspect(val: usize) -> bool {\n    if val >= 100 {\n        return true;\n    }\n    false\n}";
+        let unit = SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "inspect".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "inspect.rs".into(),
+                start_line: 1,
+                end_line: 6,
+            },
+            source: source.into(),
+            language: "Rust".into(),
+        };
+        let request = crate::file_analysis::request_for(&unit, Some("HEAD"), false, None);
+        assert!(
+            !request.evidence.is_empty(),
+            "file analysis request must populate evidence"
+        );
+        let has_cmp = request.evidence.facts.iter().any(|f| matches!(f, crate::language::facts::SourceFact::Comparison { operator, .. } if operator == ">="));
+        assert!(
+            has_cmp,
+            "file analysis request evidence must contain >= comparison"
+        );
     }
 }

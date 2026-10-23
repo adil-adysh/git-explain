@@ -141,6 +141,7 @@ fn request(deep: bool) -> ExplanationRequest {
         prior_explanation: None,
         kind: git_explain::model::ExplanationKind::Changes,
         deep,
+        evidence: Default::default(),
     }
 }
 

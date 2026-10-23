@@ -42,9 +42,25 @@ pub struct ExplanationRequest {
     pub prior_explanation: Option<String>,
     pub kind: ExplanationKind,
     pub deep: bool,
+    pub evidence: crate::language::facts::SourceEvidence,
 }
 
 impl ExplanationRequest {
+    /// Cache keys and prompts must consume the same revision/policy-bound facts.
+    pub fn source_evidence(&self) -> std::borrow::Cow<'_, crate::language::facts::SourceEvidence> {
+        if self.evidence.matches_source(&self.source_unit)
+            && self.evidence.language == self.language
+            && self.evidence.version == crate::language::facts::EVIDENCE_VERSION
+        {
+            std::borrow::Cow::Borrowed(&self.evidence)
+        } else {
+            std::borrow::Cow::Owned(crate::language::facts::extract_evidence(
+                &self.language,
+                &self.source_unit,
+            ))
+        }
+    }
+
     pub fn concepts(&self) -> bool {
         self.kind == ExplanationKind::Concepts
     }
@@ -58,7 +74,7 @@ pub struct Annotation {
     pub kind: String,
     pub text: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UnitExplanation {
     #[serde(default)]
     pub teaching: Option<DeepTeaching>,

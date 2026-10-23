@@ -1,6 +1,7 @@
 pub mod c;
 pub mod c_sharp;
 pub mod cpp;
+pub mod facts;
 pub mod go;
 pub mod java;
 pub mod javascript;

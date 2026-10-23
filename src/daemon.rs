@@ -1646,6 +1646,7 @@ mod tests {
             prior_explanation: None,
             kind: crate::model::ExplanationKind::Changes,
             deep: false,
+            evidence: Default::default(),
         };
         let first_state = state.clone();
         let first_session = session.clone();

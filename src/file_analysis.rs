@@ -172,6 +172,7 @@ pub fn request_for(
             ExplanationKind::Overview
         },
         deep,
+        evidence: crate::language::facts::extract_evidence(&unit.language, &unit.source),
     }
 }
 

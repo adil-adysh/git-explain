@@ -13,7 +13,7 @@ use std::{
 };
 
 const SCHEMA: &str = "1";
-pub const PROMPT: &str = "explanation-prompt-v19";
+pub const PROMPT: &str = "explanation-prompt-v20";
 pub const RESPONSE_CONTRACT: &str = "structured-response-v9";
 
 #[derive(Clone)]
@@ -45,6 +45,8 @@ struct Identity<'a> {
     diff: &'a str,
     prior: Option<&'a str>,
     regions: Vec<RegionIdentity>,
+    evidence_version: &'a str,
+    evidence: &'a [crate::language::facts::SourceFact],
 }
 #[derive(Clone, Debug, Serialize)]
 struct RegionIdentity {
@@ -101,6 +103,7 @@ impl ExplanationCache {
         } else {
             &model.normal
         };
+        let evidence = request.source_evidence();
         let identity = Identity {
             prerequisite_id: request.prerequisite_id.as_deref(),
             learning: &request.policy,
@@ -137,6 +140,8 @@ impl ExplanationCache {
                     source: r.source.clone(),
                 })
                 .collect(),
+            evidence_version: &evidence.version,
+            evidence: &evidence.facts,
         };
         let bytes = serde_json::to_vec(&identity).expect("cache identity serializes");
         format!("{:x}", Sha256::digest(bytes))
@@ -256,8 +261,44 @@ mod tests {
             prior_explanation: None,
             kind: crate::model::ExplanationKind::Changes,
             deep: false,
+            evidence: Default::default(),
         };
         (cache, model, reader, explanation, request)
+    }
+
+    #[test]
+    fn default_and_precomputed_evidence_have_the_same_effective_cache_identity() {
+        let (_, model, reader, explanation, mut request) = setup();
+        request.source_unit = "fn load() { run(); }".into();
+        let missing = ExplanationCache::change_key(&request, &model, &reader, &explanation);
+        request.evidence =
+            crate::language::facts::extract_evidence(&request.language, &request.source_unit);
+        assert_eq!(
+            missing,
+            ExplanationCache::change_key(&request, &model, &reader, &explanation)
+        );
+    }
+
+    #[test]
+    fn cache_key_uses_effective_content_and_rejects_stale_evidence_policy() {
+        let (_, model, reader, explanation, mut request) = setup();
+        request.source_unit = "fn load() { run(); }".into();
+        request.evidence =
+            crate::language::facts::extract_evidence(&request.language, &request.source_unit);
+        let base = ExplanationCache::change_key(&request, &model, &reader, &explanation);
+        let mut changed_facts = request.clone();
+        changed_facts.evidence.facts.clear();
+        assert_ne!(
+            base,
+            ExplanationCache::change_key(&changed_facts, &model, &reader, &explanation)
+        );
+        let mut changed_version = request.clone();
+        changed_version.evidence.version = "outdated-evidence-policy".into();
+        changed_version.evidence.facts.clear();
+        assert_eq!(
+            base,
+            ExplanationCache::change_key(&changed_version, &model, &reader, &explanation)
+        );
     }
 
     #[test]

@@ -82,3 +82,11 @@ Each annotation includes a validation-only `source_quote`: a nonempty exact subs
 Each explicit Generate/Regenerate action makes at most one text-generation attempt. Context preflight and backend metadata discovery remain local preparation; malformed, truncated or unsupported responses require a new explicit action rather than an automatic retry. Model loading requests that return no text are distinct from generation.
 
 The opt-in `scripts/evaluate-grounding.py` runner compares frozen baseline/candidate binaries against the configured loopback llama.cpp model using synthetic cases. Store its source-bearing artifacts under ignored `target/`. Review factual and target accuracy independently of schema and quote validation; report generation counts and latency without assuming a successful response is correct.
+
+### Syntactic source evidence
+
+The existing request may include a bounded catalog extracted with the project's Tree-sitter grammars. Facts preserve exact comparison operators, call and macro syntax, declarations and return expressions, with byte/line spans tied to the active source hash, language and extraction policy. Deleted code uses its before source; other diff sections and file mode use their active revision. Pure extraction remains independent of change classification and model/runtime state.
+
+Facts describe observed syntax, not resolved types, macro expansion, callee behavior or complete control flow. Preserve pointer/reference declarators and invocation punctuation rather than reconstructing them. A Python generator is one syntactic argument; tagged templates do not establish an ordinary argument count. Unsupported/error-affected shapes and over-budget facts are omitted rather than guessed or truncated. Catalog absence never proves code absence.
+
+Only facts whose complete spans fit a supplied annotation region are labeled with that region; others remain surrounding context. Deep receives bounded section-wide evidence. This catalog does not create new selectable regions or another source view. Cache keys and prompts use the same normalized evidence; stale source, language or policy metadata requires pure re-extraction. Evidence adds no model request and does not weaken exact quote validation.
