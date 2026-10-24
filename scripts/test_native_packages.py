@@ -143,10 +143,10 @@ class TestPackageNative(unittest.TestCase):
             self.mod, "scripts/package-native.py must exist and be loadable"
         )
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp_dir.name)
-        self.repo_root = self.root / "repo"
+        self.root = Path(self.temp_dir.name).resolve()
+        self.repo_root = (self.root / "repo").resolve()
         self.repo_root.mkdir()
-        self.dist_dir = self.root / "dist"
+        self.dist_dir = (self.root / "dist").resolve()
         self.dist_dir.mkdir()
 
         # Minimal Cargo.toml
@@ -239,11 +239,11 @@ class TestPackageNative(unittest.TestCase):
         musl_bin = musl_bin_dir / "git-explain"
         musl_bin.write_bytes(b"STATIC_MUSL_BINARY_CONTENT")
 
-        expected_deb = self.dist_dir / "git-explain_0.2.1-1_amd64.deb"
-        expected_rpm = self.dist_dir / "git-explain-0.2.1-1.x86_64.rpm"
+        expected_deb = (self.dist_dir / "git-explain_0.2.1-1_amd64.deb").resolve()
+        expected_rpm = (self.dist_dir / "git-explain-0.2.1-1.x86_64.rpm").resolve()
 
         def mock_subprocess_run(cmd, *args, **kwargs):
-            self.assertEqual(kwargs.get("cwd"), self.repo_root)
+            self.assertEqual(Path(kwargs.get("cwd")).resolve(), self.repo_root.resolve())
             self.assertTrue(kwargs.get("check"), "check=True is required")
             self.assertFalse(kwargs.get("shell", False), "shell=True is forbidden")
 
@@ -257,14 +257,14 @@ class TestPackageNative(unittest.TestCase):
                 self.assertIn("--deb-version", cmd)
                 self.assertEqual(cmd[cmd.index("--deb-version") + 1], "0.2.1-1")
                 self.assertIn("--output", cmd)
-                self.assertEqual(cmd[cmd.index("--output") + 1], str(expected_deb))
+                self.assertEqual(Path(cmd[cmd.index("--output") + 1]).resolve(), expected_deb)
                 expected_deb.write_bytes(b"MOCK_DEB")
                 return MagicMock(returncode=0)
             elif cmd[0] == "cargo" and cmd[1] == "generate-rpm":
                 self.assertIn("--target", cmd)
                 self.assertEqual(cmd[cmd.index("--target") + 1], "x86_64-unknown-linux-musl")
                 self.assertIn("--output", cmd)
-                self.assertEqual(cmd[cmd.index("--output") + 1], str(expected_rpm))
+                self.assertEqual(Path(cmd[cmd.index("--output") + 1]).resolve(), expected_rpm)
                 self.assertIn("--set-metadata", cmd)
                 self.assertEqual(cmd[cmd.index("--set-metadata") + 1], 'version = "0.2.1"')
                 expected_rpm.write_bytes(b"MOCK_RPM")
@@ -279,7 +279,7 @@ class TestPackageNative(unittest.TestCase):
                 dist_dir=self.dist_dir,
             )
             self.assertEqual(mock_run.call_count, 2)
-            self.assertEqual(results, [expected_deb, expected_rpm])
+            self.assertEqual([p.resolve() for p in results], [expected_deb, expected_rpm])
             self.assertTrue(expected_deb.exists())
             self.assertTrue(expected_rpm.exists())
 
@@ -289,8 +289,8 @@ class TestPackageNative(unittest.TestCase):
         musl_bin_dir.mkdir(parents=True, exist_ok=True)
         (musl_bin_dir / "git-explain").write_bytes(b"STATIC_MUSL_BINARY_CONTENT")
 
-        expected_deb = self.dist_dir / "git-explain_0.2.1-1_amd64.deb"
-        expected_rpm = self.dist_dir / "git-explain-0.2.1-1.x86_64.rpm"
+        expected_deb = (self.dist_dir / "git-explain_0.2.1-1_amd64.deb").resolve()
+        expected_rpm = (self.dist_dir / "git-explain-0.2.1-1.x86_64.rpm").resolve()
 
         def mock_subprocess_run(cmd, *args, **kwargs):
             if "deb" in cmd:
