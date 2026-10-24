@@ -1,0 +1,66 @@
+[
+  {
+    "name": "terraform",
+    "path": "src/infra/main.tf",
+    "language": "HCL",
+    "before": "resource \"example_service\" \"api\" {\n  replicas = 1\n  endpoint = var.endpoint\n}\n\nvariable \"region\" {\n  default = \"local\"\n}\n",
+    "after": "resource \"example_service\" \"api\" {\n  replicas = 2\n  endpoint = var.endpoint\n}\n\nvariable \"region\" {\n  default = \"local\"\n}\n",
+    "select_contains": "replicas"
+  },
+  {
+    "name": "yaml",
+    "path": "src/infra/deployment.yaml",
+    "language": "YAML",
+    "before": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  replicas: 1\n  note: |\n    Keep the source literal\n    exactly as written.\n",
+    "after": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  replicas: 2\n  note: |\n    Keep the source literal\n    exactly as written.\n",
+    "select_contains": "replicas:"
+  },
+  {
+    "name": "json",
+    "path": "src/infra/settings.json",
+    "language": "JSON",
+    "before": "{\n  \"retries\": 1,\n  \"endpoint\": \"${UNRESOLVED}\",\n  \"enabled\": false\n}\n",
+    "after": "{\n  \"retries\": 2,\n  \"endpoint\": \"${UNRESOLVED}\",\n  \"enabled\": false\n}\n",
+    "select_contains": "\"retries\""
+  },
+  {
+    "name": "jsonc",
+    "path": "src/infra/settings.jsonc",
+    "language": "JSONC",
+    "before": "{\n  // Deliberate Unicode and trailing commas\n  \"name\": \"café\",\n  \"options\": [true, true,],\n}\n",
+    "after": "{\n  // Deliberate Unicode and trailing commas\n  \"name\": \"café\",\n  \"options\": [true, false,],\n}\n",
+    "select_contains": "\"options\""
+  },
+  {
+    "name": "dockerfile",
+    "path": "src/infra/Dockerfile",
+    "language": "Dockerfile",
+    "before": "FROM example.invalid/base:latest AS build\nWORKDIR /app\nCOPY . .\nRUN <<EOF\nprintf \"%s\\n\" \"$PREVIOUS_UNRESOLVED\"\nEOF\n",
+    "after": "FROM example.invalid/base:latest AS build\nWORKDIR /app\nCOPY . .\nRUN <<EOF\nprintf \"%s\\n\" \"$UNRESOLVED\"\nEOF\n",
+    "select_contains": "RUN <<"
+  },
+  {
+    "name": "bash",
+    "path": "src/infra/entrypoint.sh",
+    "language": "Bash",
+    "before": "load_settings() {\n  local record\n  record=$(fetch_record \"$2\")\n  write_record \"$record\"\n}\n\nunchanged() { :; }\n",
+    "after": "load_settings() {\n  local record\n  record=$(fetch_record \"$1\")\n  write_record \"$record\"\n}\n\nunchanged() { :; }\n",
+    "select_contains": "fetch_record"
+  },
+  {
+    "name": "powershell",
+    "path": "src/infra/deploy.ps1",
+    "language": "PowerShell",
+    "before": "function Save-Settings {\n  param([string]$InputPath)\n  $record = Read-Record -Path $InputPath\n  $record | Write-Record\n}\n\nfunction Unchanged { \"same\" }\n",
+    "after": "function Save-Settings {\n  param([string]$InputPath)\n  $record = Get-Record -Path $InputPath\n  $record | Write-Record\n}\n\nfunction Unchanged { \"same\" }\n",
+    "select_contains": "Get-Record"
+  },
+  {
+    "name": "kotlin",
+    "path": "src/infra/Settings.kt",
+    "language": "Kotlin",
+    "before": "fun saveSettings(input: String?): Boolean {\n    val value = input ?: return false\n    val record = parseRecord(value)\n    writeRecord(record)\n    return false\n}\n\nfun unchanged() = 1\n",
+    "after": "fun saveSettings(input: String?): Boolean {\n    val value = input ?: return false\n    val record = parseRecord(value)\n    writeRecord(record)\n    return true\n}\n\nfun unchanged() = 1\n",
+    "select_contains": "fun saveSettings"
+  }
+]

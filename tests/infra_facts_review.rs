@@ -76,3 +76,67 @@ fn malformed_new_language_input_never_uses_the_legacy_extractor() {
         assert!(result.unwrap().is_empty(), "{language}");
     }
 }
+
+#[test]
+fn yaml_anchors_tags_and_documents_remain_unexpanded_syntax() {
+    let source = "defaults: &defaults\n  retries: 2\ncopy: *defaults\ncredential: !Ref SecretName\n---\nother: value\n";
+    let evidence = extract_evidence("YAML", source);
+    assert!(!evidence.facts.is_empty());
+    let mut alias_seen = false;
+    let mut tag_seen = false;
+    for fact in evidence.facts {
+        let SourceFact::Syntax { span, syntax, .. } = fact else {
+            panic!("unexpected inferred fact")
+        };
+        assert_eq!(syntax, source[span.start_byte..span.end_byte]);
+        if syntax.starts_with("copy:") {
+            alias_seen = true;
+            assert_eq!(syntax.trim(), "copy: *defaults");
+        }
+        tag_seen |= syntax.contains("!Ref SecretName");
+    }
+    assert!(alias_seen && tag_seen);
+}
+
+#[test]
+fn hcl_interpolation_and_heredoc_facts_preserve_literal_source() {
+    let source = "resource \"example_service\" \"api\" {\n  endpoint = \"https://${var.host}/${var.path}\"\n  script = <<-EOT\n${var.literal}\nEOT\n}\n";
+    let evidence = extract_evidence("HCL", source);
+    assert!(!evidence.facts.is_empty());
+    let mut interpolation_seen = false;
+    let mut heredoc_seen = false;
+    for fact in evidence.facts {
+        let SourceFact::Syntax { span, syntax, .. } = fact else {
+            panic!("unexpected inferred fact")
+        };
+        assert_eq!(syntax, source[span.start_byte..span.end_byte]);
+        interpolation_seen |= syntax.contains("${var.host}");
+        heredoc_seen |= syntax.contains("<<-EOT") && syntax.contains("${var.literal}");
+    }
+    assert!(interpolation_seen && heredoc_seen);
+}
+
+#[test]
+fn quoted_script_literals_do_not_create_command_facts_for_their_contents() {
+    for (language, source) in [
+        (
+            "Bash",
+            "render() {\n  cat <<'EOF'\n$(not_a_command)\nEOF\n}\n",
+        ),
+        ("PowerShell", "$text = @'\n$(not_a_command)\n'@\n"),
+    ] {
+        let evidence = extract_evidence(language, source);
+        assert!(!evidence.facts.is_empty(), "{language}");
+        for fact in evidence.facts {
+            if let SourceFact::Syntax {
+                node_kind, syntax, ..
+            } = fact
+            {
+                assert!(
+                    !(node_kind == "command" && syntax.trim() == "not_a_command"),
+                    "{language}: quoted content became a command fact"
+                );
+            }
+        }
+    }
+}
