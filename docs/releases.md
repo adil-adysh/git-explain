@@ -4,16 +4,18 @@ This document defines the release artifacts, platform matrix, checksum verificat
 
 ## Supported Platforms & Artifact Matrix
 
-Each release publishes standalone binaries and archive bundles containing the application binary, `README.md`, `LICENSE`, and `docs/releases.md`:
+Each release publishes standalone binaries and archive bundles containing the application binary, `README.md`, `LICENSE`, and `docs/releases.md`. In addition, plain stable releases (`vX.Y.Z`) publish native Debian and RPM packages:
 
-| Target Platform | Package Archive | Standalone Binary | Description |
+| Target Platform | Package / Archive | Binary / Target Path | Description |
 |---|---|---|---|
 | Windows x86_64 | `git-explain-<tag>-windows-x86_64.zip` | `git-explain-<tag>-windows-x86_64.exe` | MSVC build with static CRT (`+crt-static`), zero VC++ redistributable dependency |
 | Linux x86_64 (musl) | `git-explain-<tag>-linux-x86_64-musl.tar.gz` | `git-explain-<tag>-linux-x86_64-musl` | Statically linked musl binary for Linux x86_64 |
 | Linux x86_64 (canonical) | `git-explain-<tag>-linux-x86_64.tar.gz` | `git-explain-<tag>-linux-x86_64` | Canonical alias to static musl build |
 | Linux x86_64 (GNU) | `git-explain-<tag>-linux-x86_64-gnu.tar.gz` | `git-explain-<tag>-linux-x86_64-gnu` | Built on Ubuntu 22.04 LTS (requires glibc 2.35+) |
+| Debian / Ubuntu x86_64 | `git-explain_<version>-1_amd64.deb` | `/usr/bin/git-explain` | Native Debian package from static musl binary (stable only) |
+| Fedora / RHEL x86_64 | `git-explain-<version>-1.x86_64.rpm` | `/usr/bin/git-explain` | Native RPM package from static musl binary (stable only) |
 
-All release assets are accompanied by `SHA256SUMS.txt`.
+Plain stable releases produce exactly 10 downloadable assets accompanied by `SHA256SUMS.txt` (11 total assets). Prereleases and build variants produce the 8 archive and standalone binary assets accompanied by `SHA256SUMS.txt` (9 total assets).
 
 ## Runtime Dependencies & Bundling Scope
 
@@ -48,9 +50,42 @@ Get-Content SHA256SUMS.txt
 ```
 Verify that the output hash matches the hash recorded in `SHA256SUMS.txt`.
 
-## Installation from Release Bundle
+## Installation
 
-### Linux
+### Native Linux Packages (Debian and RPM)
+
+Native packages are published for plain stable releases (`vX.Y.Z`).
+
+#### Debian / Ubuntu (.deb)
+```bash
+sudo apt install ./git-explain_<version>-1_amd64.deb
+```
+Removal:
+```bash
+sudo apt remove git-explain
+```
+
+#### Fedora / RHEL (.rpm)
+```bash
+sudo dnf install ./git-explain-<version>-1.x86_64.rpm
+```
+Removal:
+```bash
+sudo dnf remove git-explain
+```
+
+Packages install `/usr/bin/git-explain` (mode `755`), enabling immediate discovery by Git as `git explain`. Packages declare a runtime dependency on `git` and contain no daemon services, autostart entries, or maintainer scriptlets. User configuration in `~/.config/git-explain/` remains untouched on upgrade and removal. Note that no APT/DNF repository hosting or repository signing is configured; download package files directly. For unsigned local RPM files, `dnf` installs locally without disabling repository GPG checks globally.
+
+### Windows (Scoop)
+Install via the community bucket:
+```text
+scoop bucket add adil-adysh https://github.com/adil-adysh/scoop-bucket
+scoop install adil-adysh/git-explain
+```
+
+### Installation from Archive Bundles
+
+#### Linux
 1. Extract the tarball:
    ```bash
    tar -xzf git-explain-<tag>-linux-x86_64.tar.gz
@@ -62,7 +97,7 @@ Verify that the output hash matches the hash recorded in `SHA256SUMS.txt`.
    chmod +x ~/.local/bin/git-explain
    ```
 
-### Windows
+#### Windows
 1. Extract `git-explain-<tag>-windows-x86_64.zip`.
 2. Move `git-explain.exe` into a directory on your `PATH` (such as `$HOME\.local\bin` or your user tools directory).
 
@@ -106,6 +141,6 @@ The GitHub Actions release workflow executes the following steps:
 1. **Verification**: Checks that the tag exists, matches `vSEMVER`, and aligns exactly with `Cargo.toml`.
 2. **Matrix Build**: Compiles Windows static CRT, Linux musl, and Linux GNU binaries with locked dependencies.
 3. **Packaging**: Invokes `scripts/package-release.py` on each runner to stage and produce archives and standalone executables.
-4. **Draft Creation, Upload & Publication**: The release job gathers all 8 platform artifacts, verifies checksums in `SHA256SUMS.txt`, creates a **Draft** release, uploads all assets, and publishes the release after uploads succeed.
+4. **Draft Creation, Upload & Publication**: The release job gathers all release artifacts (10 assets for stable releases including Debian and RPM packages, or 8 for variants), verifies checksums in `SHA256SUMS.txt`, creates a **Draft** release, uploads all assets (11 total for stable, 9 for variants), validates the uploaded asset count, and publishes the release after uploads succeed.
 
 > **Repository Security Note:** Maintainers are recommended to configure GitHub Tag Protection rules (preventing tag deletion or force-push) and repository release immutability settings. The release workflow verifies that the remote tag commit remains unchanged across build and publish stages, but repository settings must be enabled by repository administrators.

@@ -264,13 +264,44 @@ both builds succeed.
 
 ## Installation and Releases
 
-Precompiled binaries for Linux (musl static and glibc) and Windows (static CRT)
+Precompiled binaries and packages for Linux (musl static and glibc) and Windows (static CRT)
 are available on the [Releases](https://github.com/adil-adysh/git-explain/releases) page.
+
+Plain stable releases (`vX.Y.Z`) produce 10 downloadable assets: 8 archives/standalone binaries plus native Debian (`.deb`) and RPM (`.rpm`) packages, verified by `SHA256SUMS.txt` (11 total assets). Prerelease and build variants retain the 8 archive and binary assets.
 
 Release archives include the standalone executable, `README.md`, `LICENSE`, and release
 documentation. The application is completely self-contained: browser assets, SQLite, and
 Tree-sitter parsers are embedded in the binary. Users do not need Node.js, npm, or Rust
 installed to run `git-explain`.
+
+### Package Managers and Native Installers
+
+#### Debian / Ubuntu (.deb)
+```bash
+sudo apt install ./git-explain_<version>-1_amd64.deb
+```
+To remove:
+```bash
+sudo apt remove git-explain
+```
+
+#### Fedora / RHEL (.rpm)
+```bash
+sudo dnf install ./git-explain-<version>-1.x86_64.rpm
+```
+To remove:
+```bash
+sudo dnf remove git-explain
+```
+
+Native packages install `/usr/bin/git-explain`, enabling immediate discovery as the `git explain` subcommand without shell aliases or wrapper scripts. Packages declare a runtime dependency on `git` and include no daemon services, autostart entries, or maintainer scriptlets. User configuration in `~/.config/git-explain/` is preserved upon removal. Note that no APT/DNF package repository hosting or repository signing is configured; install directly from downloaded release files.
+
+#### Windows (Scoop)
+Install via the community bucket:
+```text
+scoop bucket add adil-adysh https://github.com/adil-adysh/scoop-bucket
+scoop install adil-adysh/git-explain
+```
 
 ### Runtime Requirements
 - A modern 64-bit operating system: Linux (x86_64) or Windows 10/11 (x86_64).
