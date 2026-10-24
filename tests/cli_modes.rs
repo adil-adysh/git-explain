@@ -259,6 +259,24 @@ fn explanation_command_outside_repository_uses_input_error_exit_code() {
 
 #[cfg(windows)]
 #[test]
+fn normalize_selections_preserves_missing_parent_components() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    let historical = root.join("deleted-dir").join("..").join("historical.rs");
+    assert_eq!(
+        git_explain::git::normalize_selections(root, root, &[historical]).unwrap(),
+        vec![std::path::PathBuf::from("historical.rs")]
+    );
+    let outside = root
+        .join("missing")
+        .join("..")
+        .join("..")
+        .join("outside.rs");
+    assert!(git_explain::git::normalize_selections(root, root, &[outside]).is_err());
+}
+
+#[cfg(windows)]
+#[test]
 fn normalize_selections_handles_windows_path_casing_and_absent_paths() {
     let repo_dir = tempdir().unwrap();
     let repo_path = repo_dir.path();
