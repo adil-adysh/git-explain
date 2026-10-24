@@ -38,6 +38,11 @@ fn path_rules_and_detection_for_all_families() {
         Some("HCL")
     );
     assert_eq!(
+        LanguageRegistry::language_for_path(&Path::new("repo").join("infra").join("main.tf")),
+        Some("HCL")
+    );
+    #[cfg(windows)]
+    assert_eq!(
         LanguageRegistry::language_for_path(Path::new("C:\\repo\\infra\\main.tf")),
         Some("HCL")
     );
@@ -51,6 +56,11 @@ fn path_rules_and_detection_for_all_families() {
         LanguageRegistry::language_for_path(Path::new("values.yml")),
         Some("YAML")
     );
+    assert_eq!(
+        LanguageRegistry::language_for_path(&Path::new("k8s").join("pod.yaml")),
+        Some("YAML")
+    );
+    #[cfg(windows)]
     assert_eq!(
         LanguageRegistry::language_for_path(Path::new("D:\\k8s\\pod.yaml")),
         Some("YAML")
@@ -102,6 +112,11 @@ fn path_rules_and_detection_for_all_families() {
         Some("Dockerfile")
     );
     assert_eq!(
+        LanguageRegistry::language_for_path(&Path::new("build").join("Dockerfile.stage")),
+        Some("Dockerfile")
+    );
+    #[cfg(windows)]
+    assert_eq!(
         LanguageRegistry::language_for_path(Path::new("C:\\build\\Dockerfile.stage")),
         Some("Dockerfile")
     );
@@ -130,6 +145,11 @@ fn path_rules_and_detection_for_all_families() {
         Some("PowerShell")
     );
     assert_eq!(
+        LanguageRegistry::language_for_path(&Path::new("scripts").join("setup.psd1")),
+        Some("PowerShell")
+    );
+    #[cfg(windows)]
+    assert_eq!(
         LanguageRegistry::language_for_path(Path::new("D:\\scripts\\setup.psd1")),
         Some("PowerShell")
     );
@@ -143,6 +163,11 @@ fn path_rules_and_detection_for_all_families() {
         LanguageRegistry::language_for_path(Path::new("build.gradle.kts")),
         Some("Kotlin")
     );
+    assert_eq!(
+        LanguageRegistry::language_for_path(&Path::new("app").join("Main.kt")),
+        Some("Kotlin")
+    );
+    #[cfg(windows)]
     assert_eq!(
         LanguageRegistry::language_for_path(Path::new("E:\\app\\Main.kt")),
         Some("Kotlin")
