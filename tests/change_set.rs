@@ -425,6 +425,30 @@ fn binary_metadata_survives_add_delete_and_pure_rename() {
 }
 
 #[test]
+fn script_content_edits_remain_explainable_when_the_executable_bit_changes() {
+    let dir = repo();
+    std::fs::write(dir.path().join("script.sh"), "run() {\n  echo before\n}\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::write(dir.path().join("script.sh"), "run() {\n  echo after\n}\n").unwrap();
+    git(dir.path(), &["add", "script.sh"]);
+    git(dir.path(), &["update-index", "--chmod=+x", "script.sh"]);
+    git(dir.path(), &["commit", "-qm", "source and mode"]);
+    let changes = RepositoryAnalyzer::new(dir.path(), config(dir.path()))
+        .analyze_commit("HEAD", SnapshotGeneration(1))
+        .unwrap();
+    let file = &changes.files[0];
+    assert!(file.mode_changed());
+    assert!(file.source_content_changed());
+    assert_eq!(file.semantic_changes.len(), 1);
+    assert_eq!(
+        file.semantic_changes[0].kind,
+        SemanticUnitChangeKind::Modified
+    );
+    assert_eq!(changes.explainable_changes().count(), 1);
+}
+
+#[test]
 fn type_changes_are_deterministic_and_not_semantically_parsed() {
     let dir = repo();
     std::fs::write(dir.path().join("typed.rs"), "fn before() {}\n").unwrap();

@@ -248,6 +248,14 @@ fn populate_semantics(
             .new_path
             .as_ref()
             .and_then(|path| read_source(after, path));
+        // Executable-bit changes alone have no source edits to explain. Keep
+        // revision source metadata without creating preserved code sections.
+        if file.kind == crate::change_set::FileChangeKind::Modified
+            && file.mode_changed()
+            && !file.source_content_changed()
+        {
+            continue;
+        }
         let before_document = file
             .before
             .as_ref()
