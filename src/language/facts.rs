@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use tree_sitter::{Node, Parser};
 
-pub const EVIDENCE_VERSION: &str = "source-evidence-v1";
+pub const EVIDENCE_VERSION: &str = "source-evidence-v2";
 pub const MAX_FACTS: usize = 32;
 pub const MAX_FACT_TEXT_BYTES: usize = 200;
 pub const MAX_TOTAL_TEXT_BYTES: usize = 2048;
@@ -56,6 +56,11 @@ pub enum SourceFact {
         has_value: bool,
         is_tail_expression: bool,
     },
+    Syntax {
+        span: SourceSpan,
+        node_kind: String,
+        syntax: String,
+    },
 }
 
 impl SourceFact {
@@ -66,6 +71,7 @@ impl SourceFact {
             SourceFact::Assertion { span, .. } => span,
             SourceFact::ExplicitType { span, .. } => span,
             SourceFact::Return { span, .. } => span,
+            SourceFact::Syntax { span, .. } => span,
         }
     }
 
@@ -127,6 +133,16 @@ impl SourceFact {
                     span.start_line, span.end_line
                 )
             }
+            SourceFact::Syntax {
+                syntax,
+                node_kind,
+                span,
+            } => {
+                format!(
+                    "Syntax: {syntax} [{node_kind}; external behavior/schema/type unresolved] (lines {}-{})",
+                    span.start_line, span.end_line
+                )
+            }
         }
     }
 
@@ -138,6 +154,7 @@ impl SourceFact {
             SourceFact::ExplicitType { .. } => 2,
             SourceFact::Return { .. } => 3,
             SourceFact::Call { .. } => 4,
+            SourceFact::Syntax { .. } => 5,
         };
         (span.start_byte, span.end_byte, kind_index)
     }
@@ -186,19 +203,7 @@ impl SourceEvidence {
 }
 
 fn tree_sitter_language_for(language_name: &str) -> Option<tree_sitter::Language> {
-    match language_name.to_lowercase().as_str() {
-        "rust" | "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
-        "python" | "py" => Some(tree_sitter_python::LANGUAGE.into()),
-        "go" => Some(tree_sitter_go::LANGUAGE.into()),
-        "java" => Some(tree_sitter_java::LANGUAGE.into()),
-        "c#" | "cs" | "csharp" => Some(tree_sitter_c_sharp::LANGUAGE.into()),
-        "typescript" | "ts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-        "tsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
-        "javascript" | "js" | "jsx" => Some(tree_sitter_javascript::LANGUAGE.into()),
-        "c++" | "cpp" | "cxx" | "cc" => Some(tree_sitter_cpp::LANGUAGE.into()),
-        "c" => Some(tree_sitter_c::LANGUAGE.into()),
-        _ => None,
-    }
+    super::grammar::grammar_for_language(language_name)
 }
 
 struct WrappedSource {
@@ -255,68 +260,83 @@ fn make_span(
 
 pub fn extract_evidence(language: &str, source: &str) -> SourceEvidence {
     let source_hash = format!("{:x}", Sha256::digest(source.as_bytes()));
-    let Some(ts_lang) = tree_sitter_language_for(language) else {
-        return SourceEvidence {
-            version: EVIDENCE_VERSION.into(),
-            language: language.into(),
-            source_hash,
-            facts: Vec::new(),
-        };
-    };
 
-    let mut parser = Parser::new();
-    if parser.set_language(&ts_lang).is_err() {
-        return SourceEvidence {
-            version: EVIDENCE_VERSION.into(),
-            language: language.into(),
-            source_hash,
-            facts: Vec::new(),
-        };
-    }
+    let mut facts =
+        if let Some(infra_facts) = super::infra_facts::extract_infra_facts(language, source) {
+            infra_facts
+        } else {
+            let Some(ts_lang) = tree_sitter_language_for(language) else {
+                return SourceEvidence {
+                    version: EVIDENCE_VERSION.into(),
+                    language: language.into(),
+                    source_hash,
+                    facts: Vec::new(),
+                };
+            };
 
-    let mut parsed_tree = parser.parse(source, None);
-    if matches!(language.to_lowercase().as_str(), "typescript" | "ts")
-        && parsed_tree
-            .as_ref()
-            .is_some_and(|tree| tree.root_node().has_error())
-        && parser
-            .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
-            .is_ok()
-    {
-        if let Some(jsx_tree) = parser.parse(source, None) {
-            if !jsx_tree.root_node().has_error() {
-                parsed_tree = Some(jsx_tree);
+            let mut parser = Parser::new();
+            if parser.set_language(&ts_lang).is_err() {
+                return SourceEvidence {
+                    version: EVIDENCE_VERSION.into(),
+                    language: language.into(),
+                    source_hash,
+                    facts: Vec::new(),
+                };
             }
-        }
-    }
-    let mut facts = Vec::new();
 
-    if let Some(tree) = &parsed_tree {
-        let root = tree.root_node();
-        let use_wrapper = root.has_error()
-            && matches!(
-                language.to_lowercase().as_str(),
-                "java" | "c#" | "cs" | "csharp" | "go"
-            );
+            let mut parsed_tree = parser.parse(source, None);
+            if matches!(language.to_lowercase().as_str(), "typescript" | "ts")
+                && parsed_tree
+                    .as_ref()
+                    .is_some_and(|tree| tree.root_node().has_error())
+                && parser
+                    .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+                    .is_ok()
+            {
+                if let Some(jsx_tree) = parser.parse(source, None) {
+                    if !jsx_tree.root_node().has_error() {
+                        parsed_tree = Some(jsx_tree);
+                    }
+                }
+            }
+            let mut legacy_facts = Vec::new();
 
-        if use_wrapper {
-            if let Some(wrapped) = wrap_source_if_needed(language, source) {
-                if let Some(w_tree) = parser.parse(&wrapped.full_text, None) {
+            if let Some(tree) = &parsed_tree {
+                let root = tree.root_node();
+                let use_wrapper = root.has_error()
+                    && matches!(
+                        language.to_lowercase().as_str(),
+                        "java" | "c#" | "cs" | "csharp" | "go"
+                    );
+
+                if use_wrapper {
+                    if let Some(wrapped) = wrap_source_if_needed(language, source) {
+                        if let Some(w_tree) = parser.parse(&wrapped.full_text, None) {
+                            walk_and_collect(
+                                w_tree.root_node(),
+                                wrapped.full_text.as_bytes(),
+                                source,
+                                wrapped.byte_offset,
+                                wrapped.line_offset,
+                                language,
+                                &mut legacy_facts,
+                            );
+                        }
+                    }
+                } else {
                     walk_and_collect(
-                        w_tree.root_node(),
-                        wrapped.full_text.as_bytes(),
+                        root,
+                        source.as_bytes(),
                         source,
-                        wrapped.byte_offset,
-                        wrapped.line_offset,
+                        0,
+                        0,
                         language,
-                        &mut facts,
+                        &mut legacy_facts,
                     );
                 }
             }
-        } else {
-            walk_and_collect(root, source.as_bytes(), source, 0, 0, language, &mut facts);
-        }
-    }
+            legacy_facts
+        };
 
     // Sort deterministically
     facts.sort_by(|a, b| {

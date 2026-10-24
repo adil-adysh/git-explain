@@ -187,23 +187,12 @@ pub(crate) fn explanation_regions(
 
 fn parser_for_language(language: &str) -> Option<tree_sitter::Parser> {
     let mut parser = tree_sitter::Parser::new();
-    let lang = match language {
-        "Rust" => tree_sitter_rust::LANGUAGE.into(),
-        "Python" => tree_sitter_python::LANGUAGE.into(),
-        "Go" => tree_sitter_go::LANGUAGE.into(),
-        "Java" => tree_sitter_java::LANGUAGE.into(),
-        "C#" => tree_sitter_c_sharp::LANGUAGE.into(),
-        "JavaScript" => tree_sitter_javascript::LANGUAGE.into(),
-        "TypeScript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        "C++" => tree_sitter_cpp::LANGUAGE.into(),
-        "C" => tree_sitter_c::LANGUAGE.into(),
-        _ => return None,
-    };
+    let lang = crate::language::grammar::grammar_for_language(language)?;
     parser.set_language(&lang).ok()?;
     Some(parser)
 }
 
-fn collect_statement_starts(node: tree_sitter::Node, out: &mut Vec<usize>) {
+fn collect_statement_starts(node: tree_sitter::Node, out: &mut Vec<usize>, infra: bool) {
     let parent_kind = node.parent().map(|p| p.kind()).unwrap_or("");
     let is_container = matches!(
         parent_kind,
@@ -215,14 +204,20 @@ fn collect_statement_starts(node: tree_sitter::Node, out: &mut Vec<usize>) {
             | "class_body"
             | "field_declaration_list"
     ) || parent_kind.ends_with("_block")
-        || parent_kind.ends_with("_body");
+        || parent_kind.ends_with("_body")
+        || (infra
+            && (matches!(
+                parent_kind,
+                "body" | "block_mapping" | "object" | "statements" | "source_file" | "program"
+            ) || parent_kind.ends_with("_list")));
 
     if is_container && node.is_named() && !node.kind().contains("comment") {
         let start_line = node.start_position().row + 1;
         out.push(start_line);
     }
 
-    // Keep multiline expressions intact, including closures nested inside them.
+    // Keep multiline expressions intact, including closures nested inside them,
+    // block scalars, sequences, heredocs, and here-strings.
     if matches!(
         node.kind(),
         "array_expression"
@@ -238,12 +233,24 @@ fn collect_statement_starts(node: tree_sitter::Node, out: &mut Vec<usize>) {
             | "object"
             | "argument_list"
             | "initializer_list"
+            | "block_scalar"
+            | "block_sequence"
+            | "flow_sequence"
+            | "heredoc_body"
+            | "heredoc_redirect"
+            | "here_string"
+            | "here_string_literal"
+            | "string_literal"
+            | "interpolated_string_expression"
+            | "template_string"
+            | "string_lit"
     ) || node.kind().contains("string")
+        || node.kind().contains("heredoc")
     {
         return;
     }
     for child in node.children(&mut node.walk()) {
-        collect_statement_starts(child, out);
+        collect_statement_starts(child, out, infra);
     }
 }
 
@@ -276,7 +283,25 @@ pub(crate) fn annotation_regions(
     let Some(mut parser) = parser_for_language(&unit.language) else {
         return coarse_regions;
     };
-    let Some(tree) = parser.parse(&unit.source, None) else {
+    let mut tree = if unit.language.eq_ignore_ascii_case("jsonc") {
+        crate::language::infra::prepare_json_source(&unit.source, true)
+            .and_then(|prep| parser.parse(&prep, None))
+    } else {
+        parser.parse(&unit.source, None)
+    };
+    if matches!(unit.language.to_lowercase().as_str(), "typescript" | "ts")
+        && tree.as_ref().is_some_and(|t| t.root_node().has_error())
+        && parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+            .is_ok()
+    {
+        if let Some(jsx_tree) = parser.parse(&unit.source, None) {
+            if !jsx_tree.root_node().has_error() {
+                tree = Some(jsx_tree);
+            }
+        }
+    }
+    let Some(tree) = tree else {
         return coarse_regions;
     };
 
@@ -284,7 +309,11 @@ pub(crate) fn annotation_regions(
         return coarse_regions;
     }
     let mut statement_starts = Vec::new();
-    collect_statement_starts(tree.root_node(), &mut statement_starts);
+    collect_statement_starts(
+        tree.root_node(),
+        &mut statement_starts,
+        crate::language::infra_facts::is_infra_or_kotlin_language(&unit.language),
+    );
     statement_starts.sort_unstable();
     statement_starts.dedup();
 
@@ -975,6 +1004,105 @@ mod tests {
         assert!(
             has_cmp,
             "file analysis request evidence must contain >= comparison"
+        );
+    }
+
+    fn infra_test_unit(source: &str, language: &str) -> SemanticUnit {
+        SemanticUnit {
+            identity: SemanticIdentity {
+                kind: SourceUnitKind::Function,
+                qualified_name: "fixture".into(),
+                occurrence: 1,
+            },
+            location: SourceLocation {
+                path: "fixture".into(),
+                start_line: 1,
+                end_line: source.lines().count(),
+            },
+            source: source.into(),
+            language: language.into(),
+        }
+    }
+
+    #[test]
+    fn infra_annotation_multiple_body_and_attribute_regions() {
+        let hcl_source = "resource \"aws_instance\" \"web\" {\n  ami = \"ami-12345\"\n  instance_type = \"t3.micro\"\n}";
+        let hcl_unit = infra_test_unit(hcl_source, "HCL");
+        let hcl_regions = annotation_regions(&hcl_unit, None);
+        assert!(
+            hcl_regions.len() >= 2,
+            "HCL body with multiple attributes should partition into distinct regions: {:?}",
+            hcl_regions
+        );
+
+        let bash_source = "deploy() {\n  step_one\n  step_two\n}";
+        let bash_unit = infra_test_unit(bash_source, "Bash");
+        let bash_regions = annotation_regions(&bash_unit, None);
+        assert!(
+            bash_regions.len() >= 2,
+            "Bash function body should partition into distinct regions: {:?}",
+            bash_regions
+        );
+
+        let kotlin_source = "fun calculate(x: Int): Int {\n  val a = x * 2\n  return a + 10\n}";
+        let kotlin_unit = infra_test_unit(kotlin_source, "Kotlin");
+        let kotlin_regions = annotation_regions(&kotlin_unit, None);
+        assert!(
+            kotlin_regions.len() >= 2,
+            "Kotlin function body should partition into distinct regions: {:?}",
+            kotlin_regions
+        );
+    }
+
+    #[test]
+    fn infra_annotation_complete_literal_and_heredoc_coverage() {
+        let yaml_source =
+            "config:\n  template: |\n    line 1\n    line 2\n    line 3\n  timeout: 30";
+        let yaml_unit = infra_test_unit(yaml_source, "YAML");
+        let yaml_regions = annotation_regions(&yaml_unit, None);
+        // The block scalar lines (lines 2-5) must not be fragmented into multiple regions
+        let scalar_region = yaml_regions
+            .iter()
+            .find(|r| r.start_line <= 2 && r.end_line >= 5);
+        assert!(
+            scalar_region.is_some(),
+            "YAML block scalar must remain intact without splitting: {:?}",
+            yaml_regions
+        );
+
+        let bash_source =
+            "generate() {\n  cat << 'EOF'\nline 1\nline 2\nline 3\nEOF\n  echo done\n}";
+        let bash_unit = infra_test_unit(bash_source, "Bash");
+        let bash_regions = annotation_regions(&bash_unit, None);
+        // Heredoc lines (lines 2-6) must not be split internally
+        let heredoc_region = bash_regions
+            .iter()
+            .find(|r| r.start_line <= 2 && r.end_line >= 6);
+        assert!(
+            heredoc_region.is_some(),
+            "Bash heredoc must remain intact without splitting: {:?}",
+            bash_regions
+        );
+    }
+
+    #[test]
+    fn infra_annotation_changed_only_coverage_and_full_context() {
+        let source = "resource \"aws_instance\" \"web\" {\n  ami = \"ami-12345\"\n  instance_type = \"t3.micro\"\n}";
+        let unit = infra_test_unit(source, "HCL");
+        let ranges = [crate::change_set::LineRange { start: 2, end: 2 }];
+        let regions = annotation_regions(&unit, Some(&ranges));
+        assert_eq!(
+            regions.len(),
+            1,
+            "Changed-only region must cover only changed lines: {:?}",
+            regions
+        );
+        assert_eq!(regions[0].start_line, 2);
+        assert_eq!(regions[0].end_line, 2);
+        assert!(regions[0].source.contains("ami = \"ami-12345\""));
+        assert!(
+            unit.source.contains("resource \"aws_instance\""),
+            "Unit retains full source context"
         );
     }
 }

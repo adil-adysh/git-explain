@@ -5,6 +5,7 @@ pub mod facts;
 pub mod go;
 pub mod grammar;
 pub mod infra;
+pub mod infra_facts;
 pub mod java;
 pub mod javascript;
 pub mod kotlin;
