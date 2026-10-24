@@ -107,3 +107,5 @@ The GitHub Actions release workflow executes the following steps:
 2. **Matrix Build**: Compiles Windows static CRT, Linux musl, and Linux GNU binaries with locked dependencies.
 3. **Packaging**: Invokes `scripts/package-release.py` on each runner to stage and produce archives and standalone executables.
 4. **Draft Creation, Upload & Publication**: The release job gathers all 8 platform artifacts, verifies checksums in `SHA256SUMS.txt`, creates a **Draft** release, uploads all assets, and publishes the release after uploads succeed.
+
+> **Repository Security Note:** Maintainers are recommended to configure GitHub Tag Protection rules (preventing tag deletion or force-push) and repository release immutability settings. The release workflow verifies that the remote tag commit remains unchanged across build and publish stages, but repository settings must be enabled by repository administrators.

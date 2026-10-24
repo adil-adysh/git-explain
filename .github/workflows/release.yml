@@ -217,10 +217,18 @@ jobs:
       - name: Create or update draft release, upload assets, and publish
         env:
           TAG: ${{ needs.verify.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.verify.outputs.commit }}
+          REPOSITORY: ${{ github.repository }}
           IS_PRERELEASE: ${{ needs.verify.outputs.is_prerelease }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          # Verify remote tag still points to the exact commit before uploading
+          python3 scripts/verify-release.py validate-remote-tag \
+            --repository "${REPOSITORY}" \
+            --tag "${TAG}" \
+            --commit "${EXPECTED_COMMIT}"
 
           # 1. Verify that a published non-draft release does not exist; never convert published to draft
           if gh release view "${TAG}" >/dev/null 2>&1; then
@@ -247,6 +255,12 @@ jobs:
           gh release view "${TAG}" --json assets --jq '.assets[].name' > uploaded-assets.txt
           python3 scripts/verify-release.py validate-uploaded --tag "${TAG}" --names-file uploaded-assets.txt
           python3 scripts/verify-release.py verify-checksums --dist-dir dist
+
+          # Re-verify remote tag still points to the exact commit immediately before publishing
+          python3 scripts/verify-release.py validate-remote-tag \
+            --repository "${REPOSITORY}" \
+            --tag "${TAG}" \
+            --commit "${EXPECTED_COMMIT}"
 
           # 3. Publish draft release
           echo "Publishing release ${TAG}..."

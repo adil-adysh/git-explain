@@ -8,7 +8,9 @@ and verifies tag alignment with Cargo.toml package version.
 import argparse
 import hashlib
 import importlib.util
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import List
@@ -54,6 +56,53 @@ def validate_uploaded_assets(names: List[str], tag: str):
     expected = set(get_expected_assets(tag)) | {"SHA256SUMS.txt"}
     if set(names) != expected or len(names) != len(expected):
         raise ValueError("Uploaded release assets do not match the expected set")
+
+
+def validate_remote_tag(repository: str, tag: str, expected_commit: str):
+    """Verify that remote tag in repository points to expected_commit.
+
+    Peels annotated tag objects until a commit is reached.
+    """
+    _packaging.validate_tag(tag)
+    if not re.match(r"^[0-9a-fA-F]{40}$", expected_commit.strip()):
+        raise ValueError(f"Invalid expected commit SHA '{expected_commit}'")
+    if not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", repository.strip()):
+        raise ValueError(f"Invalid repository format '{repository}'")
+
+    repo = repository.strip()
+    tag_name = tag.strip()
+    expected_sha = expected_commit.strip().lower()
+
+    # Query the ref
+    cmd = ["gh", "api", f"repos/{repo}/git/ref/tags/{tag_name}"]
+    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    ref_data = json.loads(res.stdout)
+    obj = ref_data.get("object", {})
+
+    current_type = obj.get("type")
+    current_sha = obj.get("sha")
+
+    hops = 0
+    max_hops = 5
+    while current_type == "tag" and hops < max_hops:
+        hops += 1
+        tag_cmd = ["gh", "api", f"repos/{repo}/git/tags/{current_sha}"]
+        tag_res = subprocess.run(tag_cmd, capture_output=True, text=True, check=True)
+        tag_data = json.loads(tag_res.stdout)
+        inner_obj = tag_data.get("object", {})
+        current_type = inner_obj.get("type")
+        current_sha = inner_obj.get("sha")
+
+    if current_type != "commit" or not current_sha:
+        raise ValueError(
+            f"Remote tag '{tag_name}' did not resolve to a commit object (type: {current_type})"
+        )
+
+    resolved_commit = current_sha.lower()
+    if resolved_commit != expected_sha:
+        raise ValueError(
+            f"Remote tag commit mismatch: tag '{tag_name}' points to {resolved_commit}, expected {expected_sha}"
+        )
 
 
 def validate_dist_assets(dist_dir: Path, tag: str) -> List[str]:
@@ -158,6 +207,11 @@ def main():
     p_uploaded.add_argument("--tag", required=True)
     p_uploaded.add_argument("--names-file", required=True)
 
+    p_remote_tag = subparsers.add_parser("validate-remote-tag")
+    p_remote_tag.add_argument("--repository", required=True, help="GitHub repository (owner/repo)")
+    p_remote_tag.add_argument("--tag", required=True, help="Release tag")
+    p_remote_tag.add_argument("--commit", required=True, help="Expected commit SHA")
+
     # validate-cargo
     p_cargo = subparsers.add_parser("validate-cargo")
     p_cargo.add_argument("--cargo-toml", default="Cargo.toml", help="Path to Cargo.toml")
@@ -185,6 +239,10 @@ def main():
     elif args.command == "validate-uploaded":
         names = Path(args.names_file).read_text(encoding="utf-8").splitlines()
         validate_uploaded_assets(names, args.tag)
+
+    elif args.command == "validate-remote-tag":
+        validate_remote_tag(args.repository, args.tag, args.commit)
+        print(f"Validated remote tag '{args.tag}' matches expected commit '{args.commit}'.")
 
     elif args.command == "validate-cargo":
         cargo_path = Path(args.cargo_toml)

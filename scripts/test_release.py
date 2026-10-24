@@ -26,6 +26,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 # Import package-release.py
@@ -342,6 +343,75 @@ class TestPackageAndVerifyRelease(unittest.TestCase):
         cargo_path.write_text('[package]\nname = "git-explain"\nversion = "0.2.0-rc.1"\n')
         self.assertTrue(verify_release.matches_cargo_version(cargo_path, "v0.2.0-rc.1"))
         self.assertFalse(verify_release.matches_cargo_version(cargo_path, "v0.2.0"))
+
+    def test_validate_remote_tag_lightweight_match(self):
+        repo = "owner/git-explain"
+        tag = "v0.1.0"
+        commit = "1111222233334444555566667777888899990000"
+
+        def mock_subprocess_run(cmd, *args, **kwargs):
+            if cmd == ["gh", "api", f"repos/{repo}/git/ref/tags/{tag}"]:
+                return MagicMock(
+                    returncode=0,
+                    stdout='{"ref": "refs/tags/' + tag + '", "object": {"type": "commit", "sha": "' + commit + '"}}',
+                )
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            # Should succeed without exception
+            verify_release.validate_remote_tag(repo, tag, commit)
+
+    def test_validate_remote_tag_annotated_peeled_match(self):
+        repo = "owner/git-explain"
+        tag = "v0.1.0"
+        tag_sha = "aaaabbbbccccddddeeeeffff0000111122223333"
+        commit = "1111222233334444555566667777888899990000"
+
+        def mock_subprocess_run(cmd, *args, **kwargs):
+            if cmd == ["gh", "api", f"repos/{repo}/git/ref/tags/{tag}"]:
+                return MagicMock(
+                    returncode=0,
+                    stdout='{"ref": "refs/tags/' + tag + '", "object": {"type": "tag", "sha": "' + tag_sha + '"}}',
+                )
+            elif cmd == ["gh", "api", f"repos/{repo}/git/tags/{tag_sha}"]:
+                return MagicMock(
+                    returncode=0,
+                    stdout='{"sha": "' + tag_sha + '", "object": {"type": "commit", "sha": "' + commit + '"}}',
+                )
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            verify_release.validate_remote_tag(repo, tag, commit)
+
+    def test_validate_remote_tag_moved_mismatch(self):
+        repo = "owner/git-explain"
+        tag = "v0.1.0"
+        expected_commit = "1111222233334444555566667777888899990000"
+        moved_commit = "9999888877776666555544443333222211110000"
+
+        def mock_subprocess_run(cmd, *args, **kwargs):
+            if cmd == ["gh", "api", f"repos/{repo}/git/ref/tags/{tag}"]:
+                return MagicMock(
+                    returncode=0,
+                    stdout='{"ref": "refs/tags/' + tag + '", "object": {"type": "commit", "sha": "' + moved_commit + '"}}',
+                )
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            with self.assertRaises(ValueError):
+                verify_release.validate_remote_tag(repo, tag, expected_commit)
+
+    def test_validate_remote_tag_api_failure(self):
+        repo = "owner/git-explain"
+        tag = "v0.1.0"
+        commit = "1111222233334444555566667777888899990000"
+
+        def mock_subprocess_run(cmd, *args, **kwargs):
+            raise subprocess.CalledProcessError(1, cmd, stderr="Not found")
+
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            with self.assertRaises(Exception):
+                verify_release.validate_remote_tag(repo, tag, commit)
 
 
 if __name__ == "__main__":
