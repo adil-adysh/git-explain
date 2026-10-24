@@ -508,6 +508,14 @@
           <option value="cpp">C++</option>
           <option value="csharp">C#</option>
           <option value="java">Java</option>
+          <option value="hcl" label="Terraform / HCL">Terraform / HCL</option>
+          <option value="yaml">YAML</option>
+          <option value="json">JSON</option>
+          <option value="jsonc">JSONC</option>
+          <option value="dockerfile">Dockerfile</option>
+          <option value="bash">Bash</option>
+          <option value="powershell">PowerShell</option>
+          <option value="kotlin">Kotlin</option>
         </datalist>
         <p class="help-text">Leave blank to edit general preferences for all languages.</p>
       </div>

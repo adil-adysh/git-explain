@@ -4,6 +4,28 @@
 
 Explanations are on demand. Overview, Changes, Concepts, and Deep are separate requests and are generated only from their explicit action. File mode teaches concepts from the complete code section; diff mode explains Changes and Concepts at deterministic changed regions while retaining the complete active section as context. The daemon serializes model inference by default, keeping the workflow suitable for a local GPU with about 8 GiB of VRAM.
 
+## Supported source formats
+
+| Language / Format | Extensions / File Patterns |
+|---|---|
+| Rust | `.rs` |
+| Python | `.py` |
+| Go | `.go` |
+| Java | `.java` |
+| C# | `.cs` |
+| TypeScript | `.ts`, `.tsx` |
+| JavaScript | `.js`, `.jsx` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp` |
+| C | `.c` |
+| Terraform / HCL | `.tf`, `.tfvars`, `.hcl` |
+| YAML | `.yaml`, `.yml` |
+| JSON | `.json` (including `.tf.json`) |
+| JSONC | `.jsonc` (comments and trailing commas) |
+| Dockerfile / Containerfile | `Dockerfile`, `Containerfile`, and single-dotted prefix/suffix variants (e.g., `Dockerfile.prod`, `service.Dockerfile`) |
+| Bash | `.sh`, `.bash` |
+| PowerShell | `.ps1`, `.psm1`, `.psd1` |
+| Kotlin | `.kt`, `.kts` (including `build.gradle.kts`) |
+
 ## Quick start
 
 The accessible workspace is the default browser UI for file, diff and daemon
