@@ -242,7 +242,7 @@ fn invalid_revision_and_file_selection_use_input_error_exit_code() {
 
     let outside = run(
         directory.path(),
-        &["--debug", "file", "--", "..\\outside.rs"],
+        &["--debug", "file", "--", "../outside.rs"],
     );
     assert_eq!(outside.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&outside.stderr).contains("escapes the Git worktree"));
