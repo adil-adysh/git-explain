@@ -3,88 +3,258 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build (for example, v0.1.0)"
+        description: 'Release tag to build and publish (must already exist in git, e.g. v0.1.0)'
         required: true
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    runs-on: windows-latest
+  verify:
+    name: Verify Release Tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      commit: ${{ steps.resolve.outputs.commit }}
+      is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and validate tag against Cargo.toml
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TAG="${INPUT_TAG}"
+          if [ "${EVENT_NAME}" != "workflow_dispatch" ] || [ -z "${TAG}" ]; then
+            TAG="${REF_NAME}"
+          fi
+
+          echo "Resolving release tag: ${TAG}"
+
+          # 1. Validate vSEMVER format using packaging script validator
+          python3 scripts/verify-release.py validate-tag --tag "${TAG}"
+
+          # 2. Verify tag exists in repository and resolve exact commit SHA
+          if ! git rev-parse --verify "refs/tags/${TAG}^{commit}" >/dev/null 2>&1; then
+            echo "Error: Tag '${TAG}' was not found in git. Releases require an existing tag." >&2
+            exit 1
+          fi
+          COMMIT_SHA=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          echo "Verified tag ${TAG} at commit ${COMMIT_SHA}"
+
+          # 3. Check out the tag commit and validate full Cargo.toml version match
+          git checkout "${COMMIT_SHA}"
+          python3 scripts/verify-release.py validate-cargo --cargo-toml Cargo.toml --tag "${TAG}"
+
+          # 4. Fail closed if a published non-draft release already exists
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "${TAG}" --json isDraft -q .isDraft 2>/dev/null || echo "false")
+            if [ "${IS_DRAFT}" != "true" ]; then
+              echo "Error: Release '${TAG}' already exists and is published. Failing closed." >&2
+              exit 1
+            fi
+            echo "Notice: Existing release for '${TAG}' is a draft; continuing with draft update."
+          fi
+
+          IS_PRERELEASE="false"
+          if [[ "${TAG%%+*}" == *-* ]]; then
+            IS_PRERELEASE="true"
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "commit=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: windows-x86_64
+            rustflags: "-C target-feature=+crt-static"
+            canonical_alias: ""
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            name: linux-x86_64-gnu
+            rustflags: ""
+            canonical_alias: ""
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            name: linux-x86_64-musl
+            rustflags: ""
+            canonical_alias: "linux-x86_64"
+    steps:
+      - name: Checkout verified tag commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+
+      - name: Run packaging tests
+        run: python scripts/test_release.py
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          targets: ${{ matrix.target }}
           components: rustfmt
 
-      - name: Check formatting
-        run: cargo fmt -- --check
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
 
-      - name: Verify embedded frontend bundle
+      - name: Rebuild and check frontend bundle
+        shell: bash
         run: |
           npm --prefix frontend ci
           npm --prefix frontend run check
           npm --prefix frontend run build
-          git diff --exit-code -- frontend/dist
 
-      - name: Run tests
-        run: cargo test
+      - name: Verify committed frontend bundle
+        shell: bash
+        run: git diff --exit-code -- frontend/dist
+
+      - name: Check code formatting
+        run: cargo fmt -- --check
+
+      - name: Run test suite
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        run: cargo test --locked
 
       - name: Build release binary
-        run: cargo build --release
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Package Windows binary
-        shell: pwsh
+      - name: Package release artifacts
+        env:
+          TARGET: ${{ matrix.target }}
+          NAME: ${{ matrix.name }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          CANONICAL_ALIAS: ${{ matrix.canonical_alias }}
+        shell: bash
         run: |
-          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
-            '${{ inputs.tag }}'
-          } else {
-            '${{ github.ref_name }}'
-          }
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\release\git-explain.exe "dist\git-explain-$tag-windows-x86_64.exe"
+          ALIAS_ARG=()
+          if [ -n "${CANONICAL_ALIAS}" ]; then
+            ALIAS_ARG=(--canonical-alias "${CANONICAL_ALIAS}")
+          fi
+          python scripts/package-release.py \
+            --target "${TARGET}" \
+            --name "${NAME}" \
+            --tag "${TAG}" \
+            "${ALIAS_ARG[@]}" \
+            --smoke-test
 
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: git-explain-windows-x86_64
-          path: dist\git-explain-*.exe
+          name: artifacts-${{ matrix.name }}
+          path: dist/*
           if-no-files-found: error
 
   release:
+    name: Publish GitHub Release
+    needs: [verify, build]
     runs-on: ubuntu-latest
-    needs: build
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - name: Download release artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: git-explain-windows-x86_64
-          path: dist
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Download all release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          name: git-explain ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          generate_release_notes: true
-          files: dist/git-explain-*.exe
-          fail_on_unmatched_files: true
+          path: dist
+          merge-multiple: true
+
+      - name: Validate exact expected assets and generate checksums
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          python3 scripts/verify-release.py validate-assets --dist-dir dist --tag "${TAG}"
+          python3 scripts/verify-release.py generate-checksums --dist-dir dist --tag "${TAG}"
+          python3 scripts/verify-release.py verify-checksums --dist-dir dist
+          cat dist/SHA256SUMS.txt
+
+      - name: Create or update draft release, upload assets, and publish
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          IS_PRERELEASE: ${{ needs.verify.outputs.is_prerelease }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # 1. Verify that a published non-draft release does not exist; never convert published to draft
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "${TAG}" --json isDraft -q .isDraft 2>/dev/null || echo "false")
+            if [ "${IS_DRAFT}" != "true" ]; then
+              echo "Error: Release '${TAG}' is already published. Failing closed." >&2
+              exit 1
+            fi
+            echo "Notice: Updating existing draft release for ${TAG}."
+          else
+            echo "Creating draft release for ${TAG}..."
+            CREATE_FLAGS=(--draft --verify-tag --title "git-explain ${TAG}" --generate-notes)
+            if [ "${IS_PRERELEASE}" = "true" ]; then
+              CREATE_FLAGS+=(--prerelease)
+            fi
+            gh release create "${TAG}" "${CREATE_FLAGS[@]}"
+          fi
+
+          # 2. Upload exact validated assets
+          echo "Uploading release assets..."
+          gh release upload "${TAG}" dist/* --clobber
+
+          # Reject stale draft assets and confirm GitHub received the complete set.
+          gh release view "${TAG}" --json assets --jq '.assets[].name' > uploaded-assets.txt
+          python3 scripts/verify-release.py validate-uploaded --tag "${TAG}" --names-file uploaded-assets.txt
+          python3 scripts/verify-release.py verify-checksums --dist-dir dist
+
+          # 3. Publish draft release
+          echo "Publishing release ${TAG}..."
+          PUBLISH_FLAGS=(--draft=false)
+          if [ "${IS_PRERELEASE}" = "true" ]; then
+            PUBLISH_FLAGS+=(--prerelease --latest=false)
+          else
+            PUBLISH_FLAGS+=(--prerelease=false --latest)
+          fi
+          gh release edit "${TAG}" "${PUBLISH_FLAGS[@]}"
+          echo "Successfully published release ${TAG}"

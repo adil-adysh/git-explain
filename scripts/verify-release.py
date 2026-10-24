@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Release verification helper for git-explain.
+
+Validates exact expected release artifacts, generates safe SHA256 checksums,
+and verifies tag alignment with Cargo.toml package version.
+"""
+
+import argparse
+import hashlib
+import importlib.util
+import re
+import sys
+from pathlib import Path
+from typing import List
+
+_spec = importlib.util.spec_from_file_location(
+    "package_release", Path(__file__).with_name("package-release.py")
+)
+_packaging = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_packaging)
+
+try:
+    import tomllib
+except ImportError:
+    tomllib = None  # type: ignore
+
+
+def sha256_file(path: Path) -> str:
+    """Calculate SHA256 hexadecimal digest of a file."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def get_expected_assets(tag: str) -> List[str]:
+    """Return the exact list of 8 expected release assets for a given tag."""
+    _packaging.validate_tag(tag)
+    return [
+        f"git-explain-{tag}-windows-x86_64.zip",
+        f"git-explain-{tag}-windows-x86_64.exe",
+        f"git-explain-{tag}-linux-x86_64-gnu.tar.gz",
+        f"git-explain-{tag}-linux-x86_64-gnu",
+        f"git-explain-{tag}-linux-x86_64-musl.tar.gz",
+        f"git-explain-{tag}-linux-x86_64-musl",
+        f"git-explain-{tag}-linux-x86_64.tar.gz",
+        f"git-explain-{tag}-linux-x86_64",
+    ]
+
+
+def validate_uploaded_assets(names: List[str], tag: str):
+    """Require all downloads and the checksum manifest, with no stale assets."""
+    expected = set(get_expected_assets(tag)) | {"SHA256SUMS.txt"}
+    if set(names) != expected or len(names) != len(expected):
+        raise ValueError("Uploaded release assets do not match the expected set")
+
+
+def validate_dist_assets(dist_dir: Path, tag: str) -> List[str]:
+    """Validate that dist_dir contains exactly the 8 expected release assets.
+
+    Raises ValueError if any expected asset is missing or unexpected files exist.
+    """
+    expected = set(get_expected_assets(tag))
+    present = {p.name for p in dist_dir.iterdir() if p.is_file()}
+
+    # Allow SHA256SUMS.txt if already generated
+    non_checksum_present = present - {"SHA256SUMS.txt"}
+
+    missing = expected - non_checksum_present
+    unexpected = non_checksum_present - expected
+
+    if missing:
+        raise ValueError(f"Missing expected release asset(s) in {dist_dir}: {sorted(missing)}")
+    if unexpected:
+        raise ValueError(f"Unexpected file(s) found in {dist_dir}: {sorted(unexpected)}")
+
+    return get_expected_assets(tag)
+
+
+def generate_checksums(dist_dir: Path, tag: str) -> Path:
+    """Generate SHA256SUMS.txt for the exact 8 expected release assets."""
+    expected = validate_dist_assets(dist_dir, tag)
+    checksum_lines = []
+    for filename in expected:
+        file_path = dist_dir / filename
+        digest = sha256_file(file_path)
+        checksum_lines.append(f"{digest}  {filename}\n")
+
+    sums_path = dist_dir / "SHA256SUMS.txt"
+    sums_path.write_text("".join(checksum_lines), encoding="utf-8")
+    return sums_path
+
+
+def verify_checksums(dist_dir: Path):
+    """Verify all checksums listed in SHA256SUMS.txt."""
+    sums_path = dist_dir / "SHA256SUMS.txt"
+    if not sums_path.exists():
+        raise FileNotFoundError(f"Checksum file not found: {sums_path}")
+
+    for line in sums_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            raise ValueError(f"Malformed checksum line: '{line}'")
+        expected_hash, fname = parts[0], parts[1].lstrip("* ")
+        file_path = dist_dir / fname
+        if not file_path.exists():
+            raise FileNotFoundError(f"Asset '{fname}' listed in SHA256SUMS.txt not found.")
+        actual_hash = sha256_file(file_path)
+        if actual_hash.lower() != expected_hash.lower():
+            raise ValueError(
+                f"Checksum mismatch for '{fname}': expected {expected_hash}, got {actual_hash}"
+            )
+
+
+def parse_cargo_version(cargo_toml_path: Path) -> str:
+    """Extract package.version from Cargo.toml."""
+    content = cargo_toml_path.read_text(encoding="utf-8")
+    if tomllib is not None:
+        data = tomllib.loads(content)
+        return str(data["package"]["version"])
+
+    # Fallback if tomllib is unavailable
+    in_package = False
+    for line in content.splitlines():
+        trimmed = line.strip()
+        if trimmed == "[package]":
+            in_package = True
+            continue
+        if in_package:
+            if trimmed.startswith("["):
+                break
+            m = re.match(r'^version\s*=\s*"([^"]+)"', trimmed)
+            if m:
+                return m.group(1)
+    raise ValueError(f"Could not parse package.version from {cargo_toml_path}")
+
+
+def matches_cargo_version(cargo_toml_path: Path, tag: str) -> bool:
+    """Return True if tag equals 'v' + cargo package version (exact full match)."""
+    if not tag.startswith("v"):
+        return False
+    cargo_version = parse_cargo_version(cargo_toml_path)
+    return tag[1:] == cargo_version
+
+
+def main():
+    parser = argparse.ArgumentParser(description="git-explain release verification helper.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    p_tag = subparsers.add_parser("validate-tag")
+    p_tag.add_argument("--tag", required=True)
+
+    p_uploaded = subparsers.add_parser("validate-uploaded")
+    p_uploaded.add_argument("--tag", required=True)
+    p_uploaded.add_argument("--names-file", required=True)
+
+    # validate-cargo
+    p_cargo = subparsers.add_parser("validate-cargo")
+    p_cargo.add_argument("--cargo-toml", default="Cargo.toml", help="Path to Cargo.toml")
+    p_cargo.add_argument("--tag", required=True, help="Release tag")
+
+    # validate-assets
+    p_assets = subparsers.add_parser("validate-assets")
+    p_assets.add_argument("--dist-dir", default="dist", help="Path to dist directory")
+    p_assets.add_argument("--tag", required=True, help="Release tag")
+
+    # generate-checksums
+    p_sums = subparsers.add_parser("generate-checksums")
+    p_sums.add_argument("--dist-dir", default="dist", help="Path to dist directory")
+    p_sums.add_argument("--tag", required=True, help="Release tag")
+
+    # verify-checksums
+    p_check = subparsers.add_parser("verify-checksums")
+    p_check.add_argument("--dist-dir", default="dist", help="Path to dist directory")
+
+    args = parser.parse_args()
+
+    if args.command == "validate-tag":
+        _packaging.validate_tag(args.tag)
+
+    elif args.command == "validate-uploaded":
+        names = Path(args.names_file).read_text(encoding="utf-8").splitlines()
+        validate_uploaded_assets(names, args.tag)
+
+    elif args.command == "validate-cargo":
+        cargo_path = Path(args.cargo_toml)
+        if not matches_cargo_version(cargo_path, args.tag):
+            actual_version = parse_cargo_version(cargo_path)
+            print(
+                f"Error: Tag '{args.tag}' does not match Cargo.toml version '{actual_version}'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"Tag '{args.tag}' matches Cargo.toml version.")
+
+    elif args.command == "validate-assets":
+        dist_dir = Path(args.dist_dir)
+        assets = validate_dist_assets(dist_dir, args.tag)
+        print(f"Validated all {len(assets)} expected release assets in {dist_dir}.")
+
+    elif args.command == "generate-checksums":
+        dist_dir = Path(args.dist_dir)
+        sums_file = generate_checksums(dist_dir, args.tag)
+        print(f"Generated {sums_file}.")
+
+    elif args.command == "verify-checksums":
+        dist_dir = Path(args.dist_dir)
+        verify_checksums(dist_dir)
+        print("All checksums in SHA256SUMS.txt successfully verified.")
+
+
+if __name__ == "__main__":
+    main()

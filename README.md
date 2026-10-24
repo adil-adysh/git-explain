@@ -262,6 +262,34 @@ bundle, then compile Rust. Installation copies the resulting binary only after
 both builds succeed.
 `task check` runs frontend checks, Rust formatting/tests and whitespace checks.
 
+## Installation and Releases
+
+Precompiled binaries for Linux (musl static and glibc) and Windows (static CRT)
+are available on the [Releases](https://github.com/adil-adysh/git-explain/releases) page.
+
+Release archives include the standalone executable, `README.md`, `LICENSE`, and release
+documentation. The application is completely self-contained: browser assets, SQLite, and
+Tree-sitter parsers are embedded in the binary. Users do not need Node.js, npm, or Rust
+installed to run `git-explain`.
+
+### Runtime Requirements
+- A modern 64-bit operating system: Linux (x86_64) or Windows 10/11 (x86_64).
+- External `git` on your `PATH`.
+- A local or remote OpenAI-compatible model service (e.g., [Ollama](https://ollama.ai) or [llama.cpp](https://github.com/ggerganov/llama.cpp)).
+- Model weights, GGUF files, and API credentials are never bundled in binaries.
+
+### Verifying Checksums
+Verify downloads against `SHA256SUMS.txt`:
+```bash
+# Linux
+sha256sum --check --ignore-missing SHA256SUMS.txt
+
+# Windows (PowerShell)
+Get-FileHash -Algorithm SHA256 git-explain-*.zip
+```
+
+For complete packaging specifications, manual installation instructions, and maintainer release procedures, see [docs/releases.md](docs/releases.md).
+
 ## Accessible Svelte 5 workspace migration
 
 A screen-reader- and keyboard-first redesign is specified in
