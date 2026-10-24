@@ -16,6 +16,7 @@ tasks:
       - cargo fmt -- --check
       - cargo test
       - python scripts/test_release.py
+      - python scripts/test_native_packages.py
       - git diff --check
 
   frontend-install:

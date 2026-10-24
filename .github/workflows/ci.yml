@@ -32,7 +32,9 @@ jobs:
           persist-credentials: false
 
       - name: Run release packaging unit tests
-        run: python scripts/test_release.py
+        run: |
+          python scripts/test_release.py
+          python scripts/test_native_packages.py
 
       - name: Run Linux installer regression tests
         if: matrix.os == 'ubuntu-latest'
@@ -86,3 +88,52 @@ jobs:
         with:
           name: browser-test-results-${{ matrix.os }}
           path: test-results/
+
+  native-packages:
+    name: Native Packages (Debian & RPM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run packaging unit tests
+        run: |
+          python scripts/test_release.py
+          python scripts/test_native_packages.py
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install pinned packaging tools
+        run: bash scripts/install-package-tools.sh
+
+      - name: Build release musl binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Package release archives and native packages
+        run: |
+          TAG=$(python3 -c 'import tomllib; from pathlib import Path; print("v" + tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"])')
+          echo "Packaging for tag: ${TAG}"
+          python3 scripts/package-release.py \
+            --target x86_64-unknown-linux-musl \
+            --name linux-x86_64-musl \
+            --tag "${TAG}" \
+            --canonical-alias linux-x86_64 \
+            --smoke-test
+          python3 scripts/package-native.py \
+            --tag "${TAG}" \
+            --dist-dir dist
+
+      - name: Run native package container smoke tests
+        run: |
+          TAG=$(python3 -c 'import tomllib; from pathlib import Path; print("v" + tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"])')
+          bash scripts/test-native-packages.sh dist "${TAG}"
