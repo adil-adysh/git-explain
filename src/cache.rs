@@ -13,7 +13,7 @@ use std::{
 };
 
 const SCHEMA: &str = "1";
-pub const PROMPT: &str = "explanation-prompt-v21";
+pub const PROMPT: &str = "explanation-prompt-v22";
 pub const RESPONSE_CONTRACT: &str = "structured-response-v9";
 
 #[derive(Clone)]
