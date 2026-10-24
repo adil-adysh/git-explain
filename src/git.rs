@@ -57,25 +57,86 @@ pub fn files_at_revision(
     Ok(files.into_iter().collect())
 }
 
+#[cfg(windows)]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    if let Some(s) = path.to_str() {
+        if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{}", stripped));
+        }
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
+
+#[cfg(windows)]
+fn normalize_path_identity(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return strip_verbatim_prefix(canonical);
+    }
+    let mut remainder = PathBuf::new();
+    let mut current = Some(path);
+    while let Some(ancestor) = current {
+        if ancestor.as_os_str().is_empty() {
+            break;
+        }
+        if let Ok(canonical) = ancestor.canonicalize() {
+            let canonical_ancestor = strip_verbatim_prefix(canonical);
+            return if remainder.as_os_str().is_empty() {
+                canonical_ancestor
+            } else {
+                canonical_ancestor.join(remainder)
+            };
+        }
+        if let Some(file_name) = ancestor.file_name() {
+            if remainder.as_os_str().is_empty() {
+                remainder = PathBuf::from(file_name);
+            } else {
+                remainder = PathBuf::from(file_name).join(remainder);
+            }
+        }
+        current = ancestor.parent();
+    }
+    path.to_path_buf()
+}
+
+#[cfg(not(windows))]
+fn normalize_path_identity(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 pub fn normalize_selections(
     repository_root: &Path,
     invocation_directory: &Path,
     selections: &[PathBuf],
 ) -> Result<Vec<PathBuf>> {
-    let invocation_prefix = invocation_directory
-        .strip_prefix(repository_root)
-        .context("current directory is outside the Git worktree")?;
+    let canonical_root = normalize_path_identity(repository_root);
+    let canonical_invocation = normalize_path_identity(invocation_directory);
+    let invocation_prefix = canonical_invocation
+        .strip_prefix(&canonical_root)
+        .with_context(|| {
+            format!(
+                "current directory is outside the Git worktree: prefix not found (current: {}, root: {})",
+                invocation_directory.display(),
+                repository_root.display()
+            )
+        })?;
     selections
         .iter()
         .map(|selection| {
+            let canonical_selection;
             let combined;
-            let relative = if selection.is_absolute() {
-                selection.strip_prefix(repository_root).with_context(|| {
-                    format!(
-                        "selected path '{}' is outside the Git worktree",
-                        selection.display()
-                    )
-                })?
+            let relative: &Path = if selection.is_absolute() {
+                canonical_selection = normalize_path_identity(selection);
+                canonical_selection
+                    .strip_prefix(&canonical_root)
+                    .with_context(|| {
+                        format!(
+                            "selected path '{}' is outside the Git worktree",
+                            selection.display()
+                        )
+                    })?
             } else {
                 combined = invocation_prefix.join(selection);
                 &combined

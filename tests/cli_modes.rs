@@ -256,3 +256,78 @@ fn explanation_command_outside_repository_uses_input_error_exit_code() {
     assert!(String::from_utf8_lossy(&output.stderr)
         .contains("This command must be run inside a Git repository"));
 }
+
+#[cfg(windows)]
+#[test]
+fn normalize_selections_handles_windows_path_casing_and_absent_paths() {
+    let repo_dir = tempdir().unwrap();
+    let repo_path = repo_dir.path();
+    let sub_dir = repo_path.join("sub");
+    std::fs::create_dir_all(&sub_dir).unwrap();
+
+    let existing_file = sub_dir.join("existing.rs");
+    std::fs::write(&existing_file, "fn test() {}\n").unwrap();
+
+    // Invocation path with uppercase drive/letters pointing to real directory
+    let invocation_upper = std::path::PathBuf::from(sub_dir.to_string_lossy().to_ascii_uppercase());
+
+    // Relative selection from invocation dir: "existing.rs"
+    let normalized = git_explain::git::normalize_selections(
+        repo_path,
+        &invocation_upper,
+        &[std::path::PathBuf::from("existing.rs")],
+    )
+    .expect("casing differences should normalize to real worktree");
+    assert_eq!(
+        normalized,
+        vec![std::path::Path::new("sub").join("existing.rs")]
+    );
+
+    // Absolute existing file with different casing
+    let existing_upper =
+        std::path::PathBuf::from(existing_file.to_string_lossy().to_ascii_uppercase());
+    let normalized_existing_abs =
+        git_explain::git::normalize_selections(repo_path, repo_path, &[existing_upper])
+            .expect("existing absolute path with different casing should normalize");
+    assert_eq!(
+        normalized_existing_abs,
+        vec![std::path::Path::new("sub").join("existing.rs")]
+    );
+
+    // Absolute nonexisting / deleted file with different casing on existing ancestor (e.g. for revision mode)
+    let nonexisting_abs =
+        std::path::PathBuf::from(repo_path.to_string_lossy().to_ascii_uppercase())
+            .join("sub")
+            .join("deleted_revision_file.rs");
+    let normalized_nonexisting_abs =
+        git_explain::git::normalize_selections(repo_path, repo_path, &[nonexisting_abs])
+            .expect("nonexisting absolute path in revision mode should normalize");
+    assert_eq!(
+        normalized_nonexisting_abs,
+        vec![std::path::Path::new("sub").join("deleted_revision_file.rs")]
+    );
+
+    // Absolute nonexisting file where the nonexisting component itself is uppercase
+    let nonexisting_file = sub_dir.join("deleted_revision_file.rs");
+    let nonexisting_upper =
+        std::path::PathBuf::from(nonexisting_file.to_string_lossy().to_ascii_uppercase());
+    let normalized_nonexisting_upper =
+        git_explain::git::normalize_selections(repo_path, repo_path, &[nonexisting_upper])
+            .expect("nonexisting absolute path with uppercase tail should normalize");
+    assert_eq!(
+        normalized_nonexisting_upper,
+        vec![std::path::Path::new("sub").join("DELETED_REVISION_FILE.RS")]
+    );
+
+    // Parent escape rejection
+    let escape_err = git_explain::git::normalize_selections(
+        repo_path,
+        repo_path,
+        &[std::path::PathBuf::from("../outside.rs")],
+    );
+    assert!(escape_err.is_err());
+    assert!(escape_err
+        .unwrap_err()
+        .to_string()
+        .contains("escapes the Git worktree"));
+}
