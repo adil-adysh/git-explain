@@ -55,11 +55,21 @@ class TestPackageAndVerifyRelease(unittest.TestCase):
             self.assertEqual(result.returncode == 0, success, result.stderr)
 
     def test_uploaded_assets_exact_match(self):
+        # Stable tag: 10 assets + SHA256SUMS.txt = 11 assets
         names = verify_release.get_expected_assets("v0.1.0") + ["SHA256SUMS.txt"]
+        self.assertEqual(len(names), 11)
         verify_release.validate_uploaded_assets(names, "v0.1.0")
         for invalid in [names[:-1], names + ["stale.exe"], names + [names[0]]]:
             with self.assertRaises(ValueError):
                 verify_release.validate_uploaded_assets(invalid, "v0.1.0")
+
+        # Prerelease tag: 8 assets + SHA256SUMS.txt = 9 assets
+        prerelease_names = verify_release.get_expected_assets("v0.1.0-rc.1") + ["SHA256SUMS.txt"]
+        self.assertEqual(len(prerelease_names), 9)
+        verify_release.validate_uploaded_assets(prerelease_names, "v0.1.0-rc.1")
+        for invalid in [prerelease_names[:-1], prerelease_names + ["git-explain_0.1.0-1_amd64.deb"]]:
+            with self.assertRaises(ValueError):
+                verify_release.validate_uploaded_assets(invalid, "v0.1.0-rc.1")
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -274,7 +284,7 @@ class TestPackageAndVerifyRelease(unittest.TestCase):
         )
         tag = "v0.1.0"
         expected = verify_release.get_expected_assets(tag)
-        self.assertEqual(len(expected), 8)
+        self.assertEqual(len(expected), 10)
         self.assertEqual(
             expected,
             [
@@ -286,17 +296,26 @@ class TestPackageAndVerifyRelease(unittest.TestCase):
                 f"git-explain-{tag}-linux-x86_64-musl",
                 f"git-explain-{tag}-linux-x86_64.tar.gz",
                 f"git-explain-{tag}-linux-x86_64",
+                "git-explain_0.1.0-1_amd64.deb",
+                "git-explain-0.1.0-1.x86_64.rpm",
             ],
         )
 
-        # Create only 7 of the 8 assets in dist_dir -> must raise ValueError
-        for fname in expected[:7]:
+        # Prerelease/build variant remains 8 assets
+        prerelease_tag = "v0.1.0-rc.1"
+        prerelease_expected = verify_release.get_expected_assets(prerelease_tag)
+        self.assertEqual(len(prerelease_expected), 8)
+        self.assertNotIn("git-explain_0.1.0-1_amd64.deb", prerelease_expected)
+        self.assertNotIn("git-explain-0.1.0-1.x86_64.rpm", prerelease_expected)
+
+        # Create only 9 of the 10 assets in dist_dir for stable tag -> must raise ValueError
+        for fname in expected[:9]:
             (self.dist_dir / fname).write_bytes(b"asset_content")
         with self.assertRaises(ValueError):
             verify_release.validate_dist_assets(self.dist_dir, tag)
 
-        # Create 8th asset -> passes
-        (self.dist_dir / expected[7]).write_bytes(b"asset_content_8")
+        # Create 10th asset -> passes
+        (self.dist_dir / expected[9]).write_bytes(b"asset_content_10")
         found = verify_release.validate_dist_assets(self.dist_dir, tag)
         self.assertEqual(found, expected)
 

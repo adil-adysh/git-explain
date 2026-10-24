@@ -21,6 +21,12 @@ _spec = importlib.util.spec_from_file_location(
 _packaging = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_packaging)
 
+_spec_native = importlib.util.spec_from_file_location(
+    "package_native", Path(__file__).with_name("package-native.py")
+)
+_native = importlib.util.module_from_spec(_spec_native)
+_spec_native.loader.exec_module(_native)
+
 try:
     import tomllib
 except ImportError:
@@ -37,9 +43,14 @@ def sha256_file(path: Path) -> str:
 
 
 def get_expected_assets(tag: str) -> List[str]:
-    """Return the exact list of 8 expected release assets for a given tag."""
+    """Return the exact list of expected release assets for a given tag.
+
+    Includes 8 archive/binary assets plus native packages (Debian/RPM)
+    for plain stable releases (total 10). Prereleases and build variants
+    retain the 8 archive/binary assets.
+    """
     _packaging.validate_tag(tag)
-    return [
+    base_assets = [
         f"git-explain-{tag}-windows-x86_64.zip",
         f"git-explain-{tag}-windows-x86_64.exe",
         f"git-explain-{tag}-linux-x86_64-gnu.tar.gz",
@@ -49,6 +60,7 @@ def get_expected_assets(tag: str) -> List[str]:
         f"git-explain-{tag}-linux-x86_64.tar.gz",
         f"git-explain-{tag}-linux-x86_64",
     ]
+    return base_assets + _native.native_package_names(tag)
 
 
 def validate_uploaded_assets(names: List[str], tag: str):
@@ -106,7 +118,7 @@ def validate_remote_tag(repository: str, tag: str, expected_commit: str):
 
 
 def validate_dist_assets(dist_dir: Path, tag: str) -> List[str]:
-    """Validate that dist_dir contains exactly the 8 expected release assets.
+    """Validate that dist_dir contains exactly the expected release assets.
 
     Raises ValueError if any expected asset is missing or unexpected files exist.
     """
@@ -128,7 +140,7 @@ def validate_dist_assets(dist_dir: Path, tag: str) -> List[str]:
 
 
 def generate_checksums(dist_dir: Path, tag: str) -> Path:
-    """Generate SHA256SUMS.txt for the exact 8 expected release assets."""
+    """Generate SHA256SUMS.txt for the exact expected release assets."""
     expected = validate_dist_assets(dist_dir, tag)
     checksum_lines = []
     for filename in expected:

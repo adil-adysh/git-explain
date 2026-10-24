@@ -3,6 +3,9 @@ name = "git-explain"
 version = "0.2.1"
 edition = "2021"
 description = "Accessible local explanations for changed source code"
+license = "Apache-2.0"
+repository = "https://github.com/adil-adysh/git-explain"
+homepage = "https://github.com/adil-adysh/git-explain"
 
 [dependencies]
 anyhow = "1"
@@ -41,3 +44,35 @@ webbrowser = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[package.metadata.deb]
+maintainer = "adil-adysh <adil-adysh@users.noreply.github.com>"
+copyright = "2026 adil-adysh"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+git-explain reads complete source files or explains semantic changes in a local browser.
+Source extraction and Git analysis stay local; only the code sections requested
+in the browser are sent to the selected model endpoint."""
+depends = "git"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/git-explain", "/usr/bin/git-explain", "755"],
+    ["README.md", "/usr/share/doc/git-explain/README.md", "644"],
+    ["LICENSE", "/usr/share/doc/git-explain/LICENSE", "644"],
+    ["docs/releases.md", "/usr/share/doc/git-explain/releases.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+release = "1"
+auto-req = "no"
+require-sh = false
+assets = [
+    { source = "target/release/git-explain", dest = "/usr/bin/git-explain", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/git-explain/README.md", mode = "644", doc = true },
+    { source = "docs/releases.md", dest = "/usr/share/doc/git-explain/releases.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/git-explain/LICENSE", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+git = "*"
